@@ -1,0 +1,409 @@
+{
+ "topic": "คนชื่อตั้มในประเทศไทยมีกี่คน และมีกี่เปอร์เซ็นต์ที่ใส่แว่น?",
+ "title_th": "คนชื่อตั้มในไทยมีกี่คน กี่เปอร์เซ็นต์ใส่แว่น",
+ "series_tag": "จะเกิดอะไรขึ้นถ้า...?",
+ "script": [
+  {
+   "id": "hook",
+   "text": "คนชื่อตั้ม ในประเทศไทย มีกี่คน? แล้วกี่เปอร์เซ็นต์ ที่ต้องใส่แว่น?"
+  },
+  {
+   "id": "pop",
+   "text": "คนไทยตอนนี้ มีราวหกสิบห้าล้านคน ตามทะเบียนราษฎร์ สิ้นปีสองห้าหกเจ็ด"
+  },
+  {
+   "id": "nodata",
+   "text": "แต่รู้ไหม? ชื่อเล่น ไม่ได้อยู่ในทะเบียนราษฎร์ เลยไม่มีใครนับตั้มได้จริงๆ แถมลิสต์ชื่อเล่นโหลที่แชร์กันในเน็ต ก็ไม่มีชื่อตั้ม ติดท็อปเท็นเลย"
+  },
+  {
+   "id": "estimate",
+   "text": "งั้นลองสมมติเล่นๆ ถ้าคนไทยทุกหนึ่งพันคน มีตั้มหนึ่งคน ประเทศไทยจะมีตั้ม ราวหกหมื่นห้าพันคน"
+  },
+  {
+   "id": "guess",
+   "text": "ทายก่อน! ผลสำรวจสายตาระดับประเทศ พบว่าคนไทยอายุยี่สิบเอ็ดถึงสี่สิบปี มีปัญหาค่าสายตากี่เปอร์เซ็นต์? เอ สิบ. บี ยี่สิบห้า. ซี สี่สิบเก้า. สาม... สอง... หนึ่ง!"
+  },
+  {
+   "id": "reveal",
+   "text": "เฉลย ซี! สี่สิบเก้าเปอร์เซ็นต์ เกือบครึ่ง! แปลว่าตั้มวัยทำงาน เกือบครึ่ง อาจต้องพึ่งแว่น"
+  },
+  {
+   "id": "myth",
+   "text": "แล้วที่เชื่อกันว่า ใส่แว่นแล้วสายตาจะแย่ลง ไม่จริงนะ! ค่าสายตาเปลี่ยนตามอายุ หรือภาวะสายตาที่เป็นอยู่ ไม่ใช่เพราะแว่น ส่วนการตัดแว่นให้อ่อนกว่าค่าจริง ก็ไม่ได้ช่วยชะลอสายตาสั้น"
+  },
+  {
+   "id": "world",
+   "text": "นักวิจัยยังคาดว่า ปีสองพันห้าสิบ คนครึ่งโลกจะสายตาสั้น เพราะใช้สายตาระยะใกล้มากขึ้น และออกไปเจอแดดน้อยลง"
+  },
+  {
+   "id": "close",
+   "text": "แล้วถ้าอยากให้เราค้นหาสถิติของใครเป็นคนต่อไป พิมพ์ชื่อเพื่อนของคุณไว้ใต้คอมเมนต์ได้เลยครับ"
+  }
+ ],
+ "voice": {
+  "voice_id": "bcdIY58WBBzAMmef52NW",
+  "model_id": "eleven_v4",
+  "language_code": "th",
+  "stability": 0.4,
+  "similarity_boost": 0.75
+ },
+ "music": {
+  "prompt": "Playful, curious background music for a short fun-fact video: bouncy pizzicato strings, ukulele and light marimba, soft claps, about 100 BPM, bright and friendly like a quirky quiz show, steady groove under narration, instrumental",
+  "model_id": "music_v1",
+  "volume": 0.3
+ },
+ "sfx": [
+  {
+   "id": "glint",
+   "prompt": "Cartoon magical sparkle with a bright high glint \"ting\" on eyeglasses, short and playful",
+   "duration": 1.5,
+   "cues": [
+    {
+     "seg": "hook",
+     "n": 0,
+     "offset": -0.1,
+     "gain": 0.6,
+     "word": "แว่น"
+    },
+    {
+     "seg": "myth",
+     "n": 1,
+     "offset": 0.2,
+     "gain": 0.55,
+     "word": "ไม่"
+    }
+   ]
+  },
+  {
+   "id": "counter",
+   "prompt": "Fast mechanical number counter rolling up with rapid clicks, ending in a soft bell",
+   "duration": 2.5,
+   "cues": [
+    {
+     "seg": "pop",
+     "n": 0,
+     "offset": 0.0,
+     "gain": 0.45,
+     "word": "มี"
+    }
+   ]
+  },
+  {
+   "id": "buzzer",
+   "prompt": "Short comedic cartoon wrong-answer buzzer, two quick low beeps",
+   "duration": 1.0,
+   "cues": [
+    {
+     "seg": "nodata",
+     "n": 0,
+     "offset": 0.15,
+     "gain": 0.55,
+     "word": "ไม่"
+    },
+    {
+     "seg": "myth",
+     "n": 0,
+     "offset": 0.2,
+     "gain": 0.5,
+     "word": "ก็"
+    }
+   ]
+  },
+  {
+   "id": "listflip",
+   "prompt": "Quick paper pages flipping through a list, ending with a soft cartoon boop",
+   "duration": 2.0,
+   "cues": [
+    {
+     "seg": "nodata",
+     "n": 0,
+     "offset": 0.0,
+     "gain": 0.45,
+     "word": "แถม"
+    }
+   ]
+  },
+  {
+   "id": "stamp",
+   "prompt": "Cartoon rubber stamp thump on paper with a tiny springy bounce",
+   "duration": 1.0,
+   "cues": [
+    {
+     "seg": "nodata",
+     "n": 0,
+     "offset": 0.0,
+     "gain": 0.6,
+     "word": "มีชื่อ"
+    },
+    {
+     "seg": "estimate",
+     "n": 0,
+     "offset": 0.1,
+     "gain": 0.6,
+     "at": "start"
+    }
+   ]
+  },
+  {
+   "id": "drumroll",
+   "prompt": "Game show snare drumroll building tension with a ticking clock, rising to a cymbal hit at the end",
+   "duration": 6.0,
+   "cues": [
+    {
+     "seg": "reveal",
+     "n": 0,
+     "offset": -6.0,
+     "gain": 0.35,
+     "at": "start"
+    }
+   ]
+  },
+  {
+   "id": "correct",
+   "prompt": "Game show correct-answer ding chime followed by a small crowd cheer and applause",
+   "duration": 3.0,
+   "cues": [
+    {
+     "seg": "reveal",
+     "n": 0,
+     "offset": 0.0,
+     "gain": 0.6,
+     "at": "start"
+    }
+   ]
+  },
+  {
+   "id": "scratch",
+   "prompt": "Vinyl record scratch stop followed by a comedic sad trombone wah-wah",
+   "duration": 2.0,
+   "cues": [
+    {
+     "seg": "myth",
+     "n": 0,
+     "offset": 0.0,
+     "gain": 0.55,
+     "word": "ไม่"
+    }
+   ]
+  },
+  {
+   "id": "globe",
+   "prompt": "Big airy cinematic whoosh of a globe spinning past, with a soft shimmer tail",
+   "duration": 2.0,
+   "cues": [
+    {
+     "seg": "world",
+     "n": 0,
+     "offset": 0.0,
+     "gain": 0.5,
+     "at": "start"
+    }
+   ]
+  },
+  {
+   "id": "comment",
+   "prompt": "Cute bubbly cartoon pop followed by a cheerful phone notification ping",
+   "duration": 1.5,
+   "cues": [
+    {
+     "seg": "close",
+     "n": 0,
+     "offset": 0.0,
+     "gain": 0.7,
+     "word": "คอมเมนต์"
+    }
+   ]
+  }
+ ],
+ "scene_code": "\"\"\"EP002 — คนชื่อตั้มในไทยมีกี่คน กี่ % ใส่แว่น. Scene code written by Claude; executed by the worker after the timeline is built.\"\"\"\nfrom engine.core import *\nfrom engine.characters import *\nfrom engine.props import *\n\nTUM = {}  # DEFAULT_STYLE already matches the reference photo\n\ndef draw_tum(*a, **k):\n    return draw_person(*a, **k)\n\ndef tum_icon(size, glasses=True, happy=False):\n    return person_icon(size, None, glasses, happy)\n\n\n# ================================================================ scenes\ndef sc_hook(img, d, t):\n    wall_scene(img, d, t)\n    talk = talk_amount(t)\n    tg = wt('hook', 'แว่น')\n    glint = clamp(1 - abs(t - tg - 0.25) / 0.45) if t > tg - 0.3 else 0\n    draw_tum(img, 470, 845, 300, t, pose='sit', mood='shock' if tg <= t < tg + 0.8 else 'normal', glint=glint, phone=True, look=(0.2, 0.0))\n    draw_cat(img, 800, 1070, 180, t, mood='normal', talk=talk, look=(-0.6, 0))\n    # dark gradient for headline legibility\n    d.rectangle((0, 0, W, 560), fill=(20, 12, 20, 130))\n    ptext(img, 'คนชื่อตั้มในไทย', 540, 275, 96, t, -0.3)\n    ptext(img, 'มีกี่คน?', 540, 385, 86, t, wt('hook', 'มี'), fill=(255, 225, 60))\n    tp = wt('hook', 'แล้ว')\n    if t >= tp:\n        put(img, text_img('กี่ % ใส่แว่น?', 92, 900, (255, 255, 255), 10, (40, 60, 160)), 540, 495, pop(t, tp), 1, -4)\n\n\ndef sc_pop(img, d, t):\n    talk = talk_amount(t)\n    t0 = SEG['pop']['s']\n    tn, tr = wt('pop', 'มี'), wt('pop', 'ตาม')\n    t_end = SEG['pop']['phrases'][1]['e']\n    u = clamp((t - tn) / (t_end - tn))\n    crowd(d, 540, 1010, 960, 360, 220, t, seed=3, frac=0.15 + 0.85 * u)\n    val = int(64953661 * (eo(u) if t >= tn else 0))\n    rrect(d, (90, 560, 990, 790), 40, (255, 255, 255, 240))\n    put(img, text_img(f'{val:,}', 130, 900, (40, 60, 160), 0), 540, 660, 1 + 0.04 * (0 < u < 1) * math.sin(t * 30))\n    put(img, text_img('คน', 52, 800, (90, 80, 120), 0), 540, 755, 1)\n    if t >= tr:\n        put(img, text_img('ทะเบียนราษฎร์ ณ 31 ธ.ค. 2567 (คนสัญชาติไทย)', 40, 700, (255, 255, 255), 6, (30, 30, 70)), 540, 1240, pop(t, tr))\n    draw_cat(img, 900, 1310, 150, t, mood='happy', talk=talk)\n    draw_tum(img, 180, 1240, 150, t, pose='stand', mood='shock' if t < tr else 'normal')\n    headline(img, t, 'คนไทยตอนนี้', t0, 'ราว 65 ล้านคน', tn)\n\n\nTOP10 = ['ไอซ์', 'แบงค์', 'นิว', 'บอล', 'ต้น', 'เจมส์', 'เฟิร์ส', 'ฟลุ๊ค', 'บิ๊ก', 'เจ']\n\ndef sc_nodata(img, d, t):\n    talk = talk_amount(t)\n    t0 = SEG['nodata']['s']\n    tdoc, tx = wt('nodata', 'ชื่อเล่น'), wt('nodata', 'ไม่')\n    tlist = wt('nodata', 'แถม')\n    tno = wt('nodata', 'มีชื่อ')\n    if t < tlist - 0.2:\n        # registry document\n        s = pop(t, tdoc - 0.1)\n        if s > 0:\n            lay = Image.new('RGBA', (760, 640), (0, 0, 0, 0))\n            dd = ImageDraw.Draw(lay, 'RGBA')\n            dd.rounded_rectangle((6, 6, 754, 634), 30, fill=(252, 250, 240, 255), outline=(60, 50, 80, 255), width=8)\n            ti = text_img('ข้อมูลในทะเบียนราษฎร์', 50, 800, (60, 50, 80), 0)\n            lay.alpha_composite(ti, (380 - ti.width // 2, 30))\n            rows = [('ชื่อ', True), ('นามสกุล', True), ('วันเกิด', True), ('ชื่อเล่น', False)]\n            for i, (lab, ok) in enumerate(rows):\n                y = 150 + i * 115\n                dd.rounded_rectangle((40, y, 720, y + 90), 20, fill=(240, 236, 226, 255) if ok else (255, 225, 228, 255))\n                ti = text_img(lab, 56, 800, (60, 50, 80), 0)\n                lay.alpha_composite(ti, (80, y + 45 - ti.height // 2))\n                show = ok or t >= tx\n                if show:\n                    check(dd, 640, y + 45, 46, ok)\n            put(img, lay, 540, 900, s)\n        stamp(img, 'ไม่มีช่องนี้!', 760, 1180, t, tx + 0.15, size=80)\n        ty = wt('nodata', 'เลย')\n        if t >= ty:\n            ptext(img, 'นับตั้มจริงๆ ไม่ได้!', 540, 420, 80, t, ty, fill=(255, 225, 60))\n        draw_tum(img, 170, 1280, 150, t, pose='stand', mood='think' if t >= ty else 'normal', hand_chin=t >= ty)\n    else:\n        s = pop(t, tlist - 0.2)\n        lay = Image.new('RGBA', (700, 760), (0, 0, 0, 0))\n        dd = ImageDraw.Draw(lay, 'RGBA')\n        dd.rounded_rectangle((6, 6, 694, 754), 30, fill=(255, 255, 255, 255), outline=(60, 50, 80, 255), width=8)\n        ti = text_img('ชื่อเล่นโหล Top 10 (ผู้ชาย)', 44, 800, (60, 50, 80), 0)\n        lay.alpha_composite(ti, (350 - ti.width // 2, 24))\n        tl1 = SEG['nodata']['phrases'][4]['e']\n        n_show = int(clamp((t - tlist) / max(0.3, tl1 - tlist)) * 10) + (1 if t >= tlist else 0)\n        for i, nm in enumerate(TOP10[:min(10, n_show)]):\n            c, r = divmod(i, 5)\n            x, y = 50 + c * 330, 110 + r * 125\n            dd.rounded_rectangle((x, y, x + 290, y + 100), 20, fill=(236, 240, 252, 255))\n            ti = text_img(f'{i + 1}. {nm}', 50, 800, (40, 60, 160), 0)\n            lay.alpha_composite(ti, (x + 20, y + 50 - ti.height // 2))\n        put(img, lay, 540, 900, s)\n        # magnifier scanning\n        if t < tno + 0.3:\n            mx = 540 + math.sin(t * 3) * 220\n            my = 900 + math.cos(t * 2.3) * 220\n            d.ellipse((mx - 70, my - 70, mx + 70, my + 70), outline=(60, 50, 80, 255), width=14)\n            d.line((mx + 50, my + 50, mx + 120, my + 120), fill=(60, 50, 80, 255), width=22)\n        stamp(img, 'ไม่มี \"ตั้ม\"!', 540, 1250, t, tno, size=110)\n        ptext(img, 'ลิสต์ที่แชร์กันในเน็ต', 540, 420, 76, t, tlist, fill=(255, 225, 60))\n        draw_cat(img, 920, 1320, 130, t, mood='worried' if t >= tno else 'normal', talk=talk)\n    ptext(img, 'แต่รู้ไหม?', 540, 300, 96, t, t0)\n\n\ndef sc_estimate(img, d, t):\n    talk = talk_amount(t)\n    t0 = SEG['estimate']['s']\n    tg = wt('estimate', 'ถ้า')\n    tone = wt('estimate', 'มี')\n    tx = wt('estimate', 'ประเทศ')\n    tr = wt('estimate', 'ราว')\n    stamp(img, 'สมมติ!', 820, 250, t, t0 + 0.1, col=(255, 140, 30), size=100, rot=8)\n    if t < tx:\n        # 1000 dots\n        g = clamp((t - tg) / 0.8)\n        cols, rows = 40, 25\n        x0, y0, sp = 540 - cols * 22 / 2 + 11, 640, 22\n        for i in range(int(1000 * g)):\n            r_, c_ = divmod(i, cols)\n            x, y = x0 + c_ * sp, y0 + r_ * sp\n            hl = (i == 517 and t >= tone)\n            if not hl:\n                d.ellipse((x - 7, y - 7, x + 7, y + 7), fill=(150, 150, 190, 255))\n        if t >= tone:\n            s = pop(t, tone)\n            x, y = x0 + (517 % cols) * sp, y0 + (517 // cols) * sp\n            d.ellipse((x - 20 * s, y - 20 * s, x + 20 * s, y + 20 * s), outline=(255, 225, 60, 255), width=6)\n            ic = tum_icon(150)\n            put(img, ic, 860, 520 + 30, s)\n            arrow(d, 820, 600, x + 14, y - 14, (255, 225, 60, 255), 8, 24)\n        if t >= tg:\n            put(img, text_img('1,000 คน', 64, 900, (255, 255, 255), 8, (30, 30, 70)), 300, 560, pop(t, tg))\n        if t >= tone:\n            put(img, text_img('= ตั้ม 1 คน', 64, 900, (255, 225, 60), 8, (30, 30, 70)), 560, 1230, pop(t, tone))\n        draw_cat(img, 930, 1320, 120, t, talk=talk, mood='normal')\n    else:\n        # 65 million / 1000 = 65,000 Tums\n        put(img, text_img('65,000,000 ÷ 1,000', 76, 900, (255, 255, 255), 8, (30, 30, 70)), 540, 600, pop(t, tx))\n        if t >= tr:\n            put(img, text_img('ราว 65,000 ตั้ม', 130, 900, (255, 225, 60), 12, (30, 30, 70)), 540, 760, pop(t, tr), 1, -3)\n            rnd = random.Random(8)\n            n = int(clamp((t - tr) / 1.2) * 40)\n            for i in range(n):\n                x = rnd.uniform(110, 970); y = rnd.uniform(880, 1300)\n                put(img, tum_icon(90, happy=(i % 3 == 0)), x, y, 1)\n        draw_cat(img, 540, 1110 if t < tr else 1320, 200 if t < tr else 120, t, talk=talk, mood='happy')\n    ptext(img, 'งั้นลองสมมติ...', 540, 400, 84, t, t0)\n\n\ndef option(img, d, y, letter, label, col, s, dim=1.0, hl=False):\n    if s <= 0: return\n    lay = Image.new('RGBA', (860, 150), (0, 0, 0, 0))\n    dd = ImageDraw.Draw(lay, 'RGBA')\n    dd.rounded_rectangle((4, 4, 856, 146), 40, fill=(255, 255, 255, 245), outline=(255, 210, 40, 255) if hl else (50, 30, 80, 255), width=12 if hl else 8)\n    dd.ellipse((26, 22, 132, 128), fill=col + (255,))\n    li = text_img(letter, 74, 900, (255, 255, 255), 0)\n    lay.alpha_composite(li, (79 - li.width // 2, 75 - li.height // 2))\n    ti = text_img(label, 80, 900, (50, 30, 80), 0)\n    lay.alpha_composite(ti, (170, 75 - ti.height // 2))\n    put(img, lay, 540, y, s, dim)\n\n\ndef sc_guess(img, d, t):\n    t0 = SEG['guess']['s']\n    talk = talk_amount(t)\n    rays(d, 540, 900, t, (255, 255, 255, 26))\n    tq = wt('guess', 'ผลสำรวจ')\n    ta, tb_, tc = wt('guess', 'เอ'), wt('guess', 'บี'), wt('guess', 'ซี')\n    t3, t2, t1 = wt('guess', 'สาม'), wt('guess', 'สอง'), wt('guess', 'หนึ่ง')\n    dim = 0.35 if t >= t3 else 1.0\n    if t >= tq and t < ta:\n        rrect(d, (90, 600, 990, 1000), 40, (255, 255, 255, 240))\n        put(img, text_img('ผลสำรวจสายตาระดับประเทศ', 52, 800, (90, 80, 120), 0), 540, 670, pop(t, tq))\n        tage = wt('guess', 'พบ')\n        if t >= tage:\n            put(img, text_img('คนไทยอายุ 21–40 ปี', 80, 900, (50, 30, 80), 0), 540, 790, pop(t, tage))\n        tpr = wt('guess', 'มีปัญหา')\n        if t >= tpr:\n            put(img, text_img('มีปัญหาค่าสายตากี่ %?', 72, 900, (230, 60, 90), 0), 540, 910, pop(t, tpr))\n    if t >= ta:\n        option(img, d, 690, 'A', '10%', (255, 90, 110), pop(t, ta), dim)\n        option(img, d, 860, 'B', '25%', (60, 170, 255), pop(t, tb_), dim)\n        option(img, d, 1030, 'C', '49%', (60, 190, 140), pop(t, tc), dim)\n    for tt, n, nxt in ((t3, '3', t2), (t2, '2', t1), (t1, '1', t1 + 0.6)):\n        if tt <= t < nxt:\n            u = t - tt\n            sc = eob(u / 0.22)\n            d.ellipse((540 - 180, 860 - 180, 540 + 180, 860 + 180), fill=(255, 255, 255, 240), outline=(255, 60, 90, 255), width=14)\n            put(img, text_img(n, 250, 900, (255, 60, 90), 0), 540, 850, sc)\n    draw_tum(img, 200, 1260, 150, t, pose='stand', mood='think', hand_chin=True, look=(0.3, -0.5))\n    draw_cat(img, 900, 1300, 150, t, mood='worried', talk=talk, look=(-0.4, -0.3))\n    if t < tq:\n        sh = math.sin(t * 38) * 6 * clamp(1 - (t - t0) / 0.7)\n        put(img, text_img('ทายก่อน!', 150, 900, (255, 230, 60), 12, (60, 20, 90)), 540 + sh, 380, pop(t, t0 + 0.02), 1, -4)\n    else:\n        ptext(img, 'ทายก่อน!', 540, 300, 96, t, tq, fill=(255, 230, 60), sfill=(60, 20, 90))\n        if t >= ta:\n            ptext(img, 'คอมเมนต์ A B หรือ C', 540, 420, 70, t, ta, sfill=(60, 20, 90))\n\n\ndef donut(d, cx, cy, R, frac, a=255):\n    d.ellipse((cx - R, cy - R, cx + R, cy + R), fill=(225, 228, 240, a))\n    if frac > 0:\n        d.pieslice((cx - R, cy - R, cx + R, cy + R), -90, -90 + 360 * frac, fill=(60, 190, 140, a))\n    r = R * 0.62\n    d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(255, 255, 255, a))\n\n\ndef sc_reveal(img, d, t):\n    t0 = SEG['reveal']['s']\n    talk = talk_amount(t)\n    confetti(d, t, wt('reveal', 'ซี'), 540, 700)\n    tp = wt('reveal', 'สี่')\n    trow = wt('reveal', 'แปล')\n    if t < trow:\n        option(img, d, 640, 'C', '49%', (60, 190, 140), 1.0, 1.0, True)\n        f = 0.49 * eo((t - tp) / 0.9) if t >= tp else 0\n        donut(d, 540, 1000, 230, f)\n        put(img, text_img(f'{int(round(f * 100))}%', 110, 900, (40, 150, 110), 0), 540, 990, 1)\n        tk = wt('reveal', 'เกือบ')\n        if t >= tk:\n            stamp(img, 'เกือบครึ่ง!', 820, 1150, t, tk, col=(40, 150, 110), size=90)\n        draw_cat(img, 170, 1150, 140, t, mood='happy', talk=talk)\n    else:\n        # 10 Tums, about half with glasses\n        tg = wt('reveal', 'พึ่ง')\n        put(img, text_img('ตั้มวัยทำงาน 10 คน', 64, 900, (255, 255, 255), 8, (30, 30, 70)), 540, 640, pop(t, trow))\n        glassed = {0, 2, 4, 7, 9}\n        for i in range(10):\n            r_, c_ = divmod(i, 5)\n            x, y = 150 + c_ * 195, 820 + r_ * 240\n            s = pop(t, trow + 0.06 * i)\n            has = i in glassed and t >= tg - 0.6 + 0.08 * i\n            if s > 0:\n                put(img, tum_icon(170, glasses=has, happy=has), x, y, s)\n        if t >= tg:\n            put(img, text_img('ราว 5 ใน 10 อาจต้องพึ่งแว่น', 64, 900, (255, 225, 60), 8, (30, 30, 70)), 540, 1215, pop(t, tg))\n    put(img, text_img('ผลสำรวจสายตาระดับชาติ ปี 2549 • อายุ 21–40 ปี', 34, 700, (255, 255, 255), 5, (30, 30, 70)), 540, 1300, 1)\n    put(img, text_img('เฉลย C!', 140, 900, (255, 230, 60), 12, (20, 60, 90)), 540, 360, pop(t, t0 + 0.02), 1, -4)\n\n\ndef sc_myth(img, d, t):\n    t0 = SEG['myth']['s']\n    talk = talk_amount(t)\n    tm, tn = wt('myth', 'ใส่'), wt('myth', 'ไม่')\n    tre = wt('myth', 'ค่า')\n    tok = wt('myth', 'ไม่', 1)\n    tm2 = wt('myth', 'ส่วน')\n    tn2 = wt('myth', 'ก็')\n    if t < tm2:\n        rrect(d, (90, 560, 990, 760), 40, (255, 255, 255, 240))\n        put(img, text_img('ความเชื่อ:', 44, 800, (120, 100, 140), 0), 540, 600, 1)\n        if t >= tm:\n            put(img, text_img('ใส่แว่นแล้ว สายตาแย่ลง?', 70, 900, (50, 30, 80), 0), 540, 685, pop(t, tm))\n        stamp(img, 'ไม่จริง!', 800, 820, t, tn, size=110)\n        if t >= tre:\n            for i, (lab, tt) in enumerate((('เปลี่ยนตามอายุ', tre), ('ภาวะสายตาที่เป็นอยู่', wt('myth', 'หรือ')))):\n                if t >= tt:\n                    y = 960 + i * 120\n                    s = pop(t, tt)\n                    rrect(d, (180, y - 48, 900, y + 48), 30, (230, 245, 238, 255))\n                    put(img, text_img(lab, 58, 800, (30, 110, 80), 0), 560, y, s)\n                    check(d, 240, y, 46, True)\n            if t >= tok:\n                put(img, text_img('ไม่ใช่เพราะแว่น', 72, 900, (255, 255, 255), 8, (30, 110, 80)), 540, 1230, pop(t, tok))\n        draw_tum(img, 160, 1300, 140, t, pose='stand', mood='shock' if tn <= t < tre else 'normal', glint=clamp(1 - abs(t - tok - 0.3) / 0.5))\n    else:\n        rrect(d, (90, 560, 990, 860), 40, (255, 255, 255, 240))\n        put(img, text_img('ความเชื่อที่ 2:', 44, 800, (120, 100, 140), 0), 540, 600, 1)\n        put(img, text_img('ตัดแว่นให้อ่อนกว่าค่าจริง', 66, 900, (50, 30, 80), 0), 540, 690, pop(t, tm2))\n        put(img, text_img('ช่วยชะลอสายตาสั้น?', 66, 900, (50, 30, 80), 0), 540, 790, pop(t, tm2 + 0.4))\n        if t >= tn2:\n            check(d, 540, 1010, 150, False)\n            put(img, text_img('ไม่ได้ช่วย', 90, 900, (235, 60, 80), 8, (255, 255, 255)), 540, 1170, pop(t, tn2 + 0.2))\n        draw_tum(img, 170, 1300, 140, t, pose='stand', mood='think', hand_chin=True)\n    draw_cat(img, 910, 1310, 140, t, mood='happy' if t >= tn else 'worried', talk=talk)\n    ptext(img, 'ความเชื่อผิด!', 540, 330, 104, t, t0, fill=(255, 90, 110), sfill=(255, 255, 255))\n\n\ndef globe(img, d, cx, cy, R, t, half):\n    d.ellipse((cx - R, cy - R, cx + R, cy + R), fill=(70, 150, 230, 255), outline=(30, 40, 90, 255), width=10)\n    rnd = random.Random(12)\n    for i in range(9):\n        lon = (rnd.uniform(0, 2 * math.pi) + t * 0.6) % (2 * math.pi)\n        lat = rnd.uniform(-0.9, 0.9)\n        if math.cos(lon) < 0: continue\n        x = cx + R * math.sin(lon) * math.cos(lat)\n        y = cy + R * math.sin(lat)\n        rr = R * rnd.uniform(0.12, 0.25) * math.cos(lon) ** 0.5\n        d.ellipse((x - rr, y - rr * 0.7, x + rr, y + rr * 0.7), fill=(110, 200, 120, 255))\n    if half > 0:\n        d.pieslice((cx - R, cy - R, cx + R, cy + R), 90, 90 + 180 * half, fill=(40, 30, 70, 150))\n\n\ndef sc_world(img, d, t):\n    t0 = SEG['world']['s']\n    talk = talk_amount(t)\n    stars(d, t, 40)\n    ty = wt('world', 'ปี')\n    th = wt('world', 'คน')\n    tph = wt('world', 'เพราะ')\n    tsun = wt('world', 'และ')\n    half = clamp((t - th) / 0.8) if t >= th else 0\n    globe(img, d, 540, 900, 300, t, half)\n    if t >= th:\n        put(img, text_img('สายตาสั้น ~50%', 64, 900, (255, 255, 255), 8, (40, 30, 70)), 540, 1250, pop(t, th))\n    if t >= tph:\n        s = pop(t, tph)\n        # phone icon = near work\n        x, y = 200, 700\n        d.rounded_rectangle((x - 55 * s, y - 95 * s, x + 55 * s, y + 95 * s), int(18 * s), fill=(40, 40, 50, 255), outline=(255, 255, 255, 255), width=6)\n        d.rectangle((x - 42 * s, y - 75 * s, x + 42 * s, y + 70 * s), fill=(120, 190, 255, 255))\n        put(img, text_img('ใช้สายตาใกล้มากขึ้น', 40, 800, (255, 255, 255), 6, (40, 30, 70)), x + 60, y + 140, s)\n    if t >= tsun:\n        s = pop(t, tsun)\n        x, y = 920, 700\n        for k2 in range(8):\n            a = k2 * math.pi / 4 + t\n            d.line((x + 60 * s * math.cos(a), y + 60 * s * math.sin(a), x + 90 * s * math.cos(a), y + 90 * s * math.sin(a)), fill=(255, 200, 60, 255), width=10)\n        d.ellipse((x - 48 * s, y - 48 * s, x + 48 * s, y + 48 * s), fill=(255, 210, 60, 255))\n        put(img, text_img('เจอแดดน้อยลง', 40, 800, (255, 255, 255), 6, (40, 30, 70)), x - 40, y + 140, s)\n    draw_cat(img, 860, 1290, 150, t, mood='shock' if t >= th else 'normal', talk=talk)\n    put(img, text_img('Holden et al., Ophthalmology 2016', 32, 600, (220, 220, 240), 0), 540, 505, 1)\n    ptext(img, 'นักวิจัยคาดว่า...', 540, 300, 90, t, t0)\n    if t >= ty:\n        ptext(img, 'ปี ค.ศ. 2050 ครึ่งโลกสายตาสั้น', 540, 420, 70, t, ty, fill=(255, 225, 60))\n\n\ndef sc_close(img, d, t):\n    t0 = SEG['close']['s']\n    talk = talk_amount(t)\n    wall_scene(img, d, t)\n    tw = wt('close', 'ใคร')\n    tc = wt('close', 'คอมเมนต์')\n    draw_tum(img, 470, 845, 300, t, pose='sit', mood='happy', wave=1.0 if t >= t0 + 0.3 else 0.0)\n    draw_cat(img, 800, 1070, 180, t, mood='happy', talk=talk, look=(-0.5, 0))\n    d.rectangle((0, 0, W, 480), fill=(20, 12, 20, 130))\n    ptext(img, 'สถิติคนต่อไป', 540, 300, 96, t, t0)\n    ptext(img, 'ชื่ออะไรดี?', 540, 420, 86, t, tw, fill=(255, 225, 60))\n    names = ['บอล?', 'นิว?', 'แบงค์?', 'ต้น?', 'มายด์?', 'พลอย?']\n    if tw <= t < tc:\n        for i, nm in enumerate(names):\n            ang = t * 0.8 + i * math.pi / 3\n            x = 540 + math.cos(ang) * 400\n            y = 590 + math.sin(ang) * 55\n            put(img, text_img(nm, 50, 800, (50, 30, 80), 6, (255, 255, 255)), x, y, pop(t, tw + 0.1 * i))\n    if t >= tc:\n        s = pop(t, tc)\n        bob = math.sin(t * 6) * 8\n        comment_icon(d, 880, 620 + bob, 1.0 * s)\n        put(img, text_img('พิมพ์ชื่อเพื่อน', 64, 900, (255, 255, 255), 8, (120, 40, 70)), 400, 600, s)\n        put(img, text_img('ใต้คอมเมนต์ได้เลย!', 56, 900, (255, 225, 60), 8, (120, 40, 70)), 400, 680, s)\n\n\nSCENES = {\n    'hook': (sc_hook, ((40, 20, 30), (40, 20, 30))),\n    'pop': (sc_pop, ((60, 90, 200), (150, 120, 230))),\n    'nodata': (sc_nodata, ((90, 60, 160), (200, 110, 170))),\n    'estimate': (sc_estimate, ((30, 120, 150), (90, 190, 190))),\n    'guess': (sc_guess, ((110, 50, 200), (230, 90, 170))),\n    'reveal': (sc_reveal, ((30, 110, 160), (90, 200, 200))),\n    'myth': (sc_myth, ((60, 30, 90), (180, 70, 110))),\n    'world': (sc_world, ((10, 15, 50), (40, 50, 120))),\n    'close': (sc_close, ((40, 20, 30), (40, 20, 30))),\n}\n\n\n",
+ "storyboard": [
+  {
+   "seg": "hook",
+   "visual": "Tum (code-drawn from reference photo) sits on a bench by a red-brick wall with teal window, ivy and lantern; jelly cat beside him",
+   "animation": "glasses glint on “แว่น”, shocked face, title pops",
+   "onscreen": "คนชื่อตั้มในไทย มีกี่คน? / กี่ % ใส่แว่น?",
+   "sfx": "glint",
+   "transition": "iris"
+  },
+  {
+   "seg": "pop",
+   "visual": "crowd fills the frame while a counter rolls to 64,953,661",
+   "animation": "counter roll + crowd grow",
+   "onscreen": "ราว 65 ล้านคน + source line",
+   "sfx": "counter",
+   "transition": "iris"
+  },
+  {
+   "seg": "nodata",
+   "visual": "registry form with ✓ for name/surname/birthday and ✗ for nickname; then the popular top-10 list scanned by a magnifier",
+   "animation": "stamps “ไม่มีช่องนี้!” and “ไม่มี ตั้ม!”",
+   "onscreen": "ไม่มีช่องนี้! / ไม่มี “ตั้ม”!",
+   "sfx": "buzzer, listflip, stamp",
+   "transition": "iris"
+  },
+  {
+   "seg": "estimate",
+   "visual": "1,000 dots with one Tum highlighted, then 65,000,000 ÷ 1,000 and a shower of Tum icons",
+   "animation": "“สมมติ!” stamp makes the assumption explicit",
+   "onscreen": "สมมติ! / ราว 65,000 ตั้ม",
+   "sfx": "stamp",
+   "transition": "iris"
+  },
+  {
+   "seg": "guess",
+   "visual": "quiz rays, survey card, options A 10% / B 25% / C 49%, 3-2-1 countdown",
+   "animation": "options pop on each letter, countdown ring",
+   "onscreen": "ทายก่อน! คอมเมนต์ A B หรือ C",
+   "sfx": "drumroll",
+   "transition": "iris"
+  },
+  {
+   "seg": "reveal",
+   "visual": "C highlighted, donut fills to 49%, then 10 Tums of which ~5 put on glasses",
+   "animation": "confetti, donut fill",
+   "onscreen": "เฉลย C! 49% เกือบครึ่ง!",
+   "sfx": "correct",
+   "transition": "iris"
+  },
+  {
+   "seg": "myth",
+   "visual": "myth card “ใส่แว่นแล้วสายตาแย่ลง?” stamped ไม่จริง!, two reasons with ticks; second myth with a big ✗",
+   "animation": "stamp, checklist reveal",
+   "onscreen": "ความเชื่อผิด! / ไม่ใช่เพราะแว่น / ไม่ได้ช่วย",
+   "sfx": "scratch, glint, buzzer",
+   "transition": "iris"
+  },
+  {
+   "seg": "world",
+   "visual": "spinning globe half-shaded, phone (near work) and sun (less outdoor time)",
+   "animation": "globe shade sweep",
+   "onscreen": "ปี ค.ศ. 2050 ครึ่งโลกสายตาสั้น",
+   "sfx": "globe",
+   "transition": "iris"
+  },
+  {
+   "seg": "close",
+   "visual": "back to the brick wall; Tum waves, friend-name bubbles orbit, comment icon",
+   "animation": "wave, orbiting names",
+   "onscreen": "พิมพ์ชื่อเพื่อนใต้คอมเมนต์ได้เลย!",
+   "sfx": "comment",
+   "transition": "iris"
+  }
+ ],
+ "sources": [
+  {
+   "url": "https://www.dailynews.co.th/news/5362885/",
+   "publisher": "เดลินิวส์ (อ้างประกาศสำนักทะเบียนกลาง ในราชกิจจานุเบกษา 24 ม.ค. 2568)",
+   "title": "จำนวนราษฎรทั่วราชอาณาจักร ณ 31 ธ.ค. 2567",
+   "published": "2025-01",
+   "collected": "2024-12-31",
+   "methodology": "Civil registration count (ทะเบียนราษฎร)",
+   "confidence": "high",
+   "limitations": "Counts 64,953,661 Thai nationals by registration; registration ≠ residence; nicknames are not recorded.",
+   "claim": "คนไทยราว 65 ล้านคน"
+  },
+  {
+   "url": "https://www.sanook.com/campus/1426683/",
+   "publisher": "Sanook Campus",
+   "title": "10 อันดับชื่อเล่นที่โหลที่สุดในไทย",
+   "published": "2024-09-18",
+   "methodology": "Not disclosed by the publisher",
+   "confidence": "low",
+   "limitations": "Popular-media list with no stated method; used only to say the widely shared list does not include “ตั้ม”.",
+   "claim": "ลิสต์ชื่อเล่นโหลที่แชร์กันไม่มีชื่อตั้มในท็อป 10"
+  },
+  {
+   "url": "https://ph04.tci-thaijo.org/index.php/JCST/article/view/580",
+   "publisher": "Journal of Current Science and Technology",
+   "title": "Refractive errors: the major visual impairment in Thailand",
+   "published": "2012",
+   "collected": "2006 (4th national survey)",
+   "methodology": "National eye survey, 21,711 people, 42 districts in 21 provinces + Bangkok",
+   "confidence": "medium",
+   "limitations": "49% is the reported refractive-error prevalence for ages 21–40 in 2006 data; it measures refractive error, not spectacle wearing.",
+   "claim": "คนไทยอายุ 21–40 ปี มีปัญหาค่าสายตา 49%"
+  },
+  {
+   "url": "https://www.eyenews.uk.com/reviews/my-top-five/post/my-top-five-debunking-common-myths-in-ophthalmology-and-vision-care",
+   "publisher": "Eye News",
+   "title": "My top five: debunking common myths in ophthalmology and vision care",
+   "confidence": "medium",
+   "methodology": "Clinical review citing trials (Walline et al.; Ong et al.)",
+   "limitations": "Review article; cites children’s myopia trials.",
+   "claim": "ใส่แว่นไม่ได้ทำให้สายตาแย่ลง; ตัดแว่นอ่อนไม่ชะลอสายตาสั้น"
+  },
+  {
+   "url": "https://www.sciencedaily.com/releases/2016/02/160217113308.htm",
+   "publisher": "ScienceDaily (Holden et al., Ophthalmology 2016)",
+   "title": "Half the world to be short-sighted by 2050",
+   "published": "2016-02-17",
+   "methodology": "Meta-analysis of 145 studies, projection to 2050",
+   "confidence": "medium",
+   "limitations": "Projection, depends on current trends continuing.",
+   "claim": "ปี 2050 คนครึ่งโลกจะสายตาสั้น"
+  }
+ ],
+ "claims": [
+  {
+   "text": "คนไทยราว 65 ล้านคน ตามทะเบียนราษฎร์ สิ้นปี 2567",
+   "source_ids": [
+    0
+   ],
+   "kind": "fact"
+  },
+  {
+   "text": "ชื่อเล่นไม่อยู่ในทะเบียนราษฎร์ จึงไม่มีตัวเลขทางการของคนชื่อตั้ม",
+   "source_ids": [
+    0
+   ],
+   "kind": "fact"
+  },
+  {
+   "text": "ลิสต์ชื่อเล่นโหลท็อป 10 ที่แชร์กันไม่มีชื่อตั้ม",
+   "source_ids": [
+    1
+   ],
+   "kind": "fact"
+  },
+  {
+   "text": "ราว 65,000 ตั้ม (สมมติ 1 ใน 1,000 คน) — แสดงเป็นการสมมติ ไม่ใช่สถิติ",
+   "source_ids": [],
+   "kind": "assumption"
+  },
+  {
+   "text": "คนไทยอายุ 21–40 ปี มีปัญหาค่าสายตา 49% (ผลสำรวจระดับชาติ ปี 2549)",
+   "source_ids": [
+    2
+   ],
+   "kind": "fact"
+  },
+  {
+   "text": "ใส่แว่นไม่ได้ทำให้สายตาแย่ลง และการตัดแว่นอ่อนกว่าค่าจริงไม่ชะลอสายตาสั้น",
+   "source_ids": [
+    3
+   ],
+   "kind": "fact"
+  },
+  {
+   "text": "นักวิจัยคาดว่าปี 2050 คนครึ่งโลกจะสายตาสั้น",
+   "source_ids": [
+    4
+   ],
+   "kind": "fact"
+  }
+ ],
+ "captions": {
+  "facebook": "คนชื่อ “ตั้ม” ในไทยมีกี่คน? แล้วกี่ % ต้องใส่แว่น? 🤓\nทายก่อนดูเฉลย: คนไทยวัย 21–40 ปี มีปัญหาค่าสายตากี่ %? A 10% B 25% C 49%\nชื่อเล่นไม่อยู่ในทะเบียนราษฎร์ ตัวเลขตั้มในคลิปจึงเป็นการสมมติ ไม่ใช่สถิติจริง\nอยากให้ค้นสถิติชื่อใครต่อ พิมพ์ชื่อเพื่อนใต้คอมเมนต์ได้เลย!\nอ้างอิง: สำนักทะเบียนกลาง (31 ธ.ค. 2567), ผลสำรวจสายตาระดับชาติ 2549, Holden et al. 2016\n\n#จะเกิดอะไรขึ้นถ้า #ชื่อเล่น #ตั้ม #สายตาสั้น #ใส่แว่น #รู้หรือไม่ #สถิติ #แมววุ้น",
+  "instagram": "คนชื่อ “ตั้ม” ในไทยมีกี่คน? แล้วกี่ % ต้องใส่แว่น? 🤓\nทายก่อนดูเฉลย: คนไทยวัย 21–40 ปี มีปัญหาค่าสายตากี่ %? A 10% B 25% C 49%\nชื่อเล่นไม่อยู่ในทะเบียนราษฎร์ ตัวเลขตั้มในคลิปจึงเป็นการสมมติ ไม่ใช่สถิติจริง\nอยากให้ค้นสถิติชื่อใครต่อ พิมพ์ชื่อเพื่อนใต้คอมเมนต์ได้เลย!\nอ้างอิง: สำนักทะเบียนกลาง (31 ธ.ค. 2567), ผลสำรวจสายตาระดับชาติ 2549, Holden et al. 2016\n.\n.\n#จะเกิดอะไรขึ้นถ้า #ชื่อเล่น #ตั้ม #สายตาสั้น #ใส่แว่น #รู้หรือไม่ #สถิติ #แมววุ้น #reels",
+  "tiktok": "คนชื่อตั้มในไทยมีกี่คน กี่ % ใส่แว่น? ทายก่อน A B C 👇 แท็กชื่อเพื่อนคนต่อไป! #จะเกิดอะไรขึ้นถ้า #ชื่อเล่น #ตั้ม #สายตาสั้น #ใส่แว่น #รู้หรือไม่ #สถิติ #แมววุ้น #tiktokuni",
+  "youtube": "คนชื่อตั้มในไทยมีกี่คน? กี่ % ใส่แว่น? #shorts\nคนชื่อ “ตั้ม” ในไทยมีกี่คน? แล้วกี่ % ต้องใส่แว่น? 🤓\nทายก่อนดูเฉลย: คนไทยวัย 21–40 ปี มีปัญหาค่าสายตากี่ %? A 10% B 25% C 49%\nชื่อเล่นไม่อยู่ในทะเบียนราษฎร์ ตัวเลขตั้มในคลิปจึงเป็นการสมมติ ไม่ใช่สถิติจริง\nอยากให้ค้นสถิติชื่อใครต่อ พิมพ์ชื่อเพื่อนใต้คอมเมนต์ได้เลย!\nอ้างอิง: สำนักทะเบียนกลาง (31 ธ.ค. 2567), ผลสำรวจสายตาระดับชาติ 2549, Holden et al. 2016\n#จะเกิดอะไรขึ้นถ้า #ชื่อเล่น #ตั้ม #สายตาสั้น #ใส่แว่น #รู้หรือไม่ #สถิติ #แมววุ้น"
+ },
+ "thumbnail": {
+  "seg": "hook",
+  "offset": 1.2,
+  "title": "ทายก่อน! A · B · C ?"
+ },
+ "budget": {
+  "max_credits": 4500
+ }
+}
