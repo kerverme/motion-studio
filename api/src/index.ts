@@ -12,6 +12,7 @@ import { registerUi } from './ui.js';
 import * as buffer from './buffer.js';
 import { alertSweep, retention } from './ops.js';
 import { syncPosts } from './metrics.js';
+import { registerStudio, configured as studioConfigured } from './studio.js';
 import * as notion from './notion.js';
 
 const env = process.env;
@@ -175,7 +176,7 @@ app.get('/health', async (c) => {
   try {
     const r = await pool.query('SELECT count(*)::int AS jobs FROM jobs');
     const g = await pool.query("SELECT 1 FROM integrations WHERE provider='google_drive'");
-    return c.json({ ok: true, db: 'up', jobs: r.rows[0].jobs, drive_connected: g.rowCount === 1, auth_configured: !!API_TOKEN, ui_enabled: !!env.MOTION_UI_PASSWORD, buffer_configured: buffer.configured(), notion_configured: notion.configured(), alerts_configured: !!env.MOTION_ALERT_WEBHOOK_URL, retention_days: Number(env.MOTION_RETENTION_DAYS || 0) || null });
+    return c.json({ ok: true, db: 'up', jobs: r.rows[0].jobs, drive_connected: g.rowCount === 1, auth_configured: !!API_TOKEN, ui_enabled: !!env.MOTION_UI_PASSWORD, buffer_configured: buffer.configured(), notion_configured: notion.configured(), studio: studioConfigured(), alerts_configured: !!env.MOTION_ALERT_WEBHOOK_URL, retention_days: Number(env.MOTION_RETENTION_DAYS || 0) || null });
   } catch (e) {
     return c.json({ ok: false, error: String(e) }, 503);
   }
@@ -184,6 +185,13 @@ app.get('/health', async (c) => {
 app.post('/jobs', requireAuth, async (c) => {
   const body = await c.req.json().catch(() => null);
   if (!body || typeof body !== 'object') return c.json({ error: 'invalid json' }, 400);
+  const r = await createJob(body, c.req.header('idempotency-key') || null);
+  return c.json(r.body, r.status as 200);
+});
+
+// Validates and queues a job. Used by POST /jobs and by the content studio (topic -> generated package).
+async function createJob(body: any, idem: string | null): Promise<{ status: number; body: any }> {
+  const c = { json: (b: any, status = 200) => ({ status, body: b }) };
   const kind = (body.kind as string) || 'episode';
   if (!['episode', 'test_tts', 'test_render', 'test_drive'].includes(kind)) return c.json({ error: 'unknown kind' }, 400);
   let pkg: unknown = body.package ?? {};
@@ -210,7 +218,6 @@ app.post('/jobs', requireAuth, async (c) => {
     title = p.title_th;
   }
   const sha = sha256(stableStringify({ kind, pkg }));
-  const idem = c.req.header('idempotency-key') || null;
   if (idem) {
     const ex = await pool.query('SELECT id, status FROM jobs WHERE idempotency_key=$1', [idem]);
     if (ex.rowCount) return c.json({ id: ex.rows[0].id, status: ex.rows[0].status, duplicate: true }, 200);
@@ -259,7 +266,7 @@ app.post('/jobs', requireAuth, async (c) => {
   } finally {
     cl.release();
   }
-});
+}
 
 app.get('/jobs', requireAuth, async (c) => {
   const r = await pool.query(`SELECT j.id, j.kind, j.status, j.stage, j.progress, j.error, j.created_at, j.updated_at, e.number, e.title_th, e.drive_folder_url
@@ -392,7 +399,11 @@ app.get('/internal/google/access-token', async (c) => {
   return c.json({ access_token: tok.access_token, expires_in: tok.expires_in });
 });
 
-registerUi(app, pool, { API_TOKEN, retryJob });
+const ui = registerUi(app, pool, { API_TOKEN, retryJob });
+registerStudio(app, pool, { guard: ui.requireUi, createJob, estimateCredits: (p: unknown) => estimateCredits(Package.parse(p)), researchFreshness: (p: unknown) => researchFreshness(Package.parse(p)), validate: (p: unknown) => {
+  const r = Package.safeParse(p);
+  return r.success ? [] : r.error.issues.slice(0, 10).map((i) => `${i.path.join('.')}: ${i.message}`);
+} });
 
 // ---------------------------------------------------------------- operations
 app.post('/ops/retention', requireAuth, async (c) => {

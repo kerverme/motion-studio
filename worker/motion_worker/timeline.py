@@ -59,6 +59,25 @@ def build_timeline(segments, text, starts, ends):
 
 def word_time(timeline, seg, word, n=0):
     S = {s['id']: s for s in timeline}[seg]
+    words = [w for p in S['phrases'] for w in p['words']]
+    exact = [w for w in words if w['w'] == word]
+    if len(exact) > n:
+        return exact[n]['s'], True
+    # a phrase spanning several tokens: match on the text with spaces/punctuation removed
+    strip = lambda x: re.sub(r'[\s\.\?\!…,"“”\'\(\)\[\]:;\-–—]', '', x)
+    joined, owner = '', []
+    for i, w in enumerate(words):
+        nw = strip(w['w']); joined += nw; owner += [i] * len(nw)
+    q = strip(word)
+    if q:
+        idx, start = -1, 0
+        for _ in range(n + 1):
+            idx = joined.find(q, start)
+            if idx < 0:
+                break
+            start = idx + 1
+        if idx >= 0:
+            return words[owner[idx]]['s'], True
     for exact in (True, False):
         k = 0
         for p in S['phrases']:

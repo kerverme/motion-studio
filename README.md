@@ -88,3 +88,31 @@ Every fact behind a story is researched with **live Firecrawl searches**, prefer
 `POST /jobs` rejects a package (HTTP 422) unless every source has `retrieved_via: "firecrawl"`, a `collected` date within
 `MOTION_SOURCE_MAX_AGE_DAYS` (default 30) and a `published` date/year (Gregorian or Thai Buddhist era). A source published more than
 `MOTION_SOURCE_MAX_YEARS` (default 2) years ago needs `freshness_note` explaining why nothing newer exists (e.g. a survey run every 10 years).
+
+### Content studio (v4): topic in, finished clip out
+
+The **สร้าง** tab of `/app` is the production line: type a topic → motion-api researches it live with **Firecrawl**
+(newest year first, Thai + English queries, key pages read in full) → Claude writes the Thai narration, a scene spec
+and per-platform captions → every rule is checked → the draft waits for review (edit lines, title, captions, or ask
+for a rewrite with a note) → **ผลิตคลิปนี้** queues a normal episode job → the worker renders it → the clip lands in **พร้อมใช้**.
+Optional "produce immediately" skips the review step for that topic. Nothing is ever published automatically.
+
+How it is built:
+
+* `api/src/studio.ts` – agent loop over the Anthropic Messages API with three tools: `web_search` / `read_page` (Firecrawl
+  `/v2/search`, `/v2/scrape`) and `submit_episode`. Prompt caching keeps each turn cheap. Limits: `MOTION_LLM_MAX_TURNS` (18),
+  `MOTION_FIRECRAWL_MAX_CALLS` (16), `MOTION_LLM_MAX_INPUT_TOKENS` (1.2M incl. cache reads), `MOTION_MAX_DRAFTS_PER_DAY` (20),
+  `MOTION_DRAFT_MAX_CREDITS` (4500 ElevenLabs credits). One draft is generated at a time.
+* Checks on every submission (the model must fix them, up to 4 rounds): sources must be URLs fetched with Firecrawl in that
+  session; each has a publication year, and anything older than `MOTION_SOURCE_MAX_YEARS` needs a freshness note; every
+  fact cites a source; narration has no digits/symbols (Thai TTS); 350–1200 characters; every scene timing word exists in its
+  segment; icons/templates/SFX exist; X caption ≤ 270; then the normal package validation, freshness rule and credit budget.
+* Visuals: `worker/engine/templates.py` (13 code-drawn templates: hook, number, compare, bars, list, quiz, reveal, dots,
+  timeline, truth, scenario, icons, outro) + `worker/engine/icons.py` (51 SVG icons written in code). The generated
+  `scene_code` is only data (`SPEC`) passed to `build_scenes`, so a draft cannot run arbitrary code in the worker.
+  Animation timing keys off narration words with a tolerant matcher, so owner edits never break a render.
+* SFX use a fixed library of prompts, so they are served from the audio cache after first use.
+* Preview without ElevenLabs: `cd worker && python -m motion_worker.preview out.png` (sample) or `... draft.json out.png`.
+
+New motion-api variables: `ANTHROPIC_API_KEY`, `FIRECRAWL_API_KEY` (required for the studio), optional `MOTION_LLM_MODEL`
+(default `claude-opus-5-5`), `MOTION_SERIES_TAG`, and the limits above.
