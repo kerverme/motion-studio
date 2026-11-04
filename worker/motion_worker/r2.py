@@ -41,6 +41,9 @@ def upload_verified(client, path, key, content_type):
     raw = r.raw.read(decode_content=False) if r.status_code == 200 else b''
     r.close()
     is_text = content_type.startswith('text/') or content_type in ('application/json', 'application/x-subrip')
-    public_ok = r.status_code == 200 and (hashlib.md5(raw).hexdigest() == md5 or is_text)
+    served_etag = (r.headers.get('etag') or '').replace('W/', '').strip('"')
+    body_md5 = hashlib.md5(raw).hexdigest()
+    # accepted when the served bytes match, or the CDN-reported ETag of the served object matches (CDNs can re-encode compressible bodies)
+    public_ok = r.status_code == 200 and (body_md5 == md5 or served_etag == md5 or is_text)
     return {'key': key, 'url': url, 'bytes': len(data), 'md5': md5, 'verified': bool(ok and public_ok),
-            'storage_verified': bool(ok), 'public_http': r.status_code}
+            'storage_verified': bool(ok), 'public_http': r.status_code, 'served_etag': served_etag, 'body_md5': body_md5, 'public_len': len(raw), 'public_encoding': r.headers.get('content-encoding')}
