@@ -81,3 +81,10 @@ Backups: `GET /app/api/export` (JSON of episodes, scripts, sources, handoffs, pu
 * `NOTION_TOKEN` (internal integration connected to the "Motion Studio Episodes" database; optional `NOTION_DATABASE_ID`) makes motion-api keep one row per
   episode up to date: Used checkbox, Status, Platforms, Published At, Post Links, Views/Reactions/Comments/Shares, Metrics Updated, Video URL.
   Rows are found by Episode number, created when missing, synced right after publishing or moving a clip, every 5 minutes for new rows and every 6 hours in full.
+
+### Research rule (from 2026-11-04)
+
+Every fact behind a story is researched with **live Firecrawl searches**, preferring the most recent year available.
+`POST /jobs` rejects a package (HTTP 422) unless every source has `retrieved_via: "firecrawl"`, a `collected` date within
+`MOTION_SOURCE_MAX_AGE_DAYS` (default 30) and a `published` date/year (Gregorian or Thai Buddhist era). A source published more than
+`MOTION_SOURCE_MAX_YEARS` (default 2) years ago needs `freshness_note` explaining why nothing newer exists (e.g. a survey run every 10 years).

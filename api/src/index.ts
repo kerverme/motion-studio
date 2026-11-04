@@ -119,6 +119,8 @@ const Package = z.object({
     url: z.string().url(), publisher: z.string().optional(), title: z.string().optional(), published: z.string().optional(),
     collected: z.string().optional(), methodology: z.string().optional(), confidence: z.enum(['high', 'medium', 'low']).optional(),
     limitations: z.string().optional(), claim: z.string().optional(),
+    retrieved_via: z.string().optional(),   // 'firecrawl' (search or scrape)
+    freshness_note: z.string().optional(),  // why an older figure is still the latest available (e.g. a 10-yearly census)
   })).default([]),
   claims: z.array(z.object({ text: z.string(), source_ids: z.array(z.number().int().min(0)).default([]), kind: z.enum(['fact', 'assumption', 'opinion']).default('fact') })).default([]),
   captions: z.record(z.string()).default({}),
@@ -126,6 +128,31 @@ const Package = z.object({
   budget: z.object({ max_credits: z.number().int().positive() }).optional(),
 });
 type Pkg = z.infer<typeof Package>;
+
+// Research rule (owner's standing instruction, 2026-11-04): facts behind a story come from live Firecrawl searches,
+// using the most recent data available. Each source must say it was retrieved with Firecrawl, when it was collected
+// (within MOTION_SOURCE_MAX_AGE_DAYS) and when it was published; anything published more than MOTION_SOURCE_MAX_YEARS
+// years ago needs a freshness_note explaining why nothing newer exists. MOTION_REQUIRE_FIRECRAWL=false turns this off.
+function researchFreshness(p: Pkg): string[] {
+  if ((env.MOTION_REQUIRE_FIRECRAWL || 'true') === 'false') return [];
+  const maxAge = Number(env.MOTION_SOURCE_MAX_AGE_DAYS || 30), maxYears = Number(env.MOTION_SOURCE_MAX_YEARS || 2);
+  const thisYear = new Date().getFullYear();
+  const out: string[] = [];
+  if (!p.sources.length) out.push('no sources listed');
+  p.sources.forEach((s, i) => {
+    const tag = `source ${i} (${s.url})`;
+    if ((s.retrieved_via || '').toLowerCase() !== 'firecrawl') out.push(`${tag}: retrieved_via must be "firecrawl"`);
+    const col = s.collected ? new Date(s.collected) : null;
+    if (!col || isNaN(col.getTime())) out.push(`${tag}: collected date missing or not a date`);
+    else if (Date.now() - col.getTime() > maxAge * 86400_000) out.push(`${tag}: collected more than ${maxAge} days ago, search again`);
+    // accepts Gregorian (2026) and Thai Buddhist-era (2569 = 2026) years
+    const m = (s.published || '').match(/(?:19|20|25)\d{2}/)?.[0];
+    const yr = m ? (Number(m) >= 2400 ? Number(m) - 543 : Number(m)) : 0;
+    if (!yr) out.push(`${tag}: published date or year missing`);
+    else if (thisYear - yr > maxYears && !(s.freshness_note && s.freshness_note.trim().length >= 10)) out.push(`${tag}: published ${yr}; use newer data or add freshness_note explaining why this is the latest available`);
+  });
+  return out;
+}
 
 // Credit estimate. Rates observed on this workspace: TTS ~1 credit/char, music ~15 credits/s, SFX ~3.4 credits/s.
 function estimateCredits(p: Pkg) {
@@ -171,6 +198,8 @@ app.post('/jobs', requireAuth, async (c) => {
     const segIds = new Set(p.script.map((s) => s.id));
     if (segIds.size !== p.script.length) return c.json({ error: 'duplicate script segment ids' }, 422);
     for (const fx of p.sfx) for (const cue of fx.cues) if (!segIds.has(cue.seg)) return c.json({ error: `sfx ${fx.id} cue refers to unknown segment ${cue.seg}` }, 422);
+    const fresh = researchFreshness(p);
+    if (fresh.length) return c.json({ error: 'research sources do not meet the freshness rule', problems: fresh }, 422);
     const unsupported = p.claims.filter((cl) => cl.kind === 'fact' && (cl.source_ids.length === 0 || cl.source_ids.some((i) => i >= p.sources.length)));
     if (unsupported.length) return c.json({ error: 'factual claims without a valid source', claims: unsupported.map((u) => u.text) }, 422);
     estimated = estimateCredits(p);
