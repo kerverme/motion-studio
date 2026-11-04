@@ -26,6 +26,13 @@ export const TEMPLATES = ['hook', 'number', 'compare', 'bars', 'list', 'quiz', '
 export const ICONS = ['baby', 'battery', 'bolt', 'book', 'brain', 'bulb', 'calendar', 'car', 'cart', 'cat', 'chart', 'chart_down', 'check', 'clock', 'coffee', 'coin',
   'cross', 'down', 'exclaim', 'eye', 'fire', 'fitness', 'food', 'game', 'globe', 'health', 'heart', 'hot', 'house', 'money', 'moon', 'music', 'people', 'person',
   'phone', 'pin', 'plane', 'question', 'rain', 'school', 'sleep', 'star', 'sun', 'thai_flag', 'trash', 'tree', 'trophy', 'up', 'warning', 'water', 'wifi'];
+const HAIRSTYLES = ['helmet', 'short', 'spiky', 'side_part', 'curly', 'bald', 'long', 'bob', 'ponytail', 'bun'];
+const TOPS = ['blazer', 'tshirt', 'hoodie', 'shirt', 'dress'];
+const BOTTOMS = ['pants', 'shorts', 'skirt'];
+const ACCESSORIES = ['cap', 'headband', 'bow', 'earrings', 'mustache', 'beard', 'lashes', 'bag'];
+const HAIR_COLORS = ['black', 'brown', 'blonde', 'grey', 'white', 'red', 'pink', 'blue', 'purple'];
+const SKINS = ['light', 'medium', 'tan', 'brown', 'dark'];
+const CLOTH = ['navy', 'red', 'green', 'purple', 'orange', 'grey', 'white', 'black', 'yellow', 'pink', 'sky', 'brown', 'beige', 'denim', 'mint'];
 const BGS = ['night', 'grape', 'ocean', 'mint', 'sunset', 'sky', 'peach', 'forest', 'ink', 'gold', 'berry', 'teal'];
 // Fixed prompts: identical requests are served from the worker's audio cache, so recurring effects cost nothing after the first episode.
 const SFX: Record<string, { prompt: string; duration: number }> = {
@@ -187,6 +194,16 @@ Templates:
 - outro: {"lines": [{"text","at"}] (1–2), "icon_at"} — comment call to action
 Icons: ${ICONS.join(', ')}.
 
+## Characters (cast)
+Define the people in this episode in "cast" (0–4 characters), each a distinct look, and refer to them in scenes with "person": {"who": name, ...}.
+Give each character a look that fits who they are; make characters in the same episode clearly different (hairstyle, hair colour, top colour).
+Fields: {"name" (as spoken/shown, e.g. "แบงค์"), "hairstyle": ${HAIRSTYLES.join('|')}, "hair_color": ${HAIR_COLORS.join('|')},
+"skin": ${SKINS.join('|')}, "top": ${TOPS.join('|')}, "top_color", "bottom": ${BOTTOMS.join('|')}, "bottom_color" (colours: ${CLOTH.join('|')}),
+"glasses": round|square|none, "accessories": [${ACCESSORIES.join(', ')}], "accessory_color"}.
+"ตั้ม" is the recurring guy from earlier episodes (hairstyle helmet, top blazer navy, glasses round, accessories [bag]); reuse exactly that look if he appears.
+A "scenario" scene can show two characters: "person" (left) and "person2" (right), with "bubble" and "bubble2" speech lines; name tags show automatically.
+Elsewhere "person" appears small in a corner. The cat is always the narrator.
+
 ## Sound
 sfx: up to 10 cues {"sfx": one of ${Object.keys(SFX).join('|')}, "seg", "at" (word from that segment), "gain" 0.3–0.7}. Use counter with number
 reveals, drumroll/tick before reveals, ding or tada on the answer, buzzer/stamp on myths, pop/whoosh sparingly. music: ${Object.keys(MUSIC).join('|')}.
@@ -233,6 +250,9 @@ const TOOLS = [
           required: ['facebook', 'instagram', 'tiktok', 'youtube', 'twitter'] },
         sfx: { type: 'array', items: { type: 'object', properties: { sfx: { type: 'string' }, seg: { type: 'string' }, at: { type: 'string' }, gain: { type: 'number' } }, required: ['sfx', 'seg', 'at'] } },
         music: { type: 'string', enum: Object.keys(MUSIC) },
+        cast: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, hairstyle: { type: 'string' }, hair_color: { type: 'string' },
+          skin: { type: 'string' }, top: { type: 'string' }, top_color: { type: 'string' }, bottom: { type: 'string' }, bottom_color: { type: 'string' },
+          glasses: { type: 'string' }, accessories: { type: 'array', items: { type: 'string' } }, accessory_color: { type: 'string' } }, required: ['name'] } },
         thumbnail: { type: 'object', properties: { seg: { type: 'string' }, title: { type: 'string' } } },
       },
     },
@@ -253,6 +273,11 @@ const Draft = z.object({
   captions: z.object({ facebook: z.string(), instagram: z.string(), tiktok: z.string(), youtube: z.string(), twitter: z.string() }),
   sfx: z.array(z.object({ sfx: z.string(), seg: z.string(), at: z.string(), gain: z.number().min(0).max(1.2).default(0.5) })).max(14).default([]),
   music: z.string().default('playful'),
+  cast: z.array(z.object({
+    name: z.string().min(1).max(20), hairstyle: z.string().optional(), hair_color: z.string().optional(), skin: z.string().optional(),
+    top: z.string().optional(), top_color: z.string().optional(), bottom: z.string().optional(), bottom_color: z.string().optional(),
+    glasses: z.string().optional(), accessories: z.array(z.string()).optional(), accessory_color: z.string().optional(),
+  })).max(4).default([]),
   thumbnail: z.object({ seg: z.string().optional(), title: z.string().optional() }).optional(),
 });
 export type DraftT = z.infer<typeof Draft>;
@@ -309,6 +334,24 @@ export function checkDraft(d: DraftT, seen: Map<string, Seen> | null) {
     if (!text.has(fx.seg)) problems.push(`sfx cue refers to unknown segment ${fx.seg}`);
     else if (!normText(text.get(fx.seg)!).includes(normText(fx.at))) problems.push(`sfx ${fx.sfx}: word "${fx.at}" is not in segment ${fx.seg}`);
   }
+  const names = new Set(d.cast.map((c) => c.name));
+  if (names.size !== d.cast.length) problems.push('cast names must be unique');
+  for (const c of d.cast) {
+    const bad: string[] = [];
+    if (c.hairstyle && !HAIRSTYLES.includes(c.hairstyle)) bad.push(`hairstyle "${c.hairstyle}"`);
+    if (c.hair_color && !HAIR_COLORS.includes(c.hair_color)) bad.push(`hair_color "${c.hair_color}"`);
+    if (c.skin && !SKINS.includes(c.skin)) bad.push(`skin "${c.skin}"`);
+    if (c.top && !TOPS.includes(c.top)) bad.push(`top "${c.top}"`);
+    if (c.bottom && !BOTTOMS.includes(c.bottom)) bad.push(`bottom "${c.bottom}"`);
+    for (const k of ['top_color', 'bottom_color', 'accessory_color'] as const) if (c[k] && !CLOTH.includes(c[k]!)) bad.push(`${k} "${c[k]}"`);
+    if (c.glasses && !['round', 'square', 'none'].includes(c.glasses)) bad.push(`glasses "${c.glasses}"`);
+    for (const a of c.accessories || []) if (!ACCESSORIES.includes(a)) bad.push(`accessory "${a}"`);
+    if (bad.length) problems.push(`cast ${c.name}: unknown ${bad.join(', ')}`);
+  }
+  for (const sc of d.scenes as any[]) for (const k of ['person', 'person2']) {
+    const who = sc[k]?.who;
+    if (who && !names.has(who)) problems.push(`scene ${sc.seg}: ${k}.who "${who}" is not in cast`);
+  }
   if (!MUSIC[d.music]) warnings.push(`unknown music mood "${d.music}" (playful is used)`);
   const thisYear = nowBkk().getUTCFullYear();
   d.sources.forEach((s, i) => {
@@ -328,7 +371,7 @@ export function checkDraft(d: DraftT, seen: Map<string, Seen> | null) {
 
 // ---------------------------------------------------------------- draft -> episode package
 export function sceneCode(d: DraftT) {
-  const spec = { scenes: d.scenes, text: Object.fromEntries(d.script.map((s) => [s.id, s.text])) };
+  const spec = { scenes: d.scenes, text: Object.fromEntries(d.script.map((s) => [s.id, s.text])), cast: d.cast };
   return `"""Generated episode: scenes are data rendered by engine.templates (code-drawn templates, no images)."""\nimport json\nfrom engine.templates import build_scenes\n\nSPEC = json.loads(${JSON.stringify(JSON.stringify(spec))})\nSCENES = build_scenes(SPEC)\n`;
 }
 

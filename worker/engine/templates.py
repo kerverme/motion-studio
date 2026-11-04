@@ -10,7 +10,7 @@ from PIL import Image, ImageDraw
 from . import core
 from .core import (W, H, SEG, clamp, lerp, eo, eio, eob, pop, fade, text_img, put, F, rrect, draw_cat,
                    talk_amount, arrow, confetti, rays, heart, comment_icon, stars)
-from .characters import draw_person
+from .characters import draw_person, look_style
 from .props import check, stamp
 from .icons import icon, NAMES as ICON_NAMES
 
@@ -200,6 +200,35 @@ def headline(img, t, seg, sp):
             put(img, im, 540, y + im.height / 2 - 30, s)
 
 
+CAST = {}  # name -> look, from the episode spec ("cast")
+LOOK_KEYS = ('hairstyle', 'hair_color', 'skin', 'top', 'top_color', 'inner_color', 'bottom', 'bottom_color', 'glasses', 'accessories', 'accessory_color')
+
+
+def person_style(p):
+    """Style for a person spec: a cast member ("who"), an inline look, a legacy outfit colour, else the episode's first
+    cast member, else Tum."""
+    who = p.get('who')
+    if who and who in CAST:
+        return look_style(CAST[who])
+    if any(k in p for k in LOOK_KEYS):
+        return look_style({k: p[k] for k in LOOK_KEYS if k in p})
+    if p.get('outfit') and p['outfit'] != 'navy':
+        return OUTFITS.get(p['outfit'], {})
+    if CAST:
+        return look_style(next(iter(CAST.values())))
+    return {}
+
+
+def name_tag(img, p, x, y, size=40):
+    who = p.get('who') or (next(iter(CAST)) if CAST and not any(k in p for k in LOOK_KEYS) else None)
+    if not who or p.get('show_name') is False:
+        return
+    tim = text_img(str(who)[:14], size, 800, INK, 0)
+    tag = card(tim.width + 36, tim.height + 14, (255, 255, 255, 240), INK + (255,), 999, 5)
+    tag.alpha_composite(tim, (18, 7))
+    put(img, tag, x, y)
+
+
 def mascots(img, t, seg, sp, default_cat=True):
     talk = talk_amount(t)
     p = sp.get('person')
@@ -210,9 +239,10 @@ def mascots(img, t, seg, sp, default_cat=True):
         if isinstance(r, dict) and t >= at(seg, r.get('at'), 0.5):
             mood = r.get('mood', mood)
         x = {'left': 190, 'right': 890, 'center': 540}.get(p.get('x', 'left'), 190)
-        style = OUTFITS.get(p.get('outfit', 'navy'), {})
-        draw_person(img, x, 1255, 150, t, style=style, pose='stand', mood=mood if mood in ('normal', 'happy', 'shock', 'think') else 'normal',
-                    glasses=p.get('glasses', True), hand_chin=mood == 'think', look=(0.3 if x < 540 else -0.3, -0.2))
+        draw_person(img, x, 1255, 150, t, style=person_style(p), pose='stand', mood=mood if mood in ('normal', 'happy', 'shock', 'think') else 'normal',
+                    glasses=p.get('glasses') is not False, hand_chin=mood == 'think', look=(0.3 if x < 540 else -0.3, -0.2))
+        if p.get('show_name') is True:
+            name_tag(img, p, x, 1150, 34)
     c = sp.get('cat', {} if default_cat else None)
     if c is not None and c is not False:
         c = c if isinstance(c, dict) else {}
@@ -570,29 +600,57 @@ def T_scenario(img, d, t, seg, sp):
     r = p.get('react')
     if isinstance(r, dict) and t >= at(seg, r.get('at'), 0.5):
         mood = r.get('mood', mood)
-    draw_person(img, 380, 860, 250, t, style=OUTFITS.get(p.get('outfit', 'navy'), {}), pose='stand',
-                mood=mood if mood in ('normal', 'happy', 'shock', 'think') else 'normal', glasses=p.get('glasses', True),
+    p2 = sp.get('person2')
+    px, ps = (300, 230) if isinstance(p2, dict) else (380, 250)
+    draw_person(img, px, 860, ps, t, style=person_style(p), pose='stand',
+                mood=mood if mood in ('normal', 'happy', 'shock', 'think') else 'normal', glasses=p.get('glasses') is not False,
                 hand_chin=mood == 'think', look=(0.4, -0.2))
+    name_tag(img, p, px, 860 + ps * 1.85)
+    if isinstance(p2, dict):  # a second character, e.g. "แบงค์ vs ตั้ม"
+        m2 = p2.get('mood', 'normal')
+        r2 = p2.get('react')
+        if isinstance(r2, dict) and t >= at(seg, r2.get('at'), 0.5):
+            m2 = r2.get('mood', m2)
+        draw_person(img, 780, 860, 230, t, style=person_style(p2), pose='stand',
+                    mood=m2 if m2 in ('normal', 'happy', 'shock', 'think') else 'normal', glasses=p2.get('glasses') is not False,
+                    hand_chin=m2 == 'think', look=(-0.4, -0.2))
+        name_tag(img, p2, 780, 860 + 230 * 1.85)
     c = sp.get('cat', {}) or {}
     c = c if isinstance(c, dict) else {}
     cm = c.get('mood', 'normal')
     cr = c.get('react')
     if isinstance(cr, dict) and t >= at(seg, cr.get('at'), 0.5):
         cm = cr.get('mood', cm)
-    draw_cat(img, 830, 1170, 170, t, mood=cm if cm in ('normal', 'happy', 'shock', 'worried') else 'normal', talk=talk, look=(-0.5, -0.2))
+    if isinstance(p2, dict):
+        draw_cat(img, 950, 1330, 110, t, mood=cm if cm in ('normal', 'happy', 'shock', 'worried') else 'normal', talk=talk, look=(-0.5, -0.2))
+    else:
+        draw_cat(img, 830, 1170, 170, t, mood=cm if cm in ('normal', 'happy', 'shock', 'worried') else 'normal', talk=talk, look=(-0.5, -0.2))
     b = sp.get('bubble')
     if b:
         b = b if isinstance(b, dict) else {'text': b}
         tb = at(seg, b.get('at'), 0.1)
         if t >= tb:
-            im = tblock(b.get('text'), 58, 620, 800, INK, 0, INK, 3)
+            two = isinstance(p2, dict)
+            im = tblock(b.get('text'), 54 if two else 58, 380 if two else 620, 800, INK, 0, INK, 3)
             lay = card(im.width + 70, im.height + 60, (255, 255, 255, 250), INK + (255,), 40, 7)
             lay.alpha_composite(im, (35, 30))
-            put(img, lay, 680, 560 + lay.height / 2 - 40, pop(t, tb))
+            put(img, lay, 300 if two else 680, 560 + lay.height / 2 - 40, pop(t, tb))
+    b2 = sp.get('bubble2')
+    if b2 and isinstance(p2, dict):
+        b2 = b2 if isinstance(b2, dict) else {'text': b2}
+        tb2 = at(seg, b2.get('at'), 0.5)
+        if t >= tb2:
+            im = tblock(b2.get('text'), 54, 380, 800, INK, 0, INK, 3)
+            lay = card(im.width + 70, im.height + 60, (255, 250, 230, 250), INK + (255,), 40, 7)
+            lay.alpha_composite(im, (35, 30))
+            put(img, lay, 790, 560 + lay.height / 2 - 40, pop(t, tb2))
     ic = sp.get('icon')
     if ic:
         ti = at(seg, sp.get('icon_at'), 0.3)
-        put(img, icon(ic, 200), 820, 900 + bob(t, 2, 12), pop(t, ti), 1, math.sin(t * 2.2) * 8)
+        if isinstance(p2, dict):
+            put(img, icon(ic, 150), 540, 1180 + bob(t, 2, 10), pop(t, ti), 1, math.sin(t * 2.2) * 8)
+        else:
+            put(img, icon(ic, 200), 820, 900 + bob(t, 2, 12), pop(t, ti), 1, math.sin(t * 2.2) * 8)
 
 
 def T_icons(img, d, t, seg, sp):
@@ -688,6 +746,11 @@ def _scene(seg, sp, seed):
 def build_scenes(spec):
     """spec: {"scenes": [{"seg", "type", "bg", ...}], "text": {seg: narration}} -> SCENES for engine.render."""
     _TEXT.update(spec.get('text') or {})
+    cast = spec.get('cast') or {}
+    if isinstance(cast, list):
+        cast = {str(c.get('name')): c for c in cast if isinstance(c, dict) and c.get('name')}
+    CAST.clear()
+    CAST.update({k: v for k, v in cast.items() if isinstance(v, dict)})
     out = {}
     for i, sp in enumerate(spec.get('scenes') or []):
         seg = sp.get('seg')
