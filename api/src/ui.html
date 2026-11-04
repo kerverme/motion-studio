@@ -313,7 +313,7 @@ async function load(){
   try{
     if (S.view==='create'){
       const [st, dr, e] = await Promise.all([api('/app/api/studio/status'), api('/app/api/studio/drafts'), api('/app/api/episodes?tab=ready')]);
-      S.counts={...e.counts, create: dr.drafts.filter(d=>d.status==='ready').length||null}; frame(); studio(st, dr.drafts);
+      S.formats=st.formats; S.counts={...e.counts, create: dr.drafts.filter(d=>d.status==='ready').length||null}; frame(); studio(st, dr.drafts);
     } else if (S.view==='ready' || S.view==='used'){
       const r = await api('/app/api/episodes?tab='+S.view); S.counts=r.counts; S.eps=r.episodes; frame(); clips();
     } else if (S.view==='working'){
@@ -469,7 +469,7 @@ async function publish(ep, body, close){
 
 /* ---------- studio: topic -> research -> draft -> produce ---------- */
 const DSTATE = {queued:['wait','รอคิว'], researching:['wait','กำลังค้นข้อมูล'], writing:['wait','กำลังเขียน'], ready:['go','รอตรวจ'], failed:['bad','ไม่สำเร็จ'], submitted:['ok','ส่งผลิตแล้ว'], discarded:['','ทิ้งแล้ว']};
-const TPL = {hook:'เปิดเรื่อง', number:'ตัวเลขนับขึ้น', compare:'เทียบแท่ง', bars:'จัดอันดับ', list:'รายการ', quiz:'ทายก่อน', reveal:'เฉลย', dots:'x ใน N', timeline:'ไทม์ไลน์', truth:'จริงหรือไม่', scenario:'ฉากสมมติ', icons:'ไอคอน', outro:'ปิดท้าย'};
+const TPL = {chat:'แชทมือถือ', versus:'ปะทะ VS', scale:'เทียบขนาด', hook:'เปิดเรื่อง', number:'ตัวเลขนับขึ้น', compare:'เทียบแท่ง', bars:'จัดอันดับ', list:'รายการ', quiz:'ทายก่อน', reveal:'เฉลย', dots:'x ใน N', timeline:'ไทม์ไลน์', truth:'จริงหรือไม่', scenario:'ฉากสมมติ', icons:'ไอคอน', outro:'ปิดท้าย'};
 const IDEAS = ['ถ้าคนไทยทุกคนเลิกดื่มชานมไข่มุก 1 ปี จะเกิดอะไรขึ้น?','ถ้ากรุงเทพฯ ไม่มีรถติดเลย 1 วัน เราจะได้เวลาคืนกี่ชั่วโมง?','ถ้าคนไทยนอนครบ 8 ชั่วโมงทุกคน จะเกิดอะไรขึ้น?'];
 const hhmm = d => new Date(d).toLocaleTimeString('th-TH',{hour:'2-digit',minute:'2-digit'});
 function draftState(d){
@@ -556,11 +556,16 @@ function openDraft(id){
       const chars = ()=>Object.values(segAreas).reduce((n,a)=>n+a.value.length,0);
       const charInfo = h('span',{class:'sub'});
       const updChars = ()=>{ const n=chars(); charInfo.textContent = n+' ตัวอักษร ≈ '+Math.round(n/12)+' วินาที'; };
+      let tAcc=0; const T0={}; (dr.script||[]).forEach(s=>{ T0[s.id]=tAcc; tAcc+=s.text.replace(/\s+/g,'').length/12+0.35; });
+      const BEAT={hook:'ฮุค',rehook:'ดึงกลับ',info:'ข้อมูล',payoff:'เฉลย',cta:'ชวนคอมเมนต์'};
+      const mmss=x=>Math.floor(x/60)+':'+String(Math.round(x%60)).padStart(2,'0');
       const segs = h('div',{}, (dr.script||[]).map(s=>{
         const ta = h('textarea',{rows:2,disabled:!editable,'aria-label':'บทพูด '+s.id}); ta.value=s.text; segAreas[s.id]=ta;
         ta.addEventListener('input',()=>{ dirty=true; updChars(); save.disabled=false; });
         const sc = scenes[s.id];
-        return h('div',{class:'segc'}, h('div',{class:'top'}, h('span',{},s.id), h('span',{}, sc?(TPL[sc.type]||sc.type):'')), ta, sc?h('div',{class:'scr'},'บนจอ: '+onscreen(sc)):'');
+        const hot = s.beat==='hook'||s.beat==='rehook'||s.beat==='cta';
+        return h('div',{class:'segc'}, h('div',{class:'top'}, h('span',{}, '~'+mmss(T0[s.id])+' · ', h('b',{style:hot?'color:var(--accent)':''}, BEAT[s.beat]||s.beat||''), ' · '+s.id),
+          h('span',{}, sc?(TPL[sc.type]||sc.type)+(sc.set?' · ฉาก '+sc.set:''):'')), ta, sc?h('div',{class:'scr'},'บนจอ: '+onscreen(sc)):'');
       }));
       updChars();
       title.addEventListener('input',()=>{ dirty=true; save.disabled=false; });
@@ -589,6 +594,7 @@ function openDraft(id){
       put(body, head,
         title, dr.angle?h('p',{class:'sub',style:'margin:0'}, dr.angle):'',
         h('dl',{class:'facts'}, h('dt',{},'ความยาว'), h('dd',{},charInfo), h('dt',{},'ค่าเสียงโดยประมาณ'), h('dd',{}, fmtN(d.estimated_credits)+' เครดิต ElevenLabs'),
+          h('dt',{},'รูปแบบเรื่อง'), h('dd',{}, (S.formats&&S.formats[dr.format])||dr.format||'—'),
           h('dt',{},'เพลง'), h('dd',{}, dr.music||'playful'),
           dr.cast&&dr.cast.length ? [h('dt',{},'ตัวละคร'), h('dd',{}, dr.cast.map(c=>c.name).join(', '))] : '', h('dt',{},'ข้อมูลอ้างอิง'), h('dd',{}, (dr.sources||[]).length+' แหล่ง (Firecrawl)')),
         d.status==='submitted' ? h('div',{class:'note'}, 'ส่งผลิตแล้ว: ', draftState(d)[1], d.job_error?h('div',{class:'err'},d.job_error):'', ' ', h('button',{class:'btn quiet',on:{click:()=>{ close(); go(d.job_status==='READY_TO_POST'?'ready':'working'); }}}, d.job_status==='READY_TO_POST'?'ดูคลิป':'ดูความคืบหน้า')) : '',

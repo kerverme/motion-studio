@@ -13,6 +13,7 @@ from .core import (W, H, SEG, clamp, lerp, eo, eio, eob, pop, fade, text_img, pu
 from .characters import draw_person, look_style
 from .props import check, stamp
 from .icons import icon, NAMES as ICON_NAMES
+from .sets import draw_set, SETS
 
 INK = (30, 22, 50)
 YEL = (255, 225, 60)
@@ -99,6 +100,9 @@ def wrap(txt, size, maxw, weight=800):
         toks = list(txt)
     lines, cur = [], ''
     for tk in toks:
+        if tk.strip() and all(c in '?!.,…)"”%' for c in tk.strip()):  # never start a line with punctuation
+            cur += tk
+            continue
         if cur.strip() and f.getlength(cur + tk) > maxw:
             lines.append(cur.strip())
             cur = tk.lstrip()
@@ -111,10 +115,37 @@ def wrap(txt, size, maxw, weight=800):
 
 
 _blk = {}
+_cmap = None
+_SUBS = {'≈': '~', '×': 'x', '→': '>', '←': '<', '“': '"', '”': '"', '‘': "'", '’': "'", '…': '...', '–': '-', '—': '-'}
+
+
+def clean(txt):
+    """Drop characters the Kanit font cannot draw (emoji etc.) so they never render as empty boxes."""
+    global _cmap
+    if _cmap is None:
+        try:
+            import os
+            from fontTools.ttLib import TTFont
+            _cmap = set(TTFont(os.path.join(core.FD, 'Kanit-800.ttf'))['cmap'].getBestCmap())
+        except Exception:
+            _cmap = set()
+    out = []
+    for ch in str(txt):
+        if _cmap and ord(ch) not in _cmap and not ch.isspace():
+            sub = _SUBS.get(ch)
+            if sub and all(ord(c) in _cmap for c in sub):
+                out.append(sub)
+            continue
+        out.append(ch)
+    return re.sub(r'\s{2,}', ' ', ''.join(out)).strip()
+
+
+def text_img(txt, *a, **k):  # every template string goes through clean()
+    return core.text_img(clean(txt) or ' ', *a, **k)
 
 def tblock(txt, size, maxw, weight=800, fill=WHITE, stroke=0, sfill=INK, max_lines=3, lh=1.12, align='center'):
     """Wrapped, centred text as one RGBA image; shrinks the font until it fits in max_lines."""
-    txt = str(txt or '').strip()
+    txt = clean(txt or '')
     key = (txt, size, maxw, weight, fill, stroke, sfill, max_lines, align)
     if key in _blk:
         return _blk[key]
@@ -705,9 +736,121 @@ def T_outro(img, d, t, seg, sp):
     comment_icon(d, 540, max(y + 200, 1000) + bob(t, 0, 12), 2.3 * pop(t, tc) if t >= tc else 0.01)
 
 
+def T_chat(img, d, t, seg, sp):
+    """Phone chat: messages pop in as they are spoken, with a typing indicator before each."""
+    msgs = (sp.get('messages') or [])[:6]
+    x0, y0, pw, ph = 150, 500, 780, 800
+    d.rounded_rectangle((x0 - 14, y0 - 14, x0 + pw + 14, y0 + ph + 14), 70, fill=(28, 28, 36, 255))
+    d.rounded_rectangle((x0, y0, x0 + pw, y0 + ph), 58, fill=(236, 240, 246, 255))
+    d.rounded_rectangle((x0, y0, x0 + pw, y0 + 110), 58, fill=(255, 255, 255, 255))
+    d.rectangle((x0, y0 + 60, x0 + pw, y0 + 110), fill=(255, 255, 255, 255))
+    title = sp.get('title') or 'แชท'
+    put(img, tblock(title, 44, pw - 140, 800, INK, 0, INK, 1), x0 + pw / 2, y0 + 70)
+    d.rounded_rectangle((x0 + pw / 2 - 70, y0 + 12, x0 + pw / 2 + 70, y0 + 30), 9, fill=(28, 28, 36, 255))
+    y = y0 + 140
+    for i, m in enumerate(msgs):
+        m = m if isinstance(m, dict) else {'text': m}
+        tm = at(seg, m.get('at'), 0.1 + 0.8 * i / max(1, len(msgs)))
+        right = m.get('from', 'left' if i % 2 == 0 else 'right') == 'right'
+        if t < tm - 0.6:
+            break
+        if t < tm:  # typing dots
+            bx = x0 + pw - 150 if right else x0 + 30
+            d.rounded_rectangle((bx, y, bx + 120, y + 64), 32, fill=(210, 216, 226, 255))
+            for k in range(3):
+                a = 0.5 + 0.5 * math.sin(t * 9 - k)
+                d.ellipse((bx + 26 + k * 28 - 8, y + 32 - 8 - 6 * a, bx + 26 + k * 28 + 8, y + 32 + 8 - 6 * a), fill=(120, 126, 140, 255))
+            break
+        im = tblock(m.get('text', ''), 50, 520, 600, WHITE if right else INK, 0, INK, 3, align='left')
+        bw_, bh_ = im.width + 48, im.height + 34
+        lay = card(bw_, bh_, ((60, 150, 255, 255) if right else (255, 255, 255, 255)), None, 30, 0)
+        lay.alpha_composite(im, (24, 17))
+        bx = x0 + pw - 24 - bw_ if right else x0 + 24
+        if m.get('name') and not right:
+            nm = text_img(clean(m['name'])[:16], 32, 600, (110, 116, 130), 0)
+            put(img, nm, bx + 10 + nm.width / 2, y + 4)
+            y += 38
+        put(img, lay, bx + bw_ / 2, y + bh_ / 2, pop(t, tm, 0.25))
+        y += bh_ + 18
+        if y > y0 + ph - 80:
+            break
+
+
+def T_versus(img, d, t, seg, sp):
+    """Two cards face off with a VS badge; optional winner highlight."""
+    items = (sp.get('items') or [])[:2]
+    if len(items) < 2:
+        return
+    tw_ = at(seg, sp.get('winner_at'), 0.85) if sp.get('winner') is not None else None
+    for i, it in enumerate(items):
+        it = it if isinstance(it, dict) else {'label': it}
+        ti = at(seg, it.get('at'), 0.05 + 0.35 * i)
+        if t < ti:
+            continue
+        u = eo((t - ti) / 0.35)
+        cx = 290 if i == 0 else 790
+        cx += (1 - u) * (-500 if i == 0 else 500)
+        win = tw_ is not None and t >= tw_ and int(sp['winner']) == i
+        lose = tw_ is not None and t >= tw_ and int(sp['winner']) != i
+        c = col(it.get('color'), ACCENTS[0] if i == 0 else ACCENTS[1])
+        cw, ch = 440, 640
+        lay = card(cw, ch, c + (255,), (255, 225, 60, 255) if win else INK + (255,), 40, 14 if win else 8)
+        lb = tblock(it.get('label', ''), 60, cw - 50, 900, WHITE, 8, INK, 2)
+        lay.alpha_composite(lb, ((cw - lb.width) // 2, 30))
+        yy = 40 + lb.height + 20
+        if it.get('who') or it.get('look'):
+            pl = Image.new('RGBA', (cw, 360), (0, 0, 0, 0))
+            draw_person(pl, cw / 2, 100, 150, t, style=person_style(it if it.get('who') else (it.get('look') or {})), mood='happy' if win else ('shock' if lose else 'normal'))
+            lay.alpha_composite(pl.crop((0, 0, cw, 345)), (0, yy))
+            yy += 345
+        elif it.get('icon'):
+            ic = icon(it['icon'], 200)
+            lay.alpha_composite(ic, ((cw - 200) // 2, yy))
+            yy += 220
+        for ln in (it.get('lines') or [])[:3]:
+            tx = tblock(ln, 40, cw - 50, 800, WHITE, 6, INK, 2)
+            if yy + tx.height < ch - 10:
+                lay.alpha_composite(tx, ((cw - tx.width) // 2, yy))
+            yy += tx.height + 10
+        put(img, lay, cx, 900, 1.04 if win else 1.0, 0.55 if lose else 1.0)
+    tv = at(seg, items[1].get('at') if isinstance(items[1], dict) else None, 0.4)
+    if t >= tv:
+        s = pop(t, tv)
+        d.ellipse((540 - 90 * s, 900 - 90 * s, 540 + 90 * s, 900 + 90 * s), fill=(255, 225, 60, 255), outline=INK + (255,), width=10)
+        put(img, text_img('VS', 84, 900, INK, 0), 540, 896, s, 1, math.sin(t * 6) * 4)
+    if tw_ is not None and t >= tw_:
+        confetti(d, t, tw_, 290 if int(sp['winner']) == 0 else 790, 700, 50)
+
+
+def T_scale(img, d, t, seg, sp):
+    """"That is as much as N <things>": an icon repeated N times, counted in as it is spoken."""
+    n = int(clamp(float(sp.get('count', 10) or 10), 1, 60))
+    ic = sp.get('icon', 'star')
+    ta = at(seg, sp.get('at'), 0.15)
+    g = clamp((t - ta) / max(0.6, min(2.2, n * 0.06)))
+    cols = 1 if n == 1 else min(8, math.ceil(math.sqrt(n * 1.4)))
+    rows = math.ceil(n / cols)
+    sz = int(min(300, 820 / cols, 560 / rows))
+    x0 = 540 - sz * (cols - 1) / 2
+    y0 = 560 + sz / 2 + (560 - sz * rows) / 2
+    im = icon(ic, max(24, int(sz * 0.88)))
+    shown = int(n * g + (1 if t >= ta else 0))
+    for i in range(min(n, shown)):
+        r_, c_ = divmod(i, cols)
+        put(img, im, x0 + c_ * sz, y0 + r_ * sz, 1.0 if i < shown - 1 else pop(t, ta + (i / max(1, n)) * max(0.6, min(2.2, n * 0.06)), 0.2))
+    if t >= ta:
+        put(img, text_img(f"× {n}", 70, 900, YEL, 9, INK), 900, y0 - sz / 2 - 30, pop(t, ta))
+    lab = sp.get('label')
+    if lab:
+        lab = lab if isinstance(lab, dict) else {'text': lab}
+        tl = at(seg, lab.get('at'), 0.6)
+        if t >= tl:
+            put(img, tblock(lab.get('text'), 70, 940, 900, WHITE, 9, INK, 2), 540, min(1220, y0 + sz * rows - sz / 2 + 70), pop(t, tl))
+
+
 TEMPLATES = {
     'hook': T_hook, 'number': T_number, 'compare': T_compare, 'bars': T_bars, 'list': T_list, 'quiz': T_quiz, 'reveal': T_reveal,
-    'dots': T_dots, 'timeline': T_timeline, 'truth': T_truth, 'scenario': T_scenario, 'icons': T_icons, 'outro': T_outro,
+    'dots': T_dots, 'timeline': T_timeline, 'truth': T_truth, 'scenario': T_scenario, 'icons': T_icons, 'outro': T_outro, 'chat': T_chat, 'versus': T_versus, 'scale': T_scale,
 }
 # templates that place their own big title / characters
 OWN_TITLE = {'hook', 'outro'}
@@ -725,7 +868,9 @@ def _scene(seg, sp, seed):
             d.draw = Image.core.draw(img.im, 1)
         except Exception:
             pass
-        decor(d, t, seed)
+        has_set = bool(sp.get('set')) and draw_set(sp.get('set'), img, d, t)
+        if not has_set:
+            decor(d, t, seed)
         try:
             fn(img, d, t, seg, sp)
             if kind not in OWN_CAST:

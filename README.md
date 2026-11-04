@@ -116,3 +116,15 @@ How it is built:
 
 New motion-api variables: `ANTHROPIC_API_KEY`, `FIRECRAWL_API_KEY` (required for the studio), optional `MOTION_LLM_MODEL`
 (default `claude-opus-5-5`), `MOTION_SERIES_TAG`, and the limits above.
+
+### Story variety and retention rules (v5)
+
+* Every draft picks a **story format** (domino, countdown, versus, mystery, skit, myth_buster, quiz_show, day_in_life,
+  by_the_numbers, then_now). The generator sees the last six drafts and must not reuse the last two formats or start with the
+  same scene sequence; no layout twice in a row, at most two of a kind.
+* **Retention rules, enforced:** segment 1 is the hook and lasts ≤ 5 s (≤ 60 Thai characters at ~12 chars/s); a `hook`/`rehook`
+  beat at least every 15 s, and each one must put something new on screen within its first words; the last segment is a `cta`
+  that asks viewers something to answer in the comments. The owner's own edits only produce warnings for these rules.
+* **Cast:** each episode defines its characters (10 hairstyles, hair/skin/clothes colours, glasses, accessories); Tum keeps his look.
+* **Sets:** city, room, classroom, park, beach, office, night, brick, kitchen. New layouts: chat (phone), versus (VS cards), scale.
+* Text on screen drops characters the Kanit font cannot draw (emoji), so nothing renders as an empty box.

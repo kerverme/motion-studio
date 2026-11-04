@@ -22,7 +22,25 @@ const SERIES_TAG = env.MOTION_SERIES_TAG || 'จะเกิดอะไรข�
 export const configured = () => ({ anthropic: !!env.ANTHROPIC_API_KEY, firecrawl: !!env.FIRECRAWL_API_KEY });
 
 // ---------------------------------------------------------------- engine vocabulary (must match worker/engine)
-export const TEMPLATES = ['hook', 'number', 'compare', 'bars', 'list', 'quiz', 'reveal', 'dots', 'timeline', 'truth', 'scenario', 'icons', 'outro'] as const;
+export const TEMPLATES = ['hook', 'number', 'compare', 'bars', 'list', 'quiz', 'reveal', 'dots', 'timeline', 'truth', 'scenario', 'icons', 'outro', 'chat', 'versus', 'scale'] as const;
+const SETS = ['city', 'room', 'classroom', 'park', 'beach', 'office', 'night', 'brick', 'kitchen'];
+// Story formats: the owner does not want the same pattern every time. Labels are shown in the UI.
+export const FORMATS: Record<string, { th: string; how: string }> = {
+  domino: { th: 'โดมิโน (ถ้า… แล้ว… แล้ว…)', how: 'one change sets off a chain of consequences, each link backed by a fact, escalating to a surprising end' },
+  countdown: { th: 'นับถอยหลังจัดอันดับ', how: 'a Top 3–5 counted down from the least to the most surprising, number one held back as the payoff' },
+  versus: { th: 'ปะทะ A vs B', how: 'two sides (people, places, eras, choices) compared round by round, with a winner and a twist' },
+  mystery: { th: 'ไขปริศนา', how: 'open with a puzzling fact, follow clues like a detective, reveal the explanation near the end' },
+  skit: { th: 'ละครสั้น', how: 'a short story with the cast in real places (sets), the facts woven into what happens to them' },
+  myth_buster: { th: 'จับผิดความเชื่อ', how: 'two or three popular beliefs about the topic, each judged true or false with evidence' },
+  quiz_show: { th: 'เกมโชว์', how: 'two or three quick quiz rounds with escalating difficulty; facts are the answers' },
+  day_in_life: { th: 'หนึ่งวัน/หนึ่งชีวิต', how: 'follow a character hour by hour (or year by year) to show how the topic touches real life' },
+  by_the_numbers: { th: 'ตัวเลขที่เปลี่ยนมุมมอง', how: 'one big number made tangible with everyday comparisons (scale scenes), each comparison more surprising' },
+  then_now: { th: 'อดีต vs ปัจจุบัน vs อนาคต', how: 'how the topic looked years ago, how it is now, and what the data says comes next' },
+};
+const BEATS = ['hook', 'rehook', 'info', 'payoff', 'cta'] as const;
+const CPS = 12;          // estimated Thai narration speed (characters per second), same as the credit estimate
+const HOOK_SECS = 5;     // owner's rule: the hook lands within the first 5 seconds
+const REHOOK_SECS = 15;  // and a new hook at least every 15 seconds
 export const ICONS = ['baby', 'battery', 'bolt', 'book', 'brain', 'bulb', 'calendar', 'car', 'cart', 'cat', 'chart', 'chart_down', 'check', 'clock', 'coffee', 'coin',
   'cross', 'down', 'exclaim', 'eye', 'fire', 'fitness', 'food', 'game', 'globe', 'health', 'heart', 'hot', 'house', 'money', 'moon', 'music', 'people', 'person',
   'phone', 'pin', 'plane', 'question', 'rain', 'school', 'sleep', 'star', 'sun', 'thai_flag', 'trash', 'tree', 'trophy', 'up', 'warning', 'water', 'wifi'];
@@ -158,10 +176,22 @@ The visuals come only from the template engine described below (no images, no AI
   (claims kind "assumption", and say "สมมติ" in the narration and on screen). A "what if" scenario must be built on real conditions you found.
 - Sources may only be URLs you actually retrieved. Prefer 3–7 strong sources.
 
-## Story
-Structure (7–10 segments): a 1-sentence hook question (≤ 4 s) → the real situation with the key number(s) → the "what would happen if…" reasoning,
-step by step, grounded in the facts → a quiz ("ทายก่อน!" with A/B/C options and "สาม สอง หนึ่ง") → the reveal → a twist, myth-buster or surprising
-consequence → a closing line that asks viewers to comment (a question they can answer). Quiz is strongly preferred but optional when it does not fit.
+## Story — vary it every episode (the owner finds a fixed pattern boring)
+Pick the format that suits the topic best AND differs from the recent episodes listed in the user message. Formats ("format" field):
+${Object.entries(FORMATS).map(([k, f]) => `- ${k}: ${f.how}`).join('\n')}
+Also vary the scene types and their order, the sets (locations) and the cast from recent episodes; do not reuse a recent episode's scene sequence.
+A quiz is one tool among many, not a fixed step.
+
+## Retention rules (the owner's standing rules — checked automatically; narration runs at about ${CPS} Thai characters per second)
+- HOOK in the first ${HOOK_SECS} seconds: segment 1 has beat "hook", ≤ ${HOOK_SECS * CPS} characters, and grabs attention immediately
+  (a provocative question, a shocking number, a bold claim, or a mini-cliffhanger). No greetings, no "วันนี้เราจะมาดู…".
+- RE-HOOK at least every ${REHOOK_SECS} seconds: mark segments that pull attention back with beat "rehook" (a new question, twist, "แต่เดี๋ยวก่อน…",
+  surprising number, quiz, cliffhanger, reveal tease, pattern interrupt). The gap between the start of one hook/rehook and the next must be
+  ≤ ${REHOOK_SECS} s, and from the last one to the closing segment too. Give rehook segments a visual change as well (new set, new scene type, a stamp…),
+  and make something appear on their FIRST words (e.g. a headline timed to the first word) so the screen changes exactly when the re-hook is spoken.
+- END with interaction: the last segment has beat "cta" and asks a specific question viewers want to answer in the comments
+  (a choice, a guess, their own experience, a name to research next), and its scene is an outro or puts that question on screen.
+- Other beats: "info" (facts), "payoff" (the answer/reveal).
 Tone: curious, playful, clear, never preachy; facts must stay accurate. Avoid medical/legal/financial advice beyond what sources say, politics
 taking sides, and content about private individuals.
 
@@ -169,13 +199,14 @@ taking sides, and content about private individuals.
 - Natural spoken Thai, short phrases separated by single spaces (each space-separated phrase becomes one subtitle chunk; ≤ 28 characters per phrase).
 - NO digits, %, or symbols: write numbers as Thai words (หกสิบห้าล้าน, ยี่สิบเอ็ดเปอร์เซ็นต์, ปีสองพันห้าร้อยหกสิบแปด or ปีสองห้าหกแปด).
 - Brand/English names in Thai script (ไลน์, ยูทูบ, ติ๊กต็อก). Total narration 450–1000 Thai characters.
-- segment ids: short lowercase ascii (hook, fact, whatif, quiz, reveal, twist, close…).
+- segment ids: short lowercase ascii. Every segment has "beat": hook | rehook | info | payoff | cta.
 
 ## Scenes (scenes[]) — one per segment, same seg id
 Each scene: {"seg", "type", "bg", ...template fields, optional common fields}. Timing fields ("at", "*_at", countdown entries) must be a word or
 short phrase copied EXACTLY from that segment's narration (it fires when that word is spoken). On-screen text may use digits and is short
 (≤ 22 characters per line). Vary bg between consecutive scenes. bg: ${BGS.join(', ')}.
-Common optional fields (any type): "headline": {"text","at"} (top title), "sub": {"text","at","color"}, "cat": {"mood": normal|happy|shock|worried,
+Common optional fields (any type): "set": ${SETS.join('|')} (draw the scene in that location instead of a plain background;
+best for scenario, hook, chat, versus, outro), "headline": {"text","at"} (top title), "sub": {"text","at","color"}, "cat": {"mood": normal|happy|shock|worried,
 "x": right|left|center, "react": {"mood","at"}}, "person": {"mood": normal|happy|shock|think, "x": left|right, "outfit": navy|red|green|purple|orange|grey,
 "react": {...}}, "stamp": {"text" (≤ 12 chars),"at","color": red|green|orange}, "note": {"text"} (small source line, e.g. "ที่มา: สสช. 2568"), "confetti": {"at"}.
 Templates:
@@ -192,6 +223,9 @@ Templates:
 - scenario: {"bubble": {"text","at"}, "icon", "icon_at", "person": {...}, "cat": {...}} — acted-out "what if" moment
 - icons: {"items": [{"icon","label","at"}] (2–6)}
 - outro: {"lines": [{"text","at"}] (1–2), "icon_at"} — comment call to action
+- chat: {"title", "messages": [{"from": left|right, "name", "text", "at"}] (2–6)} — a phone chat that types out as it is spoken
+- versus: {"items": [{"label", "who" (cast name) or "icon", "lines": [short stats], "at", "color"}] (exactly 2), "winner": index, "winner_at"}
+- scale: {"icon", "count": 1–60, "at", "label": {"text","at"}} — "that equals N of these" with the icon repeated
 Icons: ${ICONS.join(', ')}.
 
 ## Characters (cast)
@@ -237,8 +271,9 @@ const TOOLS = [
       required: ['title_th', 'angle', 'script', 'scenes', 'sources', 'claims', 'captions', 'music'],
       properties: {
         title_th: { type: 'string', description: 'clip title, ≤ 60 chars' },
+        format: { type: 'string', enum: Object.keys(FORMATS) },
         angle: { type: 'string', description: 'one sentence: the story angle and why it is interesting (Thai)' },
-        script: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, text: { type: 'string' } }, required: ['id', 'text'] } },
+        script: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, text: { type: 'string' }, beat: { type: 'string', enum: [...BEATS] } }, required: ['id', 'text', 'beat'] } },
         scenes: { type: 'array', items: { type: 'object' } },
         sources: { type: 'array', items: { type: 'object', properties: {
           url: { type: 'string' }, title: { type: 'string' }, publisher: { type: 'string' }, published: { type: 'string', description: 'YYYY-MM-DD, YYYY-MM or YYYY of the data/publication' },
@@ -263,7 +298,8 @@ const TOOLS = [
 const Draft = z.object({
   title_th: z.string().min(4).max(90),
   angle: z.string().default(''),
-  script: z.array(z.object({ id: z.string().regex(/^[a-z0-9_]{1,24}$/), text: z.string().min(3).max(500) })).min(4).max(14),
+  format: z.string().default(''),
+  script: z.array(z.object({ id: z.string().regex(/^[a-z0-9_]{1,24}$/), text: z.string().min(3).max(500), beat: z.enum(BEATS).default('info') })).min(4).max(14),
   scenes: z.array(z.object({ seg: z.string(), type: z.enum(TEMPLATES) }).passthrough()).min(1),
   sources: z.array(z.object({
     url: z.string().url(), title: z.string().optional(), publisher: z.string().default(''), published: z.string().default(''), claim: z.string().default(''),
@@ -305,9 +341,19 @@ function iconRefs(node: any, out: string[] = []) {
 
 // After the owner edits narration, a timing word that is gone only moves that animation to its approximate position.
 const SOFT = /timing word|sfx .*word/;
+// The owner's own edits are never blocked by storytelling rules; they are shown as warnings instead.
+const OWNER_SOFT = /timing word|sfx .*word|hook|re-hook|beat "cta"|both use|is used \d+ times|format|scene sequence/;
 
 // problems: must be fixed. warnings: shown to the owner, do not block.
-export function checkDraft(d: DraftT, seen: Map<string, Seen> | null) {
+export type Recent = { format: string; types: string[]; title: string };
+
+// Estimated start time of every segment (seconds), using the same speed as the credit estimate plus a short pause per segment.
+export function timing(script: { text: string }[]) {
+  let t = 0;
+  return script.map((s) => { const start = t; const dur = s.text.replace(/\s+/g, '').length / CPS; t += dur + 0.35; return { start, dur, end: start + dur }; });
+}
+
+export function checkDraft(d: DraftT, seen: Map<string, Seen> | null, recent: Recent[] = []) {
   const problems: string[] = [], warnings: string[] = [];
   const ids = d.script.map((s) => s.id);
   if (new Set(ids).size !== ids.length) problems.push('script ids must be unique');
@@ -352,6 +398,43 @@ export function checkDraft(d: DraftT, seen: Map<string, Seen> | null) {
     const who = sc[k]?.who;
     if (who && !names.has(who)) problems.push(`scene ${sc.seg}: ${k}.who "${who}" is not in cast`);
   }
+  // ---- retention rules
+  const tm = timing(d.script);
+  const first = d.script[0], last = d.script[d.script.length - 1];
+  if (first.beat !== 'hook') problems.push(`segment 1 (${first.id}) must have beat "hook"`);
+  if (tm[0].dur > HOOK_SECS + 0.2) problems.push(`the hook "${first.id}" takes about ${tm[0].dur.toFixed(1)} s; it must land within ${HOOK_SECS} s (≤ ${HOOK_SECS * CPS} characters)`);
+  if (last.beat !== 'cta') problems.push(`the last segment (${last.id}) must have beat "cta" and ask viewers something to answer in the comments`);
+  const hooks = d.script.map((s, i) => ({ s, i })).filter((x) => x.s.beat === 'hook' || x.s.beat === 'rehook').map((x) => x.i);
+  const marks = [...new Set([0, ...hooks.map((i) => tm[i].start), tm[tm.length - 1].start])].sort((x, y) => x - y);
+  for (let k = 1; k < marks.length; k++) {
+    const gap = marks[k] - marks[k - 1];
+    if (gap > REHOOK_SECS + 0.5) {
+      const from = d.script.find((_, i) => Math.abs(tm[i].start - marks[k - 1]) < 1e-6)?.id ?? 'the start';
+      problems.push(`no re-hook for ${gap.toFixed(1)} s after "${from}" (about ${marks[k - 1].toFixed(0)}–${marks[k].toFixed(0)} s); add a "rehook" segment so there is one at least every ${REHOOK_SECS} s`);
+    }
+  }
+  // a hook or re-hook must change the picture the moment it starts: its first visual has to fire early in the segment
+  for (const sg of d.script) {
+    if (sg.beat !== 'hook' && sg.beat !== 'rehook') continue;
+    const sc: any = d.scenes.find((x) => x.seg === sg.id);
+    if (!sc) continue;
+    const txt = normText(sg.text);
+    const refs = timingRefs(sc).map((a) => txt.indexOf(normText(a))).filter((i) => i >= 0);
+    const early = !refs.length || Math.min(...refs) <= 8 /* ≈ 0.7 s */ || ['hook', 'chat', 'scenario'].includes(sc.type) && !sc.headline;
+    if (!early) problems.push(`scene ${sg.id} is a ${sg.beat} but nothing appears until later in the segment; time a headline, stamp or the first element to its first words`);
+  }
+  // ---- variety
+  const types = d.script.map((s) => (d.scenes.find((x) => x.seg === s.id) as any)?.type).filter(Boolean) as string[];
+  for (let i = 1; i < types.length; i++) if (types[i] === types[i - 1] && types[i] !== 'scenario') problems.push(`scenes ${d.script[i - 1].id} and ${d.script[i].id} both use "${types[i]}"; change one (avoid the same layout twice in a row)`);
+  const counts = types.reduce((m: Record<string, number>, x) => ({ ...m, [x]: (m[x] || 0) + 1 }), {});
+  for (const [k, n] of Object.entries(counts)) if (n > (k === 'scenario' ? 4 : 2)) problems.push(`scene type "${k}" is used ${n} times; vary the layouts`);
+  if (d.format && !FORMATS[d.format]) problems.push(`unknown format "${d.format}"`);
+  if (!d.format) problems.push('set "format" to one of: ' + Object.keys(FORMATS).join(', '));
+  const lastFormats = recent.slice(0, 2).map((r) => r.format).filter(Boolean);
+  if (d.format && lastFormats.includes(d.format)) problems.push(`format "${d.format}" was used in the last ${lastFormats.length} episode(s) (${recent.slice(0, 2).map((r) => r.title).join(', ')}); choose a different format`);
+  const sig = (xs: string[]) => xs.slice(0, 5).join('>');
+  const same = recent.slice(0, 6).find((r) => r.types.length && sig(r.types) === sig(types));
+  if (same) problems.push(`the scene sequence starts exactly like "${same.title}" (${sig(types)}); change the order or the layouts`);
   if (!MUSIC[d.music]) warnings.push(`unknown music mood "${d.music}" (playful is used)`);
   const thisYear = nowBkk().getUTCFullYear();
   d.sources.forEach((s, i) => {
@@ -415,6 +498,15 @@ type Deps = {
 };
 
 export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
+  async function recentEpisodes(excludeId?: string): Promise<Recent[]> {
+    const r = await pool.query(`SELECT id, draft FROM drafts WHERE draft IS NOT NULL AND status IN ('ready','submitted') AND id <> $1
+      ORDER BY created_at DESC LIMIT 6`, [excludeId || '00000000-0000-0000-0000-000000000000']);
+    return r.rows.map((x: any) => ({
+      format: x.draft.format || '', title: x.draft.title_th || '',
+      types: (x.draft.script || []).map((sg: any) => (x.draft.scenes || []).find((sc: any) => sc.seg === sg.id)?.type).filter(Boolean),
+    }));
+  }
+
   const log = async (id: string, msg: string, status?: string) => {
     await pool.query(`UPDATE drafts SET log = log || $2::jsonb, status = COALESCE($3, status), updated_at = now() WHERE id = $1`,
       [id, JSON.stringify([{ at: new Date().toISOString(), msg }]), status ?? null]);
@@ -454,6 +546,10 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
         `Previous sources (already fetched with Firecrawl recently, you may cite them again without re-reading):\n${(p.sources || []).map((s: any) => `- ${s.url} (${s.publisher}, ${s.published})`).join('\n')}\n` +
         `Apply the owner's direction; check for newer data where it matters.`;
     }
+    const recent = await recentEpisodes(id);
+    userText += recent.length
+      ? `\n\nRecent episodes, newest first — use a different format than the last two and do not repeat a scene sequence:\n${recent.map((r) => `- "${r.title}" | format: ${r.format || 'classic quiz'} | scenes: ${r.types.join(' > ')}`).join('\n')}`
+      : `\n\nEarlier episodes used the classic order hook > number > myth > quiz > reveal > close; choose a different format.`;
     const messages: any[] = [{ role: 'user', content: userText }];
     const system = [{ type: 'text', text: systemPrompt(), cache_control: { type: 'ephemeral' } }];
     let submits = 0;
@@ -518,7 +614,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
               continue;
             }
             const d = parsed.data;
-            const { problems, warnings } = checkDraft(d, seen);
+            const { problems, warnings } = checkDraft(d, seen, recent);
             let est: number | null = null;
             if (!problems.length) {
               const f = finalCheck(row.topic, d, [...seen.values()]);
@@ -589,7 +685,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const research: Seen[] = row.draft.research_seen || [];
     const { problems } = checkDraft(d, null);
     const f = finalCheck(row.topic, d, research);
-    const errs = [...problems.filter((p) => !SOFT.test(p)), ...f.errs];
+    const errs = [...problems.filter((p) => !OWNER_SOFT.test(p)), ...f.errs];
     if (errs.length) return { status: 422, body: { error: 'draft does not pass the checks', problems: errs } };
     const r = await deps.createJob({ kind: 'episode', package: f.pkg }, `draft:${id}`);
     if (r.status >= 300) return r;
@@ -613,7 +709,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
 
   app.get('/app/api/studio/status', g, async (c) => {
     const n = (await pool.query("SELECT count(*)::int AS n FROM drafts WHERE created_at > now() - interval '1 day'")).rows[0].n;
-    return c.json({ ...configured(), model: MODEL, drafts_today: n, daily_limit: DAILY_LIMIT, busy, max_credits: DRAFT_MAX_CREDITS });
+    return c.json({ ...configured(), formats: Object.fromEntries(Object.entries(FORMATS).map(([k, f]) => [k, f.th])), model: MODEL, drafts_today: n, daily_limit: DAILY_LIMIT, busy, max_credits: DRAFT_MAX_CREDITS });
   });
 
   app.get('/app/api/studio/drafts', g, async (c) => {
@@ -669,8 +765,8 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     if (!parsed.success) return c.json({ error: 'invalid', problems: parsed.error.issues.slice(0, 10).map((i) => `${i.path.join('.')}: ${i.message}`) }, 422);
     const { problems, warnings } = checkDraft(parsed.data, null);
     // timing words that no longer appear only shift an animation to the segment start: keep them as warnings for edited text
-    const hard = problems.filter((p) => !SOFT.test(p));
-    const soft = problems.filter((p) => SOFT.test(p)).map((p) => p + ' (ภาพนี้จะขึ้นตามตำแหน่งโดยประมาณ)');
+    const hard = problems.filter((p) => !OWNER_SOFT.test(p));
+    const soft = problems.filter((p) => OWNER_SOFT.test(p)).map((p) => p + ' (ภาพนี้จะขึ้นตามตำแหน่งโดยประมาณ)');
     if (hard.length) return c.json({ error: 'ยังแก้ไม่ผ่าน', problems: hard }, 422);
     const f = finalCheck(row.topic, parsed.data, d.research_seen || []);
     if (f.errs.length) return c.json({ error: 'ยังแก้ไม่ผ่าน', problems: f.errs }, 422);
