@@ -35,7 +35,11 @@ def upload_verified(client, path, key, content_type):
     etag = head['ETag'].strip('"')
     ok = head['ContentLength'] == len(data) and etag == md5
     url = public_url(key)
-    r = requests.head(url, timeout=30, allow_redirects=True)
-    public_ok = r.status_code == 200 and int(r.headers.get('content-length', -1)) == len(data)
+    # ask for the identity encoding so the CDN does not gzip text files and change Content-Length
+    r = requests.head(url, timeout=30, allow_redirects=True, headers={'Accept-Encoding': 'identity'})
+    clen = r.headers.get('content-length')
+    exact = clen is not None and int(clen) == len(data)
+    # binary files (the video) must match byte-for-byte in size; text files may be re-encoded by the CDN
+    public_ok = r.status_code == 200 and (exact or (not content_type.startswith(('video/', 'image/', 'application/gzip')) and (clen is None or bool(r.headers.get('content-encoding')))))
     return {'key': key, 'url': url, 'bytes': len(data), 'md5': md5, 'verified': bool(ok and public_ok),
             'storage_verified': bool(ok), 'public_http': r.status_code}
