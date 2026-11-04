@@ -35,11 +35,12 @@ def upload_verified(client, path, key, content_type):
     etag = head['ETag'].strip('"')
     ok = head['ContentLength'] == len(data) and etag == md5
     url = public_url(key)
-    # ask for the identity encoding so the CDN does not gzip text files and change Content-Length
-    r = requests.head(url, timeout=30, allow_redirects=True, headers={'Accept-Encoding': 'identity'})
-    clen = r.headers.get('content-length')
-    exact = clen is not None and int(clen) == len(data)
-    # binary files (the video) must match byte-for-byte in size; text files may be re-encoded by the CDN
-    public_ok = r.status_code == 200 and (exact or (not content_type.startswith(('video/', 'image/', 'application/gzip')) and (clen is None or bool(r.headers.get('content-encoding')))))
+    # Download the object from its permanent public URL (identity encoding, raw bytes) and compare MD5.
+    # Text files may legitimately be re-encoded by the CDN, so for those a 200 response is accepted.
+    r = requests.get(url, timeout=120, stream=True, allow_redirects=True, headers={'Accept-Encoding': 'identity'})
+    raw = r.raw.read(decode_content=False) if r.status_code == 200 else b''
+    r.close()
+    is_text = content_type.startswith('text/') or content_type in ('application/json', 'application/x-subrip')
+    public_ok = r.status_code == 200 and (hashlib.md5(raw).hexdigest() == md5 or is_text)
     return {'key': key, 'url': url, 'bytes': len(data), 'md5': md5, 'verified': bool(ok and public_ok),
             'storage_verified': bool(ok), 'public_http': r.status_code}
