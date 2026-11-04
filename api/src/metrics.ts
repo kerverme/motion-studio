@@ -34,6 +34,11 @@ export async function syncPosts(pool: pg.Pool, opts: { limit?: number; force?: b
         await pool.query(`UPDATE publish_log SET post_status=$2, sent_at=COALESCE($3::timestamptz, sent_at), external_link=COALESCE($4, external_link),
             post_error=$5, metrics=COALESCE($6::jsonb, metrics), metrics_updated_at=COALESCE($7::timestamptz, metrics_updated_at), checked_at=now() WHERE id=$1`,
           [r.id, status, post.sentAt ?? null, post.externalLink ?? null, post.error?.message ?? null, hasMetrics ? JSON.stringify(m) : null, post.metricsUpdatedAt ?? null]);
+        // The platform refused the post after Buffer accepted it (e.g. Facebook permissions): record it as failed so the
+        // channel can be published again from the UI once the connection is fixed.
+        if (status === 'error') {
+          await pool.query("UPDATE publish_log SET status='failed', error=COALESCE($2, 'rejected by the platform') WHERE id=$1", [r.id, post.error?.message ?? null]);
+        }
         if (hasMetrics) {
           await pool.query('INSERT INTO metric_snapshots (publish_log_id, metrics_updated_at, metrics) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING',
             [r.id, post.metricsUpdatedAt ?? new Date().toISOString(), JSON.stringify(m)]);
