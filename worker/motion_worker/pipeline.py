@@ -1,7 +1,7 @@
 """Stage-level resumable production pipeline. Each stage stores its outputs in jobs.stage_results and in the bucket,
 so a crash or redeploy resumes from the last completed stage without paying for audio twice."""
 import datetime as dt, hashlib, json, os, re, shutil, tarfile, zoneinfo
-from . import audio, config, drive as drive_mod, eleven, qa, rendering, timeline as tl
+from . import audio, config, drive as drive_mod, r2 as r2_mod, eleven, qa, rendering, timeline as tl
 from .storage import sha256_file
 
 ORDER = ['GENERATING_AUDIO', 'BUILDING_TIMELINE', 'RENDERING', 'QUALITY_CHECK', 'UPLOADING_DRIVE', 'READY_TO_POST']
@@ -330,6 +330,18 @@ def stage_upload(ctx):
     for name, (pth, mime) in files.items():
         ctx.save('deliverable', pth, f'{ctx.prefix}/deliver/{name}', mime)
     ctx.db.save_stage(ctx.job, 'UPLOADING_DRIVE_partial', {'folder_name': folder_name})
+    if r2_mod.enabled():
+        cl = r2_mod._client()
+        prefix = f"{config.R2_PREFIX}/{folder_name}"
+        uploaded = [r2_mod.upload_verified(cl, pth, f'{prefix}/{name}', mime) | {'name': name} for name, (pth, mime) in files.items()]
+        if not all(u['verified'] for u in uploaded) or len(uploaded) != len(files):
+            raise RuntimeError('R2 verification incomplete: ' + json.dumps([u for u in uploaded if not u['verified']]))
+        video = next(u for u in uploaded if u['name'].endswith('.mp4'))
+        ctx.db.q('UPDATE episodes SET drive_folder_id=%s, drive_folder_url=%s WHERE id=%s', (prefix, video['url'], ctx.job['episode_id']))
+        ctx.db.q("""INSERT INTO publication_handoffs (episode_id, job_id, folder_id, folder_url, files) VALUES (%s,%s,%s,%s,%s)""",
+                 (ctx.job['episode_id'], ctx.job['id'], prefix, video['url'], json.dumps(uploaded)))
+        return {'episode_number': number, 'folder_id': prefix, 'folder_url': video['url'], 'video_url': video['url'],
+                'folder_name': folder_name, 'files': uploaded, 'storage': 'r2'}
     d = drive_mod.Drive()
     root = d.folder(config.DRIVE_ROOT)
     ready = d.folder(config.DRIVE_READY, root['id'])
@@ -358,7 +370,7 @@ def run_episode(ctx, worker):
         if st == 'READY_TO_POST':
             res = ctx.r['UPLOADING_DRIVE']
             db.q('UPDATE jobs SET result=%s, locked_by=NULL, locked_until=NULL, error=NULL WHERE id=%s', (json.dumps(res), job['id']))
-            db.status(job, 'READY_TO_POST', 'READY_TO_POST', 1.0, f"EP{res['episode_number']:03d} delivered to Google Drive", {'folder_url': res['folder_url']})
+            db.status(job, 'READY_TO_POST', 'READY_TO_POST', 1.0, f"EP{res['episode_number']:03d} delivered to " + ('Cloudflare R2' if res.get('storage') == 'r2' else 'Google Drive'), {'folder_url': res['folder_url']})
             return res
         db.status(job, st, st, None, f'{st} started')
         if st in ctx.r:

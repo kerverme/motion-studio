@@ -17,6 +17,14 @@ DRIVE_ROOT = env.get('MOTION_DRIVE_ROOT', 'Motion Studio')
 DRIVE_READY = env.get('MOTION_DRIVE_READY', 'Ready to Post')
 TZ = env.get('TZ', 'Asia/Bangkok')
 
+# Final delivery on Cloudflare R2 (S3 API). When R2_BUCKET is set it replaces the Google Drive delivery.
+R2_BUCKET = env.get('R2_BUCKET', '')
+R2_ENDPOINT = env.get('R2_ENDPOINT', '')  # https://<account_id>.r2.cloudflarestorage.com
+R2_KEY = env.get('R2_ACCESS_KEY_ID', '')
+R2_SECRET = env.get('R2_SECRET_ACCESS_KEY', '')
+R2_PUBLIC_BASE_URL = env.get('R2_PUBLIC_BASE_URL', '').rstrip('/')  # permanent public base, e.g. https://pub-xxxx.r2.dev
+R2_PREFIX = env.get('R2_PREFIX', 'ready-to-post')
+
 BUCKET = env.get('BUCKET', '')
 BUCKET_ENDPOINT = env.get('BUCKET_ENDPOINT', '')
 BUCKET_REGION = env.get('BUCKET_REGION', 'auto')

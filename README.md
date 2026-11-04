@@ -53,7 +53,7 @@ Auth: `Authorization: Bearer $MOTION_API_TOKEN`. Test jobs: `{"kind":"test_tts"|
 ## Configuration (Railway variables)
 
 motion-api: `DATABASE_URL`, `MOTION_API_TOKEN`, `MOTION_INTERNAL_TOKEN`, `MOTION_PUBLIC_URL`, `MOTION_MAX_CREDITS_PER_EPISODE`, `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `BUCKET*` (references to motion-assets).
-motion-worker: `DATABASE_URL`, `ELEVENLABS_API_KEY`, `MOTION_INTERNAL_TOKEN` (reference), `MOTION_API_INTERNAL_URL`, `MOTION_RENDER_PROCS`, `MOTION_DEFAULT_VOICE_ID`, `BUCKET*`.
+motion-worker: `R2_BUCKET`, `R2_ENDPOINT`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_PUBLIC_BASE_URL` (when R2_BUCKET is set, final delivery goes to Cloudflare R2 with a permanent public URL instead of Google Drive), `DATABASE_URL`, `ELEVENLABS_API_KEY`, `MOTION_INTERNAL_TOKEN` (reference), `MOTION_API_INTERNAL_URL`, `MOTION_RENDER_PROCS`, `MOTION_DEFAULT_VOICE_ID`, `BUCKET*`.
 
 ## Local development
 
