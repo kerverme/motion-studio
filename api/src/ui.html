@@ -34,7 +34,8 @@
 *{box-sizing:border-box}
 html,body{margin:0}
 body{background:var(--page);color:var(--ink);font:15px/1.6 var(--sans);-webkit-font-smoothing:antialiased}
-button,input,textarea{font:inherit;color:inherit}
+button,input,textarea,select{font:inherit;color:inherit}
+select.field{border:1px solid var(--line);border-radius:var(--r-md);background:var(--raised)}
 a{color:var(--ink);text-underline-offset:3px}
 :focus-visible{outline:2px solid var(--focus);outline-offset:2px}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
@@ -491,11 +492,19 @@ function studio(st, drafts){
   topic.addEventListener('input',()=>{ try{ sessionStorage.setItem('ms.topic',topic.value); }catch{} });
   const note = h('textarea',{class:'field',rows:3,maxlength:1000,placeholder:'มุมที่อยากเล่า โทน สิ่งที่ต้องมี/ห้ามมี เช่น "เน้นตัวเลขภาคอีสาน ไม่ต้องมีควิซ"'});
   const auto = h('input',{type:'checkbox'});
+  let saved={}; try{ saved=JSON.parse(localStorage.getItem('ms.ai')||'{}'); }catch{}
+  const modelSel = h('select',{class:'field','aria-label':'โมเดล',style:'width:auto;padding:8px 10px'}, (st.models||[]).map(m=>h('option',{value:m.id},m.label)));
+  modelSel.value = (st.models||[]).some(m=>m.id===saved.model) ? saved.model : st.model;
+  const effSel = (st.reasoning_levels||[]).length ? h('select',{class:'field','aria-label':'Reasoning',style:'width:auto;padding:8px 10px'},
+    st.reasoning_levels.map(l=>h('option',{value:l},'reasoning '+l))) : null;
+  if (effSel) effSel.value = st.reasoning_levels.includes(saved.reasoning) ? saved.reasoning : st.reasoning;
+  const remember = ()=>{ try{ localStorage.setItem('ms.ai', JSON.stringify({model:modelSel.value, reasoning:effSel?effSel.value:null})); }catch{} };
+  modelSel.addEventListener('change',remember); if (effSel) effSel.addEventListener('change',remember);
   const err = h('div',{class:'err',role:'alert'});
   const go = h('button',{class:'btn primary',disabled:!ready,on:{click:async()=>{
     err.textContent=''; const t=topic.value.trim(); if (t.length<4){ err.textContent='พิมพ์หัวข้ออย่างน้อย 4 ตัวอักษร'; topic.focus(); return; }
     go.disabled=true; go.textContent='กำลังส่ง…';
-    try{ const r=await api('/app/api/studio/drafts',{method:'POST',body:JSON.stringify({topic:t,note:note.value,auto_produce:auto.checked})});
+    try{ const r=await api('/app/api/studio/drafts',{method:'POST',body:JSON.stringify({topic:t,note:note.value,auto_produce:auto.checked,model:modelSel.value,reasoning:effSel?effSel.value:undefined})});
       try{ sessionStorage.removeItem('ms.topic'); }catch{} toast('เริ่มค้นข้อมูลแล้ว'); await load(); openDraft(r.id); }
     catch(x){ err.textContent=x.message; go.disabled=false; go.textContent='เริ่มค้นและเขียน'; } }}},'เริ่มค้นและเขียน');
   const composer = h('div',{class:'composer'},
@@ -503,8 +512,9 @@ function studio(st, drafts){
     topic,
     h('div',{class:'ideas'}, h('span',{class:'sub'},'ลองหัวข้อ:'), IDEAS.map(i=>h('button',{on:{click:()=>{ topic.value=i; topic.focus(); }}},i))),
     h('details',{}, h('summary',{},'เพิ่มแนวทาง (ไม่บังคับ)'), h('div',{style:'margin-top:10px'},note)),
+    h('div',{class:'row',style:'justify-content:flex-start;gap:8px'}, h('span',{class:'sub'},'สมอง'), modelSel, effSel),
     h('label',{class:'check'}, auto, h('span',{},'ผลิตต่อทันทีเมื่อร่างผ่านการตรวจกฎ (ไม่ต้องรอฉันตรวจ)')),
-    h('div',{class:'row'}, h('span',{class:'sub'}, 'สมอง: '+(st.provider==='openai'?'OpenAI ':'Claude ')+st.model+' · วันนี้ใช้ไป '+st.drafts_today+' จาก '+st.daily_limit+' ร่าง · ค่าเสียงไม่เกิน '+fmtN(st.max_credits)+' เครดิต/คลิป'), go),
+    h('div',{class:'row'}, h('span',{class:'sub'}, 'วันนี้ใช้ไป '+st.drafts_today+' จาก '+st.daily_limit+' ร่าง · ค่าเสียงไม่เกิน '+fmtN(st.max_credits)+' เครดิต/คลิป'), go),
     err);
   const list = drafts.length ? h('div',{class:'drafts'}, h('h2',{},'ร่างล่าสุด'), drafts.map(d=>{
     const [cls, txt] = draftState(d);
@@ -531,7 +541,7 @@ function openDraft(id){
     }
     function logList(d){ return h('ol',{class:'logl'}, (d.log||[]).slice(-14).map(l=>h('li',{}, h('time',{},hhmm(l.at)), h('span',{},l.msg)))); }
     function usage(d){ const u=d.usage||{}; if(!u.turns) return ''; const tin=(u.input_tokens||0)+(u.cache_read_input_tokens||0)+(u.cache_creation_input_tokens||0);
-      return h('div',{class:'sub'}, d.model+' · '+u.turns+' รอบ · Firecrawl '+(u.firecrawl_calls||0)+' ครั้ง · โทเค็นเข้า '+fmtN(tin)+' (แคช '+fmtN(u.cache_read_input_tokens||0)+') ออก '+fmtN(u.output_tokens||0)); }
+      return h('div',{class:'sub'}, d.model+(d.reasoning?' (reasoning '+d.reasoning+')':'')+' · '+u.turns+' รอบ · Firecrawl '+(u.firecrawl_calls||0)+' ครั้ง · โทเค็นเข้า '+fmtN(tin)+' (แคช '+fmtN(u.cache_read_input_tokens||0)+') ออก '+fmtN(u.output_tokens||0)); }
     function render(d){
       const dr = d.draft;
       const head = [h('p',{class:'sub',style:'margin:0'},'หัวข้อ: '+d.topic+(d.note?' · แนวทาง: '+d.note:''))];

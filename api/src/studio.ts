@@ -13,6 +13,23 @@ const FIRECRAWL_URL = (env.FIRECRAWL_API_URL || 'https://api.firecrawl.dev').rep
 const PROVIDER = (env.MOTION_LLM_PROVIDER || (env.ANTHROPIC_API_KEY ? 'anthropic' : env.OPENAI_API_KEY ? 'openai' : 'anthropic')).toLowerCase() === 'openai' ? 'openai' : 'anthropic';
 const OPENAI_URL = (env.OPENAI_BASE_URL || 'https://api.openai.com').replace(/\/$/, '');
 const MODEL = env.MOTION_LLM_MODEL || (PROVIDER === 'openai' ? 'gpt-6.1-sol' : 'claude-opus-5-5');
+// Models offered in the UI (the env default is always included). Reasoning effort applies to OpenAI reasoning models.
+const MODEL_CHOICES: Record<string, { id: string; label: string }[]> = {
+  openai: [
+    { id: 'gpt-6.1-sol', label: 'GPT-6.1 Sol — งานซับซ้อน เครื่องมือเยอะ' },
+    { id: 'gpt-6.1-terra', label: 'GPT-6.1 Terra — เร็ว เขียนเป็นธรรมชาติ' },
+    { id: 'gpt-6-sol', label: 'GPT-6 Sol' },
+    { id: 'gpt-6-luna', label: 'GPT-6 Luna — ถูกกว่า' },
+  ],
+  anthropic: [
+    { id: 'claude-opus-5-5', label: 'Claude Opus 5.5' },
+    { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5 — ถูกกว่า' },
+  ],
+};
+if (!MODEL_CHOICES[PROVIDER].some((m) => m.id === MODEL)) MODEL_CHOICES[PROVIDER].unshift({ id: MODEL, label: MODEL });
+const REASONING_LEVELS = ['low', 'medium', 'high'];
+const REASONING = REASONING_LEVELS.includes(String(env.MOTION_LLM_REASONING)) ? String(env.MOTION_LLM_REASONING) : 'high';
+const MODEL_RE = /^[a-z0-9][a-z0-9.\-]{2,60}$/;
 const MAX_TURNS = Number(env.MOTION_LLM_MAX_TURNS || 18);
 const MAX_INPUT_TOKENS = Number(env.MOTION_LLM_MAX_INPUT_TOKENS || 1_200_000); // incl. cache reads, per draft
 const MAX_FIRECRAWL = Number(env.MOTION_FIRECRAWL_MAX_CALLS || 16);
@@ -193,7 +210,7 @@ interface Conversation {
 }
 
 // Anthropic Messages API; the conversation is cached so each turn re-reads it at the cache price.
-function anthropicConversation(system: string, first: string): Conversation {
+function anthropicConversation(system: string, first: string, model: string): Conversation {
   const messages: any[] = [{ role: 'user', content: first }];
   const sys = [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }];
   return {
@@ -202,7 +219,7 @@ function anthropicConversation(system: string, first: string): Conversation {
       const last = msgs[msgs.length - 1];
       if (typeof last.content === 'string') last.content = [{ type: 'text', text: last.content }];
       last.content[last.content.length - 1].cache_control = { type: 'ephemeral' };
-      const resp = await claude({ model: MODEL, max_tokens: 16000, system: sys, tools: TOOLS, messages: msgs,
+      const resp = await claude({ model, max_tokens: 16000, system: sys, tools: TOOLS, messages: msgs,
         ...(force ? { tool_choice: { type: 'tool', name: 'submit_episode' } } : {}) });
       messages.push({ role: 'assistant', content: resp.content });
       const u = resp.usage || {};
@@ -221,12 +238,14 @@ function anthropicConversation(system: string, first: string): Conversation {
 }
 
 // OpenAI Responses API (tool calling for current GPT models goes through it). Output items are fed back as input.
-function openaiConversation(system: string, first: string): Conversation {
+function openaiConversation(system: string, first: string, model: string, effort: string): Conversation {
   const input: any[] = [{ role: 'user', content: first }];
   const tools = TOOLS.map((t) => ({ type: 'function', name: t.name, description: t.description, parameters: t.input_schema }));
   return {
     async turn(force) {
-      const resp = await openai({ model: MODEL, instructions: system, input, tools, max_output_tokens: 16000,
+      // reasoning tokens count against max_output_tokens, so leave room for high effort
+      const resp = await openai({ model, instructions: system, input, tools, reasoning: { effort },
+        max_output_tokens: effort === 'high' ? 48000 : effort === 'medium' ? 32000 : 20000,
         tool_choice: force ? { type: 'function', name: 'submit_episode' } : 'auto' });
       const out: any[] = resp.output || [];
       input.push(...out);
@@ -235,6 +254,9 @@ function openaiConversation(system: string, first: string): Conversation {
         try { args = JSON.parse(o.arguments || '{}'); } catch { args = { __invalid_json: String(o.arguments || '').slice(0, 200) }; }
         return { id: o.call_id, name: o.name, input: args };
       });
+      if (resp.status === 'incomplete' && !out.some((o) => o.type === 'function_call')) {
+        input.push({ role: 'user', content: 'Your last answer was cut off. Keep reasoning shorter and call the tool now.' });
+      }
       const u = resp.usage || {};
       const cached = Number(u.input_tokens_details?.cached_tokens || 0);
       return { uses, usage: { input_tokens: Math.max(0, Number(u.input_tokens || 0) - cached), output_tokens: Number(u.output_tokens || 0), cache_read_input_tokens: cached, cache_creation_input_tokens: 0 } };
@@ -625,8 +647,10 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     }
     const usage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, firecrawl_calls: 0, turns: 0 };
     const saveUsage = () => pool.query('UPDATE drafts SET usage=$2, research=$3, updated_at=now() WHERE id=$1', [id, JSON.stringify(usage), JSON.stringify(research)]);
-    await pool.query("UPDATE drafts SET status='researching', model=$2, updated_at=now() WHERE id=$1", [id, MODEL]);
-    await log(id, `เริ่มค้นข้อมูลด้วย Firecrawl (${MODEL})`);
+    const useModel = row.model && MODEL_RE.test(row.model) ? row.model : MODEL;
+    const useEffort = PROVIDER === 'openai' ? (REASONING_LEVELS.includes(row.reasoning) ? row.reasoning : REASONING) : null;
+    await pool.query("UPDATE drafts SET status='researching', model=$2, reasoning=$3, updated_at=now() WHERE id=$1", [id, useModel, useEffort]);
+    await log(id, `เริ่มค้นข้อมูลด้วย Firecrawl (${useModel}${useEffort ? ' · reasoning ' + useEffort : ''})`);
 
     let userText = `Topic from the owner: ${row.topic}`;
     if (row.note) userText += `\nOwner's direction: ${row.note}`;
@@ -640,7 +664,9 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     userText += recent.length
       ? `\n\nRecent episodes, newest first — use a different format than the last two and do not repeat a scene sequence:\n${recent.map((r) => `- "${r.title}" | format: ${r.format || 'classic quiz'} | scenes: ${r.types.join(' > ')}`).join('\n')}`
       : `\n\nEarlier episodes used the classic order hook > number > myth > quiz > reveal > close; choose a different format.`;
-    const conv = PROVIDER === 'openai' ? openaiConversation(systemPrompt(), userText) : anthropicConversation(systemPrompt(), userText);
+    const model = row.model && MODEL_RE.test(row.model) ? row.model : MODEL;
+    const effort = REASONING_LEVELS.includes(row.reasoning) ? row.reasoning : REASONING;
+    const conv = PROVIDER === 'openai' ? openaiConversation(systemPrompt(), userText, model, effort) : anthropicConversation(systemPrompt(), userText, model);
     let submits = 0;
 
     for (let turn = 0; turn < MAX_TURNS; turn++) {
@@ -792,7 +818,8 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
 
   app.get('/app/api/studio/status', g, async (c) => {
     const n = (await pool.query("SELECT count(*)::int AS n FROM drafts WHERE created_at > now() - interval '1 day'")).rows[0].n;
-    return c.json({ ...configured(), formats: Object.fromEntries(Object.entries(FORMATS).map(([k, f]) => [k, f.th])), model: MODEL, drafts_today: n, daily_limit: DAILY_LIMIT, busy, max_credits: DRAFT_MAX_CREDITS });
+    return c.json({ ...configured(), formats: Object.fromEntries(Object.entries(FORMATS).map(([k, f]) => [k, f.th])), model: MODEL,
+      models: MODEL_CHOICES[PROVIDER], reasoning: PROVIDER === 'openai' ? REASONING : null, reasoning_levels: PROVIDER === 'openai' ? REASONING_LEVELS : [], drafts_today: n, daily_limit: DAILY_LIMIT, busy, max_credits: DRAFT_MAX_CREDITS });
   });
 
   app.get('/app/api/studio/drafts', g, async (c) => {
@@ -810,7 +837,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     if (!r) return c.json({ error: 'not found' }, 404);
     const dr = r.draft ? { ...r.draft } : null;
     if (dr) delete dr.research_seen;
-    return c.json({ ...summary(r), log: r.log, draft: dr, problems: r.problems, usage: r.usage, model: r.model, job_error: r.job_error ?? null,
+    return c.json({ ...summary(r), log: r.log, draft: dr, problems: r.problems, usage: r.usage, model: r.model, reasoning: r.reasoning, job_error: r.job_error ?? null,
       research: r.research });
   });
 
@@ -822,8 +849,10 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     if (!cf.llm || !cf.firecrawl) return c.json({ error: `ยังไม่ได้ตั้งค่า ${[!cf.llm && cf.key_name, !cf.firecrawl && 'FIRECRAWL_API_KEY'].filter(Boolean).join(' และ ')} ใน Railway (motion-api)` }, 503);
     const n = (await pool.query("SELECT count(*)::int AS n FROM drafts WHERE created_at > now() - interval '1 day'")).rows[0].n;
     if (n >= DAILY_LIMIT) return c.json({ error: `ครบโควตา ${DAILY_LIMIT} ร่างต่อวันแล้ว` }, 429);
-    const r = await pool.query('INSERT INTO drafts (topic, note, auto_produce) VALUES ($1,$2,$3) RETURNING id',
-      [topic, String(b.note || '').trim().slice(0, 1000) || null, !!b.auto_produce]);
+    const model = typeof b.model === 'string' && MODEL_RE.test(b.model) ? b.model : MODEL;
+    const reasoning = REASONING_LEVELS.includes(b.reasoning) ? b.reasoning : REASONING;
+    const r = await pool.query('INSERT INTO drafts (topic, note, auto_produce, model, reasoning) VALUES ($1,$2,$3,$4,$5) RETURNING id',
+      [topic, String(b.note || '').trim().slice(0, 1000) || null, !!b.auto_produce, model, PROVIDER === 'openai' ? reasoning : null]);
     await log(r.rows[0].id, 'รับหัวข้อแล้ว รอคิว');
     pump();
     return c.json({ id: r.rows[0].id }, 201);
@@ -874,8 +903,9 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const b = await c.req.json().catch(() => ({}));
     const cf = configured();
     if (!cf.llm || !cf.firecrawl) return c.json({ error: 'ยังไม่ได้ตั้งค่า API key ใน Railway' }, 503);
-    const r = await pool.query('INSERT INTO drafts (topic, note, parent_id, auto_produce) VALUES ($1,$2,$3,$4) RETURNING id',
-      [row.topic, String(b.note ?? row.note ?? '').trim().slice(0, 1000) || null, row.draft ? row.id : null, !!b.auto_produce]);
+    const r = await pool.query('INSERT INTO drafts (topic, note, parent_id, auto_produce, model, reasoning) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id',
+      [row.topic, String(b.note ?? row.note ?? '').trim().slice(0, 1000) || null, row.draft ? row.id : null, !!b.auto_produce,
+        typeof b.model === 'string' && MODEL_RE.test(b.model) ? b.model : row.model, REASONING_LEVELS.includes(b.reasoning) ? b.reasoning : row.reasoning]);
     if (['ready', 'failed'].includes(row.status)) await pool.query("UPDATE drafts SET status='discarded', updated_at=now() WHERE id=$1", [id]);
     await log(r.rows[0].id, row.draft ? 'เขียนใหม่จากร่างเดิม รอคิว' : 'ลองใหม่ รอคิว');
     pump();
