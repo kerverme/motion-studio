@@ -142,6 +142,30 @@ export async function getPost(id: string): Promise<{ post: PostInfo | null; metr
   return { post: d.post, metrics: false };
 }
 
+export type BufferPostSummary = { id: string; status: string; channelId: string; createdAt: string; assets: { source?: string | null; thumbnail?: string | null }[] };
+
+// Recent posts of the organisation (optionally per channel). Used to detect a clip that is already in Buffer,
+// whether it was posted from this UI, retried inside Buffer, or posted by hand.
+export async function recentPosts(opts: { channelIds?: string[]; statuses?: string[]; first?: number } = {}): Promise<BufferPostSummary[]> {
+  const org = await organization();
+  const st = (opts.statuses ?? ['needs_approval', 'scheduled', 'sending', 'sent', 'error']).map((s) => s.replace(/[^a-z_]/g, '')).join(', ');
+  const ch = opts.channelIds?.length ? `, channelIds: ${JSON.stringify(opts.channelIds)}` : '';
+  const q = `query { posts(first: ${opts.first ?? 100}, input: {organizationId: ${JSON.stringify(org.id)}, filter: {status: [${st}]${ch}}}) { edges { node { id status channelId createdAt assets { source thumbnail } } } } }`;
+  const d = await gql<{ posts: { edges: { node: BufferPostSummary }[] } }>(q, 2);
+  return d.posts.edges.map((e) => ({ ...e.node, status: String(e.node.status || '').toLowerCase() }));
+}
+
+// Buffer may re-host the video (TikTok), so also look for our URL inside the thumbnail link it generates.
+export function postUsesVideo(p: BufferPostSummary, videoUrl: string) {
+  const enc = encodeURIComponent(videoUrl);
+  let dec = videoUrl;
+  try { dec = decodeURI(videoUrl); } catch { /* keep */ }
+  return (p.assets || []).some((a) => {
+    const src = a.source || '', th = a.thumbnail || '';
+    return src === videoUrl || src === dec || th.includes(enc) || th.includes(encodeURIComponent(dec));
+  });
+}
+
 export async function createPost(p: PostRequest): Promise<{ id: string; status?: string; dueAt?: string | null }> {
   const d = await gql<{ createPost: { post?: { id: string; status?: string; dueAt?: string | null }; message?: string } }>(buildMutation(p), 1);
   if (d.createPost.post) return d.createPost.post;

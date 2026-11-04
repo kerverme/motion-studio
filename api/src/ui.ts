@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import * as buffer from './buffer.js';
 import * as notion from './notion.js';
-import { analytics, syncPosts } from './metrics.js';
+import { analytics, syncPosts, reconcile } from './metrics.js';
 
 const env = process.env;
 const UI_PASSWORD = env.MOTION_UI_PASSWORD || '';
@@ -228,8 +228,22 @@ export function registerUi(app: Hono, pool: pg.Pool, deps: { API_TOKEN: string; 
       plan.push({ ch, text: p.text });
     }
 
+    // Last line of defence against double posting: ask Buffer itself whether this video is already on each channel.
+    let existing: buffer.BufferPostSummary[];
+    try {
+      existing = (await buffer.recentPosts({ channelIds: plan.map((x) => x.ch.id), statuses: ['needs_approval', 'scheduled', 'sending', 'sent'] }))
+        .filter((p) => buffer.postUsesVideo(p, ep.video_url!));
+    } catch (e) {
+      return c.json({ error: `cannot check Buffer for existing posts, nothing was posted: ${e instanceof Error ? e.message : e}` }, 502);
+    }
+    if (existing.length) await reconcile(pool, id).catch(() => []);
+
     const results: any[] = [];
     for (const { ch, text } of plan) {
+      if (existing.some((p) => p.channelId === ch.id)) {
+        results.push({ channel_id: ch.id, service: buffer.normService(ch.service), status: 'skipped', error: 'this clip is already on this channel in Buffer' });
+        continue;
+      }
       const svc = buffer.normService(ch.service);
       const ins = await pool.query(
         `INSERT INTO publish_log (episode_id, channel_id, channel_name, service, mode, due_at, caption, status)

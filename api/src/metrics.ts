@@ -11,12 +11,19 @@ export async function syncPosts(pool: pg.Pool, opts: { limit?: number; force?: b
   const changed = new Set<string>();
   let checked = 0, failed = 0;
   try {
+    try {
+      for (const id of await reconcile(pool)) changed.add(id);
+    } catch (e) {
+      console.error('reconcile', e instanceof Error ? e.message : e);
+    }
     const rows = (await pool.query(`
-      SELECT id, episode_id, buffer_post_id, post_status, metrics_updated_at FROM publish_log
-      WHERE status = 'sent' AND buffer_post_id IS NOT NULL AND (
+      SELECT id, episode_id, buffer_post_id, post_status, status AS row_status, metrics_updated_at FROM publish_log
+      WHERE buffer_post_id IS NOT NULL AND (
+            (status = 'failed' AND post_status = 'error' AND created_at > now() - interval '14 days')
+         OR (status = 'sent' AND (
             $1::boolean
          OR post_status IS NULL OR post_status NOT IN ('sent', 'error')
-         OR (post_status = 'sent' AND created_at > now() - interval '90 days' AND (checked_at IS NULL OR checked_at < now() - interval '6 hours')))
+         OR (post_status = 'sent' AND created_at > now() - interval '90 days' AND (checked_at IS NULL OR checked_at < now() - interval '6 hours')))))
       ORDER BY checked_at NULLS FIRST, id LIMIT $2`, [!!opts.force, opts.limit ?? 25])).rows;
     for (const r of rows) {
       try {
@@ -36,7 +43,12 @@ export async function syncPosts(pool: pg.Pool, opts: { limit?: number; force?: b
           [r.id, status, post.sentAt ?? null, post.externalLink ?? null, post.error?.message ?? null, hasMetrics ? JSON.stringify(m) : null, post.metricsUpdatedAt ?? null]);
         // The platform refused the post after Buffer accepted it (e.g. Facebook permissions): record it as failed so the
         // channel can be published again from the UI once the connection is fixed.
-        if (status === 'error') {
+        if (r.row_status === 'failed' && status !== 'error') {
+          // retried inside Buffer and now live (or queued) again: count it as published so the UI blocks a second post
+          await pool.query("UPDATE publish_log SET status='sent', error=NULL WHERE id=$1", [r.id]).catch(() => {});
+          changed.add(r.episode_id);
+        }
+        if (status === 'error' && r.row_status !== 'failed') {
           await pool.query("UPDATE publish_log SET status='failed', error=COALESCE($2, 'rejected by the platform') WHERE id=$1", [r.id, post.error?.message ?? null]);
         }
         if (hasMetrics) {
@@ -126,4 +138,32 @@ export async function analytics(pool: pg.Pool, days = 30) {
 
   const last = (await pool.query('SELECT max(checked_at) AS checked, max(metrics_updated_at) AS metrics FROM publish_log')).rows[0];
   return { platforms, series, clips, last_checked_at: last.checked, last_metrics_at: last.metrics, metrics_available: buffer.metricsAvailable(), buffer_configured: buffer.configured() };
+}
+
+// Brings posts that exist in Buffer but not in publish_log (retried or posted inside Buffer) into the log,
+// so a clip that is already live on a channel can never be offered for that channel again.
+export async function reconcile(pool: pg.Pool, onlyEpisode?: string): Promise<string[]> {
+  const eps = (await pool.query(`SELECT DISTINCT ON (h.episode_id) h.episode_id, h.files FROM publication_handoffs h
+     ${onlyEpisode ? 'WHERE h.episode_id = $1' : ''} ORDER BY h.episode_id, h.id DESC`, onlyEpisode ? [onlyEpisode] : [])).rows
+    .map((r) => ({ id: r.episode_id as string, url: ((Array.isArray(r.files) ? r.files : []).find((f: any) => String(f.name).endsWith('.mp4'))?.url ?? null) as string | null }))
+    .filter((e) => e.url);
+  if (!eps.length) return [];
+  const [posts, chans] = await Promise.all([buffer.recentPosts({ statuses: ['needs_approval', 'scheduled', 'sending', 'sent'] }), buffer.channels()]);
+  const changed: string[] = [];
+  for (const p of posts) {
+    const ep = eps.find((e) => buffer.postUsesVideo(p, e.url!));
+    if (!ep) continue;
+    const known = await pool.query('SELECT 1 FROM publish_log WHERE buffer_post_id=$1', [p.id]);
+    if (known.rowCount) continue;
+    const ch = chans.find((c) => c.id === p.channelId);
+    const ins = await pool.query(
+      `INSERT INTO publish_log (episode_id, channel_id, channel_name, service, mode, status, buffer_post_id, post_status, created_at)
+       VALUES ($1,$2,$3,$4,'external','sent',$5,$6,$7) ON CONFLICT DO NOTHING RETURNING id`,
+      [ep.id, p.channelId, ch ? ch.displayName || ch.name : null, ch ? buffer.normService(ch.service) : null, p.id, p.status, p.createdAt]);
+    if (ins.rowCount) {
+      changed.push(ep.id);
+      await pool.query("UPDATE episodes SET ui_status='used', used_at=COALESCE(used_at, now()) WHERE id=$1", [ep.id]);
+    }
+  }
+  return changed;
 }

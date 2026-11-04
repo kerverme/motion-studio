@@ -351,7 +351,11 @@ async function publish(ep, body, close){
   put(body, h('p',{class:'sub'},'กำลังโหลดช่องจาก Buffer…'));
   if (!S.channels || S.channels.error) { try{ S.channels = await api('/app/api/channels'); }catch(x){ S.channels={configured:true,channels:[],error:x.message}; } }
   const C = S.channels;
-  const taken = new Set(ep.publications.filter(p=>p.status==='sent'||p.status==='pending').map(p=>p.channel_id));
+  // refresh this clip's publications first, so a post made a moment ago (here, in another tab, or inside Buffer) is never offered again
+  try{ const [a,b] = await Promise.all([api('/app/api/episodes?tab=ready'), api('/app/api/episodes?tab=used')]); const fresh=[...a.episodes,...b.episodes].find(e=>e.id===ep.id); if (fresh) ep = fresh; }catch{}
+  const live = p => p.status==='sent' || p.status==='pending';
+  const taken = new Map(ep.publications.filter(live).map(p=>[p.channel_id, p]));
+  const lastFail = new Map(ep.publications.filter(p=>p.status==='failed').map(p=>[p.channel_id, p]));
   const sel = [];
   const chans = [...(C.channels||[])].sort((a,b)=>ORDER.indexOf(a.service)-ORDER.indexOf(b.service)).map(ch=>{
     const done = taken.has(ch.id);
@@ -364,7 +368,10 @@ async function publish(ep, body, close){
     const edit = h('div',{hidden:true}, ta, cnt);
     cb.addEventListener('change',()=>{ edit.hidden=!cb.checked; });
     sel.push({cb, ta, ch});
-    return h('div',{class:'ch'+(done?' off':'')}, h('label',{class:'top'}, cb, h('b',{},SVC[ch.service]), h('span',{class:'sub'},ch.name), done?h('span',{class:'sub',style:'margin-left:auto'},'โพสต์แล้ว'):''), edit);
+    const t = taken.get(ch.id), f = !done && lastFail.get(ch.id);
+    const tag = t ? (t.status==='pending' ? 'ค้างอยู่ ตรวจใน Buffer ก่อน' : postState(t).text) : '';
+    return h('div',{class:'ch'+(done?' off':'')}, h('label',{class:'top'}, cb, h('b',{},SVC[ch.service]), h('span',{class:'sub'},ch.name), done?h('span',{class:'sub',style:'margin-left:auto'},tag+' · โพสต์ซ้ำไม่ได้'):''),
+      f ? h('div',{class:'sub',style:'margin-top:4px;color:var(--bad)'},'ครั้งก่อนไม่สำเร็จ: '+(f.error||'')+' — โพสต์ใหม่ได้ แต่อย่ากด Share now กับโพสต์เดิมใน Buffer อีก') : '', edit);
   });
   const missing = (C.not_connected||[]).map(s=>h('div',{class:'ch off'}, h('b',{},SVC[s]), h('div',{class:'sub'},'ยังไม่ได้เชื่อมใน Buffer')));
   const note = !C.configured ? 'ยังไม่ได้ตั้งค่า BUFFER_API_KEY บนเซิร์ฟเวอร์' : C.error ? 'โหลดช่องจาก Buffer ไม่ได้: '+C.error : '';
@@ -374,7 +381,13 @@ async function publish(ep, body, close){
   const modeBox = h('div',{role:'radiogroup','aria-label':'เวลาโพสต์'}, modes.map(([v,l,d])=>h('label',{class:'radio'}, h('input',{type:'radio',name:'mode',value:v,checked:v===mode,on:{change:()=>{ mode=v; due.hidden = v!=='customScheduled'; }}}), h('span',{},l, d?h('span',{class:'sub'},'  '+d):''))), due);
   const err = h('div',{class:'err',role:'alert'});
 
+  const allDone = sel.length>0 && sel.every(x=>x.cb.disabled);
   function pick(){
+    if (allDone){
+      put(body, h('h2',{class:'d-title'},'โพสต์ครบทุกช่องแล้ว'), h('p',{class:'sub'},'คลิปนี้อยู่ในทุกช่องที่เชื่อมกับ Buffer แล้ว จึงโพสต์ซ้ำไม่ได้'), h('div',{},chans,missing),
+        h('div',{class:'actions'}, h('button',{class:'btn',on:{click:()=>{ close(); detail(ep); }}},'กลับ')));
+      return;
+    }
     put(body, h('h2',{class:'d-title'},'โพสต์ “'+ep.title+'”'), h('p',{class:'sub',style:'margin:-10px 0 0'}, 'เลือกช่องและแก้ข้อความได้'+(C.organization?' · Buffer: '+C.organization:'')),
       note?h('div',{class:'note'},note):'', h('div',{},chans,missing), h('h4',{},'เวลา'), modeBox, err,
       h('div',{class:'actions'}, h('button',{class:'btn quiet',on:{click:()=>{ close(); detail(ep); }}},'ยกเลิก'), h('button',{class:'btn primary',on:{click:review}},'ตรวจทานก่อนโพสต์')));
@@ -402,7 +415,7 @@ async function publish(ep, body, close){
   function result(res){
     put(body, h('h2',{class:'d-title'}, res.ok?'ส่งไป Buffer แล้ว':'บางช่องส่งไม่สำเร็จ'),
       h('div',{class:'plat'}, res.results.map(r=>h('div',{class:'plat-row'}, h('b',{},SVC[r.service]||r.service),
-        h('span',{class:'st '+(r.status==='sent'?'ok':r.status==='skipped'?'wait':'bad')}, r.status==='sent'?'ส่งแล้ว':r.status==='skipped'?'ข้าม เพราะโพสต์ช่องนี้ไปแล้ว':'ไม่สำเร็จ', r.error&&r.status!=='skipped'?h('div',{class:'sub'},r.error):''), h('span',{})))),
+        h('span',{class:'st '+(r.status==='sent'?'ok':r.status==='skipped'?'wait':'bad')}, r.status==='sent'?'ส่งแล้ว':r.status==='skipped'?(/in Buffer/.test(r.error||'')?'ข้าม เพราะคลิปนี้อยู่ในช่องนี้ใน Buffer แล้ว':'ข้าม เพราะโพสต์ช่องนี้ไปแล้ว'):'ไม่สำเร็จ', r.error&&r.status!=='skipped'?h('div',{class:'sub'},r.error):''), h('span',{})))),
       res.moved_to_used ? h('p',{class:'sub'},'ย้ายคลิปไปแท็บเสร็จแล้ว และกำลังบันทึกลง Notion') : '',
       h('div',{class:'actions'}, h('button',{class:'btn primary',on:{click:()=>close(true)}},'เสร็จ')));
   }
