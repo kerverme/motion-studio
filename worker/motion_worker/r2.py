@@ -37,7 +37,8 @@ def upload_verified(client, path, key, content_type):
     url = public_url(key)
     # Download the object from its permanent public URL (identity encoding, raw bytes) and compare MD5.
     # Text files may legitimately be re-encoded by the CDN, so for those a 200 response is accepted.
-    r = requests.get(url, timeout=120, stream=True, allow_redirects=True, headers={'Accept-Encoding': 'identity'})
+    # cache-buster: an overwritten object (retries regenerate the source archive) must not be checked against a stale CDN copy
+    r = requests.get(url + '?verify=' + md5, timeout=120, stream=True, allow_redirects=True, headers={'Accept-Encoding': 'identity'})
     raw = r.raw.read(decode_content=False) if r.status_code == 200 else b''
     r.close()
     is_text = content_type.startswith('text/') or content_type in ('application/json', 'application/x-subrip')
