@@ -128,3 +128,9 @@ New motion-api variables: `ANTHROPIC_API_KEY`, `FIRECRAWL_API_KEY` (required for
 * **Cast:** each episode defines its characters (10 hairstyles, hair/skin/clothes colours, glasses, accessories); Tum keeps his look.
 * **Sets:** city, room, classroom, park, beach, office, night, brick, kitchen. New layouts: chat (phone), versus (VS cards), scale.
 * Text on screen drops characters the Kanit font cannot draw (emoji), so nothing renders as an empty box.
+
+### AI provider
+
+The studio works with either provider: `ANTHROPIC_API_KEY` (default model `claude-opus-5-5`) or `OPENAI_API_KEY`
+(Responses API, default model `gpt-6.1-sol`). With only one key set, that provider is used; force one with
+`MOTION_LLM_PROVIDER=anthropic|openai`, pick a model with `MOTION_LLM_MODEL`. Firecrawl, the rule checks and the renderer are the same for both.

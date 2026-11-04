@@ -9,7 +9,10 @@ import { z } from 'zod';
 const env = process.env;
 const ANTHROPIC_URL = (env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/$/, '');
 const FIRECRAWL_URL = (env.FIRECRAWL_API_URL || 'https://api.firecrawl.dev').replace(/\/$/, '');
-const MODEL = env.MOTION_LLM_MODEL || 'claude-opus-5-5';
+// AI provider: Anthropic (default) or OpenAI. With only OPENAI_API_KEY set, OpenAI is used automatically.
+const PROVIDER = (env.MOTION_LLM_PROVIDER || (env.ANTHROPIC_API_KEY ? 'anthropic' : env.OPENAI_API_KEY ? 'openai' : 'anthropic')).toLowerCase() === 'openai' ? 'openai' : 'anthropic';
+const OPENAI_URL = (env.OPENAI_BASE_URL || 'https://api.openai.com').replace(/\/$/, '');
+const MODEL = env.MOTION_LLM_MODEL || (PROVIDER === 'openai' ? 'gpt-6.1-sol' : 'claude-opus-5-5');
 const MAX_TURNS = Number(env.MOTION_LLM_MAX_TURNS || 18);
 const MAX_INPUT_TOKENS = Number(env.MOTION_LLM_MAX_INPUT_TOKENS || 1_200_000); // incl. cache reads, per draft
 const MAX_FIRECRAWL = Number(env.MOTION_FIRECRAWL_MAX_CALLS || 16);
@@ -19,7 +22,9 @@ const DRAFT_MAX_CREDITS = Number(env.MOTION_DRAFT_MAX_CREDITS || 4500);
 const MAX_YEARS = Number(env.MOTION_SOURCE_MAX_YEARS || 2);
 const SERIES_TAG = env.MOTION_SERIES_TAG || 'จะเกิดอะไรขึ้นถ้า...?';
 
-export const configured = () => ({ anthropic: !!env.ANTHROPIC_API_KEY, firecrawl: !!env.FIRECRAWL_API_KEY });
+const llmKey = () => (PROVIDER === 'openai' ? !!env.OPENAI_API_KEY : !!env.ANTHROPIC_API_KEY);
+export const configured = () => ({ llm: llmKey(), provider: PROVIDER, key_name: PROVIDER === 'openai' ? 'OPENAI_API_KEY' : 'ANTHROPIC_API_KEY',
+  anthropic: llmKey(), firecrawl: !!env.FIRECRAWL_API_KEY });
 
 // ---------------------------------------------------------------- engine vocabulary (must match worker/engine)
 export const TEMPLATES = ['hook', 'number', 'compare', 'bars', 'list', 'quiz', 'reveal', 'dots', 'timeline', 'truth', 'scenario', 'icons', 'outro', 'chat', 'versus', 'scale'] as const;
@@ -155,6 +160,91 @@ async function claude(body: any) {
     if (!r.ok) throw new Error(`Anthropic ${r.status}: ${String(j.error?.message || '').slice(0, 300)}`);
     return j;
   }
+}
+
+async function openai(body: any) {
+  if (!env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not set on motion-api');
+  for (let i = 0; ; i++) {
+    const r = await fetch(`${OPENAI_URL}/v1/responses`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${env.OPENAI_API_KEY}`, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(600_000),
+    });
+    const j: any = await r.json().catch(() => ({}));
+    if ((r.status === 429 || r.status >= 500) && i < 4) {
+      const wait = Number(r.headers.get('retry-after') || 0) * 1000 || 5000 * (i + 1);
+      await new Promise((res) => setTimeout(res, Math.min(wait, 60_000)));
+      continue;
+    }
+    if (!r.ok) throw new Error(`OpenAI ${r.status}: ${String(j.error?.message || '').slice(0, 300)}`);
+    if (j.status === 'failed' || j.error) throw new Error(`OpenAI: ${String(j.error?.message || 'response failed').slice(0, 300)}`);
+    return j;
+  }
+}
+
+type ToolUse = { id: string; name: string; input: any };
+type ToolResult = { id: string; content: string; is_error?: boolean };
+type Usage = { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number };
+interface Conversation {
+  turn(force: boolean): Promise<{ uses: ToolUse[]; usage: Usage }>;
+  results(rs: ToolResult[], note?: string): void;
+  say(text: string): void;
+}
+
+// Anthropic Messages API; the conversation is cached so each turn re-reads it at the cache price.
+function anthropicConversation(system: string, first: string): Conversation {
+  const messages: any[] = [{ role: 'user', content: first }];
+  const sys = [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }];
+  return {
+    async turn(force) {
+      const msgs = JSON.parse(JSON.stringify(messages));
+      const last = msgs[msgs.length - 1];
+      if (typeof last.content === 'string') last.content = [{ type: 'text', text: last.content }];
+      last.content[last.content.length - 1].cache_control = { type: 'ephemeral' };
+      const resp = await claude({ model: MODEL, max_tokens: 16000, system: sys, tools: TOOLS, messages: msgs,
+        ...(force ? { tool_choice: { type: 'tool', name: 'submit_episode' } } : {}) });
+      messages.push({ role: 'assistant', content: resp.content });
+      const u = resp.usage || {};
+      return {
+        uses: (resp.content || []).filter((b: any) => b.type === 'tool_use').map((b: any) => ({ id: b.id, name: b.name, input: b.input })),
+        usage: { input_tokens: Number(u.input_tokens || 0), output_tokens: Number(u.output_tokens || 0), cache_read_input_tokens: Number(u.cache_read_input_tokens || 0), cache_creation_input_tokens: Number(u.cache_creation_input_tokens || 0) },
+      };
+    },
+    results(rs, note) {
+      const content: any[] = rs.map((r) => ({ type: 'tool_result', tool_use_id: r.id, content: r.content, ...(r.is_error ? { is_error: true } : {}) }));
+      if (note) content.push({ type: 'text', text: note });
+      messages.push({ role: 'user', content });
+    },
+    say(text) { messages.push({ role: 'user', content: text }); },
+  };
+}
+
+// OpenAI Responses API (tool calling for current GPT models goes through it). Output items are fed back as input.
+function openaiConversation(system: string, first: string): Conversation {
+  const input: any[] = [{ role: 'user', content: first }];
+  const tools = TOOLS.map((t) => ({ type: 'function', name: t.name, description: t.description, parameters: t.input_schema }));
+  return {
+    async turn(force) {
+      const resp = await openai({ model: MODEL, instructions: system, input, tools, max_output_tokens: 16000,
+        tool_choice: force ? { type: 'function', name: 'submit_episode' } : 'auto' });
+      const out: any[] = resp.output || [];
+      input.push(...out);
+      const uses: ToolUse[] = out.filter((o) => o.type === 'function_call').map((o) => {
+        let args: any = {};
+        try { args = JSON.parse(o.arguments || '{}'); } catch { args = { __invalid_json: String(o.arguments || '').slice(0, 200) }; }
+        return { id: o.call_id, name: o.name, input: args };
+      });
+      const u = resp.usage || {};
+      const cached = Number(u.input_tokens_details?.cached_tokens || 0);
+      return { uses, usage: { input_tokens: Math.max(0, Number(u.input_tokens || 0) - cached), output_tokens: Number(u.output_tokens || 0), cache_read_input_tokens: cached, cache_creation_input_tokens: 0 } };
+    },
+    results(rs, note) {
+      for (const r of rs) input.push({ type: 'function_call_output', call_id: r.id, output: (r.is_error ? 'ERROR: ' : '') + r.content });
+      if (note) input.push({ role: 'user', content: note });
+    },
+    say(text) { input.push({ role: 'user', content: text }); },
+  };
 }
 
 function systemPrompt() {
@@ -430,8 +520,8 @@ export function checkDraft(d: DraftT, seen: Map<string, Seen> | null, recent: Re
   for (const [k, n] of Object.entries(counts)) if (n > (k === 'scenario' ? 4 : 2)) problems.push(`scene type "${k}" is used ${n} times; vary the layouts`);
   if (d.format && !FORMATS[d.format]) problems.push(`unknown format "${d.format}"`);
   if (!d.format) problems.push('set "format" to one of: ' + Object.keys(FORMATS).join(', '));
-  const lastFormats = recent.slice(0, 2).map((r) => r.format).filter(Boolean);
-  if (d.format && lastFormats.includes(d.format)) problems.push(`format "${d.format}" was used in the last ${lastFormats.length} episode(s) (${recent.slice(0, 2).map((r) => r.title).join(', ')}); choose a different format`);
+  const clash = recent.slice(0, 2).filter((r) => r.format && r.format === d.format);
+  if (d.format && clash.length) problems.push(`format "${d.format}" was used in a recent episode ("${clash[0].title}"); choose a different format`);
   const sig = (xs: string[]) => xs.slice(0, 5).join('>');
   const same = recent.slice(0, 6).find((r) => r.types.length && sig(r.types) === sig(types));
   if (same) problems.push(`the scene sequence starts exactly like "${same.title}" (${sig(types)}); change the order or the layouts`);
@@ -550,28 +640,17 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     userText += recent.length
       ? `\n\nRecent episodes, newest first — use a different format than the last two and do not repeat a scene sequence:\n${recent.map((r) => `- "${r.title}" | format: ${r.format || 'classic quiz'} | scenes: ${r.types.join(' > ')}`).join('\n')}`
       : `\n\nEarlier episodes used the classic order hook > number > myth > quiz > reveal > close; choose a different format.`;
-    const messages: any[] = [{ role: 'user', content: userText }];
-    const system = [{ type: 'text', text: systemPrompt(), cache_control: { type: 'ephemeral' } }];
+    const conv = PROVIDER === 'openai' ? openaiConversation(systemPrompt(), userText) : anthropicConversation(systemPrompt(), userText);
     let submits = 0;
 
     for (let turn = 0; turn < MAX_TURNS; turn++) {
       usage.turns = turn + 1;
       const totalIn = usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens;
       const mustSubmit = turn >= MAX_TURNS - 2 || totalIn > MAX_INPUT_TOKENS * 0.8;
-      // cache the conversation so far: each turn re-reads it at the cache price
-      const msgs = JSON.parse(JSON.stringify(messages));
-      const last = msgs[msgs.length - 1];
-      if (typeof last.content === 'string') last.content = [{ type: 'text', text: last.content }];
-      last.content[last.content.length - 1].cache_control = { type: 'ephemeral' };
-      const resp = await claude({
-        model: MODEL, max_tokens: 16000, system, tools: TOOLS, messages: msgs,
-        ...(mustSubmit ? { tool_choice: { type: 'tool', name: 'submit_episode' } } : {}),
-      });
-      for (const k of ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'] as const) usage[k] += Number(resp.usage?.[k] || 0);
-      messages.push({ role: 'assistant', content: resp.content });
-      const uses = (resp.content || []).filter((b: any) => b.type === 'tool_use');
+      const { uses, usage: u } = await conv.turn(mustSubmit);
+      for (const k of ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'] as const) usage[k] += u[k];
       if (!uses.length) {
-        messages.push({ role: 'user', content: 'Continue: research with the tools if needed, then call submit_episode.' });
+        conv.say('Continue: research with the tools if needed, then call submit_episode.');
         continue;
       }
       const results: any[] = [];
@@ -607,6 +686,10 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
             submits++;
             await pool.query("UPDATE drafts SET status='writing', updated_at=now() WHERE id=$1", [id]);
             await log(id, submits === 1 ? 'เขียนสคริปต์และวางฉากเสร็จ กำลังตรวจกฎ' : `แก้ตามที่ตรวจพบ (รอบ ${submits})`);
+            if (u.input?.__invalid_json !== undefined) {
+              results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: 'The arguments were not valid JSON. Submit again with valid JSON.' });
+              continue;
+            }
             const parsed = Draft.safeParse(u.input);
             if (!parsed.success) {
               const issues = parsed.error.issues.slice(0, 15).map((i) => `${i.path.join('.')}: ${i.message}`);
@@ -640,13 +723,13 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
           }
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
-          if (/ANTHROPIC_API_KEY|FIRECRAWL_API_KEY/.test(msg)) throw e;
+          if (/ANTHROPIC_API_KEY|OPENAI_API_KEY|FIRECRAWL_API_KEY/.test(msg)) throw e;
           await log(id, `เครื่องมือขัดข้อง: ${msg.slice(0, 120)}`);
           results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: `Tool failed: ${msg.slice(0, 300)}` });
         }
       }
-      if (mustSubmit === false && usage.firecrawl_calls >= MAX_FIRECRAWL) results.push({ type: 'text', text: 'Research budget reached: write and submit now.' });
-      messages.push({ role: 'user', content: results });
+      conv.results(results.map((r: any) => ({ id: r.tool_use_id, content: r.content, is_error: r.is_error })),
+        !mustSubmit && usage.firecrawl_calls >= MAX_FIRECRAWL ? 'Research budget reached: write and submit now.' : undefined);
       await saveUsage();
     }
     await pool.query("UPDATE drafts SET status='failed', error=$2, usage=$3, research=$4, updated_at=now() WHERE id=$1",
@@ -736,7 +819,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const topic = String(b.topic || '').trim().slice(0, 400);
     if (topic.length < 4) return c.json({ error: 'พิมพ์หัวข้ออย่างน้อย 4 ตัวอักษร' }, 422);
     const cf = configured();
-    if (!cf.anthropic || !cf.firecrawl) return c.json({ error: `ยังไม่ได้ตั้งค่า ${[!cf.anthropic && 'ANTHROPIC_API_KEY', !cf.firecrawl && 'FIRECRAWL_API_KEY'].filter(Boolean).join(' และ ')} ใน Railway (motion-api)` }, 503);
+    if (!cf.llm || !cf.firecrawl) return c.json({ error: `ยังไม่ได้ตั้งค่า ${[!cf.llm && cf.key_name, !cf.firecrawl && 'FIRECRAWL_API_KEY'].filter(Boolean).join(' และ ')} ใน Railway (motion-api)` }, 503);
     const n = (await pool.query("SELECT count(*)::int AS n FROM drafts WHERE created_at > now() - interval '1 day'")).rows[0].n;
     if (n >= DAILY_LIMIT) return c.json({ error: `ครบโควตา ${DAILY_LIMIT} ร่างต่อวันแล้ว` }, 429);
     const r = await pool.query('INSERT INTO drafts (topic, note, auto_produce) VALUES ($1,$2,$3) RETURNING id',
@@ -790,7 +873,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     if (!row) return c.json({ error: 'not found' }, 404);
     const b = await c.req.json().catch(() => ({}));
     const cf = configured();
-    if (!cf.anthropic || !cf.firecrawl) return c.json({ error: 'ยังไม่ได้ตั้งค่า API key ใน Railway' }, 503);
+    if (!cf.llm || !cf.firecrawl) return c.json({ error: 'ยังไม่ได้ตั้งค่า API key ใน Railway' }, 503);
     const r = await pool.query('INSERT INTO drafts (topic, note, parent_id, auto_produce) VALUES ($1,$2,$3,$4) RETURNING id',
       [row.topic, String(b.note ?? row.note ?? '').trim().slice(0, 1000) || null, row.draft ? row.id : null, !!b.auto_produce]);
     if (['ready', 'failed'].includes(row.status)) await pool.query("UPDATE drafts SET status='discarded', updated_at=now() WHERE id=$1", [id]);

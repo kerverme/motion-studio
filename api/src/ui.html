@@ -485,7 +485,7 @@ const inProgress = d => ['queued','researching','writing'].includes(d.status) ||
 function studio(st, drafts){
   S.studioBusy = drafts.some(inProgress);
   const head = h('div',{class:'head'}, h('div',{}, h('h1',{},'สร้างคลิปใหม่'), h('p',{},'พิมพ์หัวข้อ ระบบจะค้นข้อมูลล่าสุดด้วย Firecrawl เขียนสคริปต์และวางฉากให้ตรวจก่อนผลิต')));
-  const ready = st.anthropic && st.firecrawl;
+  const ready = st.llm && st.firecrawl;
   const topic = h('textarea',{class:'topic',rows:2,maxlength:400,'aria-label':'หัวข้อ',placeholder:'เช่น ถ้าคนไทยทุกคนเลิกกินน้ำตาล 1 เดือน จะเกิดอะไรขึ้น?'});
   try{ topic.value = sessionStorage.getItem('ms.topic')||''; }catch{}
   topic.addEventListener('input',()=>{ try{ sessionStorage.setItem('ms.topic',topic.value); }catch{} });
@@ -499,12 +499,12 @@ function studio(st, drafts){
       try{ sessionStorage.removeItem('ms.topic'); }catch{} toast('เริ่มค้นข้อมูลแล้ว'); await load(); openDraft(r.id); }
     catch(x){ err.textContent=x.message; go.disabled=false; go.textContent='เริ่มค้นและเขียน'; } }}},'เริ่มค้นและเขียน');
   const composer = h('div',{class:'composer'},
-    !ready ? h('div',{class:'note'},'ยังเขียนอัตโนมัติไม่ได้: ตั้งค่า ', [!st.anthropic&&'ANTHROPIC_API_KEY', !st.firecrawl&&'FIRECRAWL_API_KEY'].filter(Boolean).join(' และ '), ' ใน Railway → motion-api → Variables แล้วกด Deploy') : '',
+    !ready ? h('div',{class:'note'},'ยังเขียนอัตโนมัติไม่ได้: ตั้งค่า ', [!st.llm&&('ANTHROPIC_API_KEY หรือ OPENAI_API_KEY'), !st.firecrawl&&'FIRECRAWL_API_KEY'].filter(Boolean).join(' และ '), ' ใน Railway → motion-api → Variables แล้วกด Deploy') : '',
     topic,
     h('div',{class:'ideas'}, h('span',{class:'sub'},'ลองหัวข้อ:'), IDEAS.map(i=>h('button',{on:{click:()=>{ topic.value=i; topic.focus(); }}},i))),
     h('details',{}, h('summary',{},'เพิ่มแนวทาง (ไม่บังคับ)'), h('div',{style:'margin-top:10px'},note)),
     h('label',{class:'check'}, auto, h('span',{},'ผลิตต่อทันทีเมื่อร่างผ่านการตรวจกฎ (ไม่ต้องรอฉันตรวจ)')),
-    h('div',{class:'row'}, h('span',{class:'sub'}, 'วันนี้ใช้ไป '+st.drafts_today+' จาก '+st.daily_limit+' ร่าง · ค่าเสียงไม่เกิน '+fmtN(st.max_credits)+' เครดิต/คลิป'), go),
+    h('div',{class:'row'}, h('span',{class:'sub'}, 'สมอง: '+(st.provider==='openai'?'OpenAI ':'Claude ')+st.model+' · วันนี้ใช้ไป '+st.drafts_today+' จาก '+st.daily_limit+' ร่าง · ค่าเสียงไม่เกิน '+fmtN(st.max_credits)+' เครดิต/คลิป'), go),
     err);
   const list = drafts.length ? h('div',{class:'drafts'}, h('h2',{},'ร่างล่าสุด'), drafts.map(d=>{
     const [cls, txt] = draftState(d);
