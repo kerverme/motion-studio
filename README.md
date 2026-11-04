@@ -72,3 +72,12 @@ New motion-api variables: `MOTION_UI_PASSWORD`, `BUFFER_API_KEY` (Buffer → Set
 `MOTION_AI_DISCLOSURE` (default true: marks posts as AI-generated where the platform has the flag, because the narration is synthetic),
 `MOTION_ALERT_WEBHOOK_URL` (Slack/Discord-style incoming webhook: failed/stuck job alerts), `MOTION_RETENTION_DAYS` + `MOTION_RETENTION_APPLY=true` (delete re-creatable intermediates of delivered jobs; dry-run by default; never touches R2 deliverables or the audio cache).
 Backups: `GET /app/api/export` (JSON of episodes, scripts, sources, handoffs, publish log) next to Railway's own Postgres backups.
+
+### Analytics and Notion (v3)
+
+* Every 10 minutes motion-api asks Buffer for each post's status (`scheduled`/`sent`/`error`), its live link and metrics
+  (views, reach, impressions, reactions, comments, shares, saves, engagement rate; Buffer refreshes them about daily and needs the
+  API key's `insightsRead` scope). Snapshots go to `metric_snapshots`; the **สถิติ** tab shows totals per platform, per clip and cumulative views over time.
+* `NOTION_TOKEN` (internal integration connected to the "Motion Studio Episodes" database; optional `NOTION_DATABASE_ID`) makes motion-api keep one row per
+  episode up to date: Used checkbox, Status, Platforms, Published At, Post Links, Views/Reactions/Comments/Shares, Metrics Updated, Video URL.
+  Rows are found by Episode number, created when missing, synced right after publishing or moving a clip, every 5 minutes for new rows and every 6 hours in full.

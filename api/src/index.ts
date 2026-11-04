@@ -11,6 +11,8 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { registerUi } from './ui.js';
 import * as buffer from './buffer.js';
 import { alertSweep, retention } from './ops.js';
+import { syncPosts } from './metrics.js';
+import * as notion from './notion.js';
 
 const env = process.env;
 const PORT = Number(env.PORT || 8080);
@@ -146,7 +148,7 @@ app.get('/health', async (c) => {
   try {
     const r = await pool.query('SELECT count(*)::int AS jobs FROM jobs');
     const g = await pool.query("SELECT 1 FROM integrations WHERE provider='google_drive'");
-    return c.json({ ok: true, db: 'up', jobs: r.rows[0].jobs, drive_connected: g.rowCount === 1, auth_configured: !!API_TOKEN, ui_enabled: !!env.MOTION_UI_PASSWORD, buffer_configured: buffer.configured(), alerts_configured: !!env.MOTION_ALERT_WEBHOOK_URL, retention_days: Number(env.MOTION_RETENTION_DAYS || 0) || null });
+    return c.json({ ok: true, db: 'up', jobs: r.rows[0].jobs, drive_connected: g.rowCount === 1, auth_configured: !!API_TOKEN, ui_enabled: !!env.MOTION_UI_PASSWORD, buffer_configured: buffer.configured(), notion_configured: notion.configured(), alerts_configured: !!env.MOTION_ALERT_WEBHOOK_URL, retention_days: Number(env.MOTION_RETENTION_DAYS || 0) || null });
   } catch (e) {
     return c.json({ ok: false, error: String(e) }, 503);
   }
@@ -376,6 +378,19 @@ app.onError((err, c) => {
 });
 
 await migrate();
+// Buffer post status + metrics every 10 minutes; changed episodes are mirrored to Notion
+setInterval(() => {
+  syncPosts(pool).then((r) => notion.syncLater(pool, r.changed)).catch((e) => console.error('post sync', e instanceof Error ? e.message : e));
+}, 10 * 60_000).unref();
+// Notion: new or failed rows every 5 minutes, full refresh every 6 hours
+setInterval(async () => {
+  if (!notion.configured()) return;
+  const ids = (await pool.query(`SELECT DISTINCT h.episode_id FROM publication_handoffs h JOIN episodes e ON e.id = h.episode_id
+    WHERE e.notion_page_id IS NULL OR e.notion_error IS NOT NULL`).catch(() => ({ rows: [] }))).rows.map((r: any) => r.episode_id);
+  notion.syncLater(pool, ids);
+}, 5 * 60_000).unref();
+setInterval(() => { notion.syncAll(pool).catch(() => {}); }, 6 * 3600_000).unref();
+setTimeout(() => { notion.syncAll(pool).then((r) => console.log('notion sync', JSON.stringify(r))).catch(() => {}); }, 30_000).unref();
 setInterval(() => { alertSweep(pool).catch((e) => console.error('alert sweep', e instanceof Error ? e.message : e)); }, 60_000).unref();
 if (Number(env.MOTION_RETENTION_DAYS || 0) >= 3) {
   const run = () => retention(pool, s3, env.MOTION_RETENTION_APPLY === 'true').then((r) => console.log('retention', JSON.stringify(r))).catch((e) => console.error('retention', e instanceof Error ? e.message : e));

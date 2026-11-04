@@ -2,232 +2,527 @@
 <html lang="th">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex,nofollow">
+<meta name="theme-color" content="#E9EBE6" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#141917" media="(prefers-color-scheme: dark)">
 <title>Motion Studio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600&family=Noto+Serif+Thai:wght@500;600;700&display=swap" rel="stylesheet">
 <style>
-:root{--bg:#f6f5f2;--card:#fff;--ink:#1d1d1f;--mute:#6b6b70;--line:#e3e1dc;--acc:#2f5bea;--acc-ink:#fff;--ok:#1a7f4b;--bad:#c0392b;--warn:#a96a00;--chip:#efede8}
-@media (prefers-color-scheme:dark){:root{--bg:#121214;--card:#1c1c20;--ink:#f1f1f3;--mute:#9a9aa3;--line:#2c2c32;--acc:#6d8dff;--acc-ink:#0b0b10;--ok:#4cc38a;--bad:#ff7b6b;--warn:#e0a53a;--chip:#26262c}}
+:root{
+  --page:#E9EBE6; --surface:#F7F8F4; --raised:#FFFFFF; --ink:#1E2925; --ink-2:#4E5A54; --ink-3:#6E7972;
+  --line:#D3D8D0; --line-2:#E2E6DF; --accent:#8A5A22; --accent-ink:#FFFFFF; --accent-soft:#EFE5D6;
+  --data:#23805A; --ok:#23805A; --warn:#8F6400; --bad:#A8432F; --focus:#2F6FB0;
+  --serif:"Noto Serif Thai", Georgia, serif; --sans:"IBM Plex Sans Thai", system-ui, -apple-system, sans-serif;
+  --r-lg:14px; --r-md:10px; --r-sm:6px;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --page:#141917; --surface:#1B211F; --raised:#222A27; --ink:#E4E8E2; --ink-2:#B3BDB6; --ink-3:#8E9A93;
+    --line:#2F3934; --line-2:#262E2B; --accent:#D2A764; --accent-ink:#1A1408; --accent-soft:#2E281D;
+    --data:#43A877; --ok:#43A877; --warn:#D9A93F; --bad:#E07A62; --focus:#7FB2E8; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"]{
+  --page:#141917; --surface:#1B211F; --raised:#222A27; --ink:#E4E8E2; --ink-2:#B3BDB6; --ink-3:#8E9A93;
+  --line:#2F3934; --line-2:#262E2B; --accent:#D2A764; --accent-ink:#1A1408; --accent-soft:#2E281D;
+  --data:#43A877; --ok:#43A877; --warn:#D9A93F; --bad:#E07A62; --focus:#7FB2E8; color-scheme: dark;
+}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Noto Sans Thai","Sarabun",sans-serif}
-header{display:flex;align-items:center;gap:12px;padding:14px 16px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:5}
-header h1{font-size:18px;margin:0;flex:1}
-button,.btn{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:10px;padding:8px 14px;cursor:pointer;min-height:40px}
-button.primary{background:var(--acc);color:var(--acc-ink);border-color:var(--acc);font-weight:600}
-button.danger{color:var(--bad)}
-button:disabled{opacity:.5;cursor:not-allowed}
-nav{display:flex;gap:6px;padding:12px 16px 0;max-width:980px;margin:0 auto}
-nav button{border-radius:999px;padding:6px 16px}
-nav button.on{background:var(--ink);color:var(--bg);border-color:var(--ink)}
-main{max-width:980px;margin:0 auto;padding:12px 16px 60px}
-.grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(300px,1fr))}
-.card{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden;display:flex;flex-direction:column}
-.card video,.card .thumb{width:100%;aspect-ratio:9/16;max-height:420px;object-fit:cover;background:#000;display:block}
-.card .body{padding:12px 14px;display:flex;flex-direction:column;gap:8px}
-.card h3{margin:0;font-size:16px}
-.meta{color:var(--mute);font-size:13px}
-.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-.chip{display:inline-block;background:var(--chip);border-radius:999px;padding:2px 10px;font-size:12px}
-.chip.ok{color:var(--ok)}.chip.bad{color:var(--bad)}.chip.warn{color:var(--warn)}
-.empty{color:var(--mute);text-align:center;padding:60px 0}
-.login{max-width:340px;margin:18vh auto;padding:0 16px;display:flex;flex-direction:column;gap:12px}
-input[type=password],input[type=datetime-local],textarea{font:inherit;width:100%;padding:10px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
-textarea{min-height:110px;resize:vertical}
-.err{color:var(--bad);font-size:14px;min-height:20px}
-.modal{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:flex-end;justify-content:center;z-index:20}
-@media (min-width:700px){.modal{align-items:center}}
-.sheet{background:var(--card);width:100%;max-width:640px;max-height:92vh;overflow:auto;border-radius:18px 18px 0 0;padding:18px 16px 24px}
-@media (min-width:700px){.sheet{border-radius:18px}}
-.sheet h2{margin:0 0 4px;font-size:18px}
-.ch{border:1px solid var(--line);border-radius:12px;padding:10px;margin:10px 0}
-.ch label.top{display:flex;gap:10px;align-items:center;font-weight:600}
+html,body{margin:0}
+body{background:var(--page);color:var(--ink);font:15px/1.6 var(--sans);-webkit-font-smoothing:antialiased}
+button,input,textarea{font:inherit;color:inherit}
+a{color:var(--ink);text-underline-offset:3px}
+:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+/* frame */
+.app{display:grid;grid-template-columns:232px 1fr;min-height:100vh}
+.rail{position:sticky;top:0;height:100vh;padding:28px 18px 20px;display:flex;flex-direction:column;gap:28px;border-right:1px solid var(--line)}
+.brand{font-family:var(--serif);font-weight:600;font-size:22px;line-height:1.2;letter-spacing:.2px;padding:0 10px}
+.brand small{display:block;font-family:var(--sans);font-weight:400;font-size:13px;color:var(--ink-3);margin-top:4px;letter-spacing:0}
+.nav{display:flex;flex-direction:column;gap:2px}
+.nav button{all:unset;cursor:pointer;display:flex;justify-content:space-between;align-items:center;padding:9px 10px;border-radius:var(--r-md);color:var(--ink-2)}
+.nav button:hover{background:var(--line-2);color:var(--ink)}
+.nav button[aria-current="page"]{background:var(--surface);color:var(--ink);font-weight:600;box-shadow:inset 3px 0 0 var(--accent)}
+.nav .n{font-size:13px;color:var(--ink-3);font-variant-numeric:tabular-nums;font-weight:400}
+.nav button:focus-visible{outline:2px solid var(--focus)}
+.rail-foot{margin-top:auto;display:flex;flex-direction:column;gap:2px}
+.rail-foot a,.rail-foot button{all:unset;cursor:pointer;padding:7px 10px;border-radius:var(--r-md);color:var(--ink-3);font-size:14px}
+.rail-foot a:hover,.rail-foot button:hover{color:var(--ink);background:var(--line-2)}
+main{padding:36px 40px 80px;min-width:0;max-width:1180px}
+.head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:26px;flex-wrap:wrap}
+.head h1{font-family:var(--serif);font-weight:600;font-size:30px;line-height:1.25;margin:0}
+.head p{margin:4px 0 0;color:var(--ink-2)}
+
+/* buttons */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:40px;padding:8px 16px;border-radius:var(--r-md);border:1px solid var(--line);background:var(--surface);cursor:pointer;color:var(--ink);text-decoration:none;font-size:14.5px}
+.btn:hover{border-color:var(--ink-3)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
+.btn.primary:hover{filter:brightness(1.06)}
+.btn.quiet{border-color:transparent;background:transparent;color:var(--ink-2)}
+.btn.quiet:hover{color:var(--ink);background:var(--line-2)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden}
+.seg button{all:unset;cursor:pointer;padding:6px 12px;font-size:14px;color:var(--ink-2)}
+.seg button[aria-pressed="true"]{background:var(--ink);color:var(--page)}
+.seg button:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
+
+/* contact sheet */
+.sheet-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(176px,1fr));gap:30px 22px}
+.clip{all:unset;cursor:pointer;display:flex;flex-direction:column;gap:10px;border-radius:var(--r-lg)}
+.clip:focus-visible{outline:2px solid var(--focus);outline-offset:4px}
+.frame{position:relative;aspect-ratio:9/16;border-radius:var(--r-lg);overflow:hidden;background:#20272A;box-shadow:0 1px 0 var(--line), 0 14px 30px -18px rgba(20,30,25,.45)}
+.frame img{width:100%;height:100%;object-fit:cover;display:block;transition:transform .35s ease}
+.clip:hover .frame img{transform:scale(1.025)}
+.frame .ep{position:absolute;left:10px;top:10px;padding:2px 8px;border-radius:999px;background:rgba(15,20,18,.62);color:#F2F4EF;font-size:12.5px;font-weight:500;backdrop-filter:blur(6px)}
+.clip h3{margin:0;font-family:var(--serif);font-weight:600;font-size:16.5px;line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.marks{display:flex;gap:6px;flex-wrap:wrap;min-height:22px}
+.mark{display:inline-flex;align-items:center;gap:5px;font-size:12.5px;color:var(--ink-2);padding:1px 8px;border:1px solid var(--line);border-radius:999px}
+.mark i{width:7px;height:7px;border-radius:50%;background:var(--ink-3)}
+.mark.ok i{background:var(--ok)} .mark.wait i{background:transparent;border:1.5px solid var(--warn)} .mark.bad i{background:var(--bad)}
+.sub{font-size:13px;color:var(--ink-3)}
+
+.empty{padding:70px 0;text-align:center;color:var(--ink-2);max-width:460px;margin:0 auto}
+.empty h2{font-family:var(--serif);font-weight:600;font-size:20px;color:var(--ink);margin:0 0 6px}
+
+/* drawer */
+.scrim{position:fixed;inset:0;background:rgba(12,16,14,.42);z-index:40;animation:fade .18s ease}
+.drawer{position:fixed;top:0;right:0;bottom:0;width:min(480px,100%);background:var(--surface);z-index:41;overflow:auto;box-shadow:-24px 0 60px -30px rgba(0,0,0,.5);animation:slide .22s cubic-bezier(.2,.8,.2,1)}
+@keyframes slide{from{transform:translateX(24px);opacity:.4}to{transform:none;opacity:1}}
+@keyframes fade{from{opacity:0}}
+@media (prefers-reduced-motion:reduce){.drawer,.scrim{animation:none}.clip:hover .frame img{transform:none}}
+.d-top{position:sticky;top:0;display:flex;justify-content:space-between;align-items:center;padding:12px 16px;background:var(--surface);border-bottom:1px solid var(--line-2);z-index:2}
+.d-body{padding:20px 22px 40px;display:flex;flex-direction:column;gap:18px}
+.d-video{display:flex;justify-content:center;background:#101513;border-radius:var(--r-lg);overflow:hidden}
+.d-video video{width:100%;max-height:52vh;aspect-ratio:9/16;background:#101513}
+.d-title{font-family:var(--serif);font-weight:600;font-size:22px;line-height:1.4;margin:0}
+.facts{display:grid;grid-template-columns:auto 1fr;gap:4px 16px;font-size:14px;margin:0}
+.facts dt{color:var(--ink-3)} .facts dd{margin:0}
+.actions{display:flex;gap:8px;flex-wrap:wrap}
+.plat{border-top:1px solid var(--line-2)}
+.plat-row{display:grid;grid-template-columns:92px 1fr auto;gap:10px;align-items:baseline;padding:11px 0;border-bottom:1px solid var(--line-2);font-size:14px}
+.plat-row b{font-weight:600}
+.plat-row .st{color:var(--ink-2)} .plat-row .st.ok{color:var(--ok)} .plat-row .st.bad{color:var(--bad)} .plat-row .st.wait{color:var(--warn)}
+.plat-row .nums{color:var(--ink-2);font-variant-numeric:tabular-nums;font-size:13px;grid-column:2/4}
+.plat-row a{color:var(--ink);text-underline-offset:3px}
+h4{margin:6px 0 0;font-size:14px;font-weight:600;color:var(--ink-2)}
+
+/* publish */
+.ch{border:1px solid var(--line);border-radius:var(--r-md);padding:12px 14px;background:var(--raised)}
+.ch+.ch{margin-top:10px}
+.ch label.top{display:flex;gap:10px;align-items:center;cursor:pointer}
+.ch label.top b{font-weight:600}
 .ch.off{opacity:.55}
-.count{font-size:12px;color:var(--mute);text-align:right}
-.count.over{color:var(--bad);font-weight:700}
-.job{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:10px}
-.bar{height:6px;background:var(--chip);border-radius:3px;overflow:hidden;margin:6px 0}.bar i{display:block;height:100%;background:var(--acc)}
-.toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:10px;z-index:30;max-width:90vw}
+.ch textarea{width:100%;min-height:120px;margin-top:10px;padding:10px 12px;border-radius:var(--r-sm);border:1px solid var(--line);background:var(--surface);resize:vertical;line-height:1.55}
+.count{font-size:12.5px;color:var(--ink-3);text-align:right;font-variant-numeric:tabular-nums}
+.count.over{color:var(--bad);font-weight:600}
+input[type=checkbox],input[type=radio]{accent-color:var(--accent);width:17px;height:17px}
+input[type=datetime-local],input[type=password]{width:100%;padding:10px 12px;border-radius:var(--r-md);border:1px solid var(--line);background:var(--raised)}
+.radio{display:flex;gap:10px;align-items:center;padding:6px 0;cursor:pointer}
+.err{color:var(--bad);font-size:14px;min-height:1px}
+.note{font-size:13.5px;color:var(--ink-2);background:var(--accent-soft);border-radius:var(--r-md);padding:10px 12px}
+.summary li{margin:6px 0}
+.summary .cap{white-space:pre-wrap;color:var(--ink-2);font-size:13.5px}
+
+/* jobs */
+.job{display:grid;grid-template-columns:1fr auto;gap:6px 16px;padding:16px 0;border-bottom:1px solid var(--line)}
+.job b{font-family:var(--serif);font-weight:600;font-size:16.5px}
+.bar{height:4px;background:var(--line);border-radius:2px;overflow:hidden;grid-column:1/3}
+.bar i{display:block;height:100%;background:var(--data);border-radius:2px}
+.job .sub{grid-column:1/3}
+.state{font-size:13px;font-weight:500}
+.state.bad{color:var(--bad)} .state.wait{color:var(--warn)}
+
+/* analytics */
+.lede{font-family:var(--serif);font-size:21px;line-height:1.6;margin:0 0 6px;max-width:62ch}
+.lede strong{font-weight:700}
+.panel{background:var(--surface);border:1px solid var(--line-2);border-radius:var(--r-lg);padding:20px 22px;margin-top:22px}
+.panel h2{margin:0 0 2px;font-size:16px;font-weight:600}
+.panel .sub{margin-bottom:12px}
+.chart{position:relative}
+.chart svg{display:block;width:100%;height:240px;overflow:visible}
+.chart .grid line{stroke:var(--line);stroke-width:1}
+.chart .axis text{fill:var(--ink-3);font-size:11.5px;font-family:var(--sans)}
+.chart .line{fill:none;stroke:var(--data);stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+.chart .cross{stroke:var(--ink-3);stroke-width:1;stroke-dasharray:3 3}
+.chart .dot{fill:var(--data);stroke:var(--surface);stroke-width:2}
+.tip{position:absolute;pointer-events:none;background:var(--ink);color:var(--page);padding:6px 10px;border-radius:var(--r-sm);font-size:13px;white-space:nowrap;transform:translate(-50%,-110%)}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+th,td{text-align:right;padding:10px 8px;border-bottom:1px solid var(--line-2);font-size:14px;white-space:nowrap}
+th{font-weight:500;color:var(--ink-3);font-size:13px}
+th:first-child,td:first-child{text-align:left}
+td.name{font-weight:600}
+td.views{min-width:170px}
+.vb{display:flex;align-items:center;gap:8px;justify-content:flex-end}
+.vb span{display:block;height:8px;background:var(--data);border-radius:0 4px 4px 0;min-width:2px}
+.scroll{overflow-x:auto;margin:0 -8px;padding:0 8px}
+.conn{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}
+.conn div{font-size:14px}
+.conn b{display:block;font-weight:600;margin-bottom:2px}
+.conn .ok{color:var(--ok)} .conn .bad{color:var(--bad)} .conn .wait{color:var(--warn)}
+details summary{cursor:pointer;color:var(--ink-2);font-size:14px;margin-top:10px}
+
+/* login */
+.login{min-height:100vh;display:grid;place-items:center;padding:24px}
+.login form{width:min(340px,100%);display:flex;flex-direction:column;gap:14px}
+.login h1{font-family:var(--serif);font-weight:600;font-size:30px;margin:0}
+.login p{margin:0 0 6px;color:var(--ink-2)}
+.toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:var(--ink);color:var(--page);padding:10px 16px;border-radius:var(--r-md);z-index:60;max-width:90vw;font-size:14px}
+
+@media (max-width:760px){
+  .app{grid-template-columns:1fr}
+  .rail{position:fixed;top:auto;bottom:0;left:0;right:0;height:auto;flex-direction:row;padding:6px 8px calc(6px + env(safe-area-inset-bottom));border-right:0;border-top:1px solid var(--line);background:var(--surface);z-index:30;gap:0}
+  .brand,.rail-foot{display:none}
+  .nav{flex-direction:row;width:100%;justify-content:space-around}
+  .nav button{flex-direction:column;gap:0;padding:6px 8px;font-size:13px;align-items:center}
+  .nav button[aria-current="page"]{box-shadow:inset 0 -2px 0 var(--accent);background:transparent}
+  .nav .n{font-size:11.5px}
+  main{padding:22px 16px 110px}
+  .mobile-top{display:flex!important}
+  .head h1{font-size:25px}
+  .sheet-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:22px 14px}
+  .clip h3{font-size:15px}
+  .lede{font-size:18px}
+  .panel{padding:16px}
+}
+.mobile-top{display:none;justify-content:space-between;align-items:center;padding:14px 16px 0}
+.mobile-top .brand{display:block;padding:0;font-size:19px}
 </style>
 </head>
 <body>
-<div id="app"></div>
+<div id="root"></div>
 <script>
 'use strict';
-const $app = document.getElementById('app');
-for (const P of [Element.prototype]) { const rc = P.replaceChildren; P.replaceChildren = function(...k){ return rc.apply(this, k.filter(x=>x!=null && x!==false && x!=='')); }; }
-const SVC = {instagram:'Instagram', facebook:'Facebook', tiktok:'TikTok', twitter:'X (Twitter)'};
-let state = {tab:'ready', episodes:[], jobs:[], channels:null};
+const root = document.getElementById('root');
+const SVC = {instagram:'Instagram', facebook:'Facebook', tiktok:'TikTok', twitter:'X'};
+const ORDER = ['instagram','facebook','tiktok','twitter'];
+const S = {view:'ready', counts:{}, channels:null, days:30};
+const nf = new Intl.NumberFormat('th-TH');
+const fmtN = v => v==null ? '—' : nf.format(Math.round(v));
+const fmtD = d => d ? new Date(d).toLocaleString('th-TH',{day:'numeric',month:'short',year:'2-digit',hour:'2-digit',minute:'2-digit'}) : '';
+const fmtDay = d => new Date(d+'T00:00:00').toLocaleDateString('th-TH',{day:'numeric',month:'short'});
 
-function el(tag, attrs, ...kids){
+function h(tag, attrs, ...kids){
   const e = document.createElement(tag);
   for (const [k,v] of Object.entries(attrs||{})){
+    if (v===false || v==null) continue;
     if (k==='class') e.className=v; else if (k==='on') for (const [ev,fn] of Object.entries(v)) e.addEventListener(ev,fn);
-    else if (v===true) e.setAttribute(k,''); else if (v!==false && v!=null) e.setAttribute(k,v);
+    else if (k==='html') e.innerHTML=v; else if (v===true) e.setAttribute(k,''); else e.setAttribute(k,v);
   }
-  for (const kid of kids.flat()) if (kid!=null && kid!==false) e.append(kid.nodeType?kid:document.createTextNode(String(kid)));
+  for (const kid of kids.flat(Infinity)) if (kid!=null && kid!==false && kid!=='') e.append(kid.nodeType?kid:document.createTextNode(String(kid)));
   return e;
 }
+const put = (node, ...kids) => node.replaceChildren(...kids.flat(Infinity).filter(k=>k!=null && k!==false && k!==''));
 async function api(path, opts={}){
   const r = await fetch(path, {credentials:'same-origin', ...opts, headers:{'x-motion-ui':'1','content-type':'application/json',...(opts.headers||{})}});
-  let j = null; try { j = await r.json(); } catch {}
-  if (r.status===401 && !path.endsWith('/login')) { renderLogin(); throw new Error('unauthorized'); }
-  if (!r.ok) { const e = new Error((j&&j.error)||('HTTP '+r.status)); e.body=j; throw e; }
+  let j=null; try{ j=await r.json(); }catch{}
+  if (r.status===401 && !path.endsWith('/login')) { login(); throw new Error('unauthorized'); }
+  if (!r.ok){ const e=new Error((j&&j.error)||('HTTP '+r.status)); e.body=j; throw e; }
   return j;
 }
-function toast(msg){ const t=el('div',{class:'toast'},msg); document.body.append(t); setTimeout(()=>t.remove(),3500); }
-const fmt = d => d ? new Date(d).toLocaleString('th-TH',{dateStyle:'medium',timeStyle:'short'}) : '';
+function toast(msg){ const t=h('div',{class:'toast',role:'status'},msg); document.body.append(t); setTimeout(()=>t.remove(),3200); }
 
-function renderLogin(msg){
-  const pw = el('input',{type:'password',placeholder:'รหัสผ่าน',autocomplete:'current-password',autofocus:true});
-  const err = el('div',{class:'err'},msg||'');
-  const go = async () => {
-    err.textContent='';
-    try { await api('/app/api/login',{method:'POST',body:JSON.stringify({password:pw.value})}); start(); }
-    catch(e){ err.textContent = e.message==='wrong password' ? 'รหัสผ่านไม่ถูกต้อง' : e.message; pw.value=''; }
-  };
-  pw.addEventListener('keydown',e=>{ if(e.key==='Enter') go(); });
-  $app.replaceChildren(el('div',{class:'login'}, el('h1',{},'Motion Studio'), pw, el('button',{class:'primary',on:{click:go}},'เข้าสู่ระบบ'), err));
+/* post state -> words */
+function postState(p){
+  if (p.status==='failed') return {cls:'bad', text:'ส่งไม่สำเร็จ'};
+  if (p.status==='pending') return {cls:'wait', text:'ค้างอยู่'};
+  if (p.post_status==='sent') return {cls:'ok', text:'เผยแพร่แล้ว'};
+  if (p.post_status==='error') return {cls:'bad', text:'แพลตฟอร์มปฏิเสธ'};
+  if (p.post_status==='deleted') return {cls:'bad', text:'ถูกลบใน Buffer'};
+  if (p.mode==='customScheduled' && p.due_at) return {cls:'wait', text:'ตั้งเวลา '+fmtD(p.due_at)};
+  if (p.mode==='addToQueue') return {cls:'wait', text:'อยู่ในคิว Buffer'};
+  return {cls:'wait', text:'กำลังส่ง'};
+}
+function latestByService(pubs){
+  const m = {};
+  for (const p of pubs) if (!m[p.service] || (m[p.service].status==='failed' && p.status!=='failed')) m[p.service]=p;
+  return m;
 }
 
-function shell(content){
-  const tabs = [['ready','พร้อมใช้'],['used','เสร็จแล้ว'],['working','กำลังทำ']];
-  $app.replaceChildren(
-    el('header',{}, el('h1',{},'Motion Studio'),
-      el('a',{class:'btn',href:'/app/api/export',download:true,style:'text-decoration:none'},'สำรองข้อมูล'),
-      el('button',{on:{click:async()=>{ await api('/app/api/logout',{method:'POST'}); renderLogin(); }}},'ออก')),
-    el('nav',{}, tabs.map(([k,l])=>el('button',{class:state.tab===k?'on':'',on:{click:()=>{state.tab=k;load();}}},l))),
-    el('main',{}, content));
+/* ---------- login ---------- */
+function login(msg){
+  const pw = h('input',{type:'password',id:'pw',autocomplete:'current-password',required:true,'aria-label':'รหัสผ่าน',placeholder:'รหัสผ่าน'});
+  const err = h('div',{class:'err',role:'alert'},msg||'');
+  const form = h('form',{on:{submit:async e=>{ e.preventDefault(); err.textContent='';
+      try{ await api('/app/api/login',{method:'POST',body:JSON.stringify({password:pw.value})}); start(); }
+      catch(x){ err.textContent = x.message==='wrong password' ? 'รหัสผ่านไม่ถูกต้อง' : x.message==='too many attempts, try again later' ? 'ลองผิดหลายครั้งเกินไป รอ 15 นาทีแล้วลองใหม่' : x.message; pw.value=''; pw.focus(); } }}},
+    h('h1',{},'Motion Studio'), h('p',{},'คลังคลิปและการโพสต์'), pw, h('button',{class:'btn primary',type:'submit'},'เข้าสู่ระบบ'), err);
+  put(root, h('div',{class:'login'}, form)); pw.focus();
 }
+
+/* ---------- frame ---------- */
+const VIEWS = [['ready','พร้อมใช้'],['used','เสร็จแล้ว'],['working','กำลังทำ'],['analytics','สถิติ']];
+let mainEl;
+function frame(){
+  const nav = h('nav',{class:'nav','aria-label':'หมวด'}, VIEWS.map(([k,l])=>h('button',{'aria-current':S.view===k?'page':false,on:{click:()=>go(k)}}, h('span',{},l), h('span',{class:'n'}, k!=='analytics' && S.counts[k]!=null ? S.counts[k] : '\u00a0'))));
+  mainEl = h('main',{id:'main'});
+  put(root, h('div',{class:'app'},
+    h('aside',{class:'rail'}, h('div',{class:'brand'},'Motion Studio', h('small',{},'คลังคลิปของ Kerver')), nav,
+      h('div',{class:'rail-foot'}, h('a',{href:'/app/api/export',download:true},'สำรองข้อมูล (JSON)'), h('button',{on:{click:logout}},'ออกจากระบบ'))),
+    h('div',{}, h('div',{class:'mobile-top'}, h('div',{class:'brand'},'Motion Studio'), h('button',{class:'btn quiet',on:{click:logout}},'ออก')), mainEl)));
+}
+async function logout(){ await api('/app/api/logout',{method:'POST'}); login(); }
+function go(v){ S.view=v; try{ localStorage.setItem('ms.view',v); }catch{} load(); }
 
 async function load(){
-  try {
-    if (state.tab==='working') {
-      state.jobs = (await api('/app/api/working')).jobs;
-      shell(state.jobs.length ? state.jobs.map(jobView) : el('div',{class:'empty'},'ไม่มีงานที่กำลังทำหรือค้างอยู่'));
+  try{
+    if (S.view==='ready' || S.view==='used'){
+      const r = await api('/app/api/episodes?tab='+S.view); S.counts=r.counts; S.eps=r.episodes; frame(); clips();
+    } else if (S.view==='working'){
+      const [w, e] = await Promise.all([api('/app/api/working'), api('/app/api/episodes?tab=ready')]); S.counts=e.counts; frame(); working(w.jobs);
     } else {
-      state.episodes = (await api('/app/api/episodes?tab='+state.tab)).episodes;
-      shell(state.episodes.length ? el('div',{class:'grid'}, state.episodes.map(clipView))
-        : el('div',{class:'empty'}, state.tab==='ready'?'ยังไม่มีคลิปที่พร้อมใช้':'ยังไม่มีคลิปที่ใช้แล้ว'));
+      const [a, i, e] = await Promise.all([api('/app/api/analytics?days='+S.days), api('/app/api/integrations'), api('/app/api/episodes?tab=ready')]);
+      S.counts=e.counts; frame(); analytics(a, i);
     }
-  } catch(e){ if(e.message!=='unauthorized') toast(e.message); }
+  }catch(x){ if (x.message!=='unauthorized') toast(x.message); }
 }
 
-function jobView(j){
-  const failed = j.status==='FAILED';
-  return el('div',{class:'job'},
-    el('div',{class:'row'}, el('strong',{},j.title||j.id.slice(0,8)), el('span',{class:'chip '+(failed?'bad':'warn')}, j.status)),
-    el('div',{class:'bar'}, el('i',{style:'width:'+Math.round((j.progress||0)*100)+'%'})),
-    el('div',{class:'meta'},'อัปเดต '+fmt(j.updated_at)+' · ลองแล้ว '+j.attempts+'/'+j.max_attempts),
-    j.error ? el('div',{class:'meta',style:'color:var(--bad)'}, String(j.error).slice(0,300)) : null,
-    failed || j.status==='CANCELLED' ? el('button',{class:'primary',on:{click:async()=>{ try{ await api('/app/api/jobs/'+j.id+'/retry',{method:'POST'}); toast('สั่งลองใหม่แล้ว'); load(); }catch(e){ toast(e.message); } }}},'ลองใหม่ (ต่อจากขั้นที่ค้าง)') : null);
-}
-
-function clipView(ep){
-  const sent = ep.publications.filter(p=>p.status==='sent');
-  const pend = ep.publications.filter(p=>p.status==='pending');
-  const used = ep.ui_status==='used';
-  const video = el('video',{controls:true,preload:'none',playsinline:true,poster:ep.thumbnail_url||false,src:ep.video_url});
-  return el('div',{class:'card'}, video,
-    el('div',{class:'body'},
-      el('h3',{}, (ep.number?('EP'+String(ep.number).padStart(3,'0')+' · '):'')+ep.title),
-      el('div',{class:'meta'}, 'ส่งมอบ '+fmt(ep.delivered_at)+(ep.video_bytes?(' · '+(ep.video_bytes/1048576).toFixed(1)+' MB'):'')),
-      el('div',{class:'row'},
-        sent.map(p=>el('span',{class:'chip ok'},'✓ '+(SVC[p.service]||p.service)+(p.mode==='customScheduled'?' (ตั้งเวลา)':p.mode==='addToQueue'?' (คิว)':''))),
-        pend.map(p=>el('span',{class:'chip warn',title:'ค้างอยู่ — ตรวจใน Buffer ก่อน แล้วกดล้าง',on:{click:async()=>{ if(confirm('ตรวจใน Buffer แล้วว่าไม่มีโพสต์นี้ ต้องการล้างสถานะค้าง?')){ await api('/app/api/publications/'+p.id+'/clear',{method:'POST'}); load(); } }}},'… '+(SVC[p.service]||p.service)+' ค้าง (แตะเพื่อล้าง)'))),
-      el('div',{class:'row'},
-        el('button',{class:'primary',on:{click:()=>openPublish(ep)}},'Publish'),
-        el('button',{on:{click:async()=>{ try{ await navigator.clipboard.writeText(ep.video_url); toast('คัดลอกลิงก์แล้ว'); }catch{ prompt('ลิงก์วิดีโอ',ep.video_url); } }}},'คัดลอกลิงก์'),
-        el('button',{on:{click:async()=>{ await api('/app/api/episodes/'+ep.id+'/used',{method:'POST',body:JSON.stringify({used:!used})}); load(); }}}, used?'ย้ายกลับ พร้อมใช้':'ย้ายไป เสร็จแล้ว'))));
-}
-
-async function openPublish(ep){
-  if (!state.channels || state.channels.error) {
-    try { state.channels = await api('/app/api/channels'); } catch(e){ state.channels = {configured:true,channels:[],error:e.message}; }
+/* ---------- clips ---------- */
+function clips(){
+  const ready = S.view==='ready';
+  const head = h('div',{class:'head'}, h('div',{},
+    h('h1',{}, ready?'พร้อมใช้':'เสร็จแล้ว'),
+    h('p',{}, ready ? (S.eps.length? S.eps.length+' คลิปที่ยังไม่ได้โพสต์' : '') : 'คลิปที่โพสต์ผ่าน Buffer แล้ว หรือย้ายมาเอง')));
+  if (!S.eps.length){
+    put(mainEl, head, h('div',{class:'empty'}, h('h2',{}, ready?'ยังไม่มีคลิปรอโพสต์':'ยังไม่มีคลิปที่ใช้แล้ว'),
+      h('p',{}, ready?'คลิปใหม่จะขึ้นที่นี่เมื่อเรนเดอร์และอัปโหลดเสร็จ':'เมื่อโพสต์คลิปสำเร็จ คลิปจะย้ายมาที่นี่เอง')));
+    return;
   }
-  const C = state.channels;
-  const already = new Set(ep.publications.filter(p=>p.status==='sent'||p.status==='pending').map(p=>p.channel_id));
-  const sel = {}; // channelId -> {on, ta}
-  const list = el('div',{});
-  const note = !C.configured ? 'ยังไม่ได้ตั้งค่า BUFFER_API_KEY บนเซิร์ฟเวอร์ — ยังโพสต์ไม่ได้'
-              : C.error ? 'โหลดช่องจาก Buffer ไม่สำเร็จ: '+C.error : '';
-  for (const ch of (C.channels||[])) {
-    const done = already.has(ch.id);
-    const cb = el('input',{type:'checkbox',disabled:done});
-    const ta = el('textarea',{}, ep.captions[ch.service]||'');
+  const grid = h('div',{class:'sheet-grid'}, S.eps.map(ep=>{
+    const by = latestByService(ep.publications);
+    const views = ep.publications.filter(p=>p.metrics&&p.metrics.views!=null).reduce((n,p)=>n+p.metrics.views,0);
+    const hasViews = ep.publications.some(p=>p.metrics&&p.metrics.views!=null);
+    return h('button',{class:'clip',on:{click:()=>detail(ep)},'aria-label':'เปิด '+ep.title},
+      h('div',{class:'frame'}, ep.thumbnail_url?h('img',{src:ep.thumbnail_url,alt:'',loading:'lazy'}):'', ep.number?h('span',{class:'ep'},'EP'+String(ep.number).padStart(3,'0')):''),
+      h('h3',{},ep.title),
+      Object.keys(by).length ? h('div',{class:'marks'}, ORDER.filter(s=>by[s]).map(s=>{ const st=postState(by[s]); return h('span',{class:'mark '+st.cls,title:st.text},h('i',{'aria-hidden':'true'}),SVC[s]); }))
+        : h('div',{class:'sub'},'ส่งมอบ '+fmtD(ep.delivered_at)),
+      hasViews ? h('div',{class:'sub'},'ยอดดู '+fmtN(views)) : '');
+  }));
+  put(mainEl, head, grid);
+}
+
+/* ---------- drawer ---------- */
+function drawer(build){
+  const scrim = h('div',{class:'scrim',on:{click:()=>close()}});
+  const body = h('div',{class:'d-body'});
+  const closeBtn = h('button',{class:'btn quiet',on:{click:()=>close()}},'ปิด');
+  const titleEl = h('span',{class:'sub'});
+  const panel = h('div',{class:'drawer',role:'dialog','aria-modal':'true','aria-label':'รายละเอียดคลิป'}, h('div',{class:'d-top'}, titleEl, closeBtn), body);
+  const onKey = e=>{ if(e.key==='Escape') close(); };
+  function close(reload){ scrim.remove(); panel.remove(); document.removeEventListener('keydown',onKey); if(reload) load(); }
+  document.addEventListener('keydown',onKey);
+  document.body.append(scrim, panel);
+  build({body, titleEl, close});
+  closeBtn.focus();
+}
+
+function detail(ep){
+  drawer(({body, titleEl, close})=>{
+    titleEl.textContent = ep.number ? 'EP'+String(ep.number).padStart(3,'0') : '';
+    const used = ep.ui_status==='used';
+    const by = latestByService(ep.publications);
+    const rows = ORDER.filter(s=>by[s]).map(s=>{
+      const p = by[s], st = postState(p), m = p.metrics||{};
+      const nums = p.metrics ? ['ดู '+fmtN(m.views), 'ถูกใจ '+fmtN(m.reactions), 'คอมเมนต์ '+fmtN(m.comments), 'แชร์ '+fmtN(m.shares)].join('   ') : (p.post_status==='sent' ? 'สถิติจะขึ้นภายในราว 24 ชั่วโมงหลังเผยแพร่' : '');
+      return h('div',{class:'plat-row'}, h('b',{},SVC[s]), h('span',{class:'st '+st.cls},st.text, p.error?h('div',{class:'sub'},p.error):''),
+        p.link ? h('a',{href:p.link,target:'_blank',rel:'noopener'},'เปิดโพสต์') : (p.status==='pending' ? h('button',{class:'btn quiet',on:{click:async()=>{ await api('/app/api/publications/'+p.id+'/clear',{method:'POST'}); close(true); }}},'ล้างสถานะค้าง') : h('span',{})),
+        nums ? h('div',{class:'nums'},nums) : '');
+    });
+    put(body,
+      h('div',{class:'d-video'}, h('video',{controls:true,preload:'metadata',playsinline:true,poster:ep.thumbnail_url||false,src:ep.video_url})),
+      h('h2',{class:'d-title'}, ep.title),
+      h('dl',{class:'facts'}, h('dt',{},'ส่งมอบ'), h('dd',{},fmtD(ep.delivered_at)), h('dt',{},'ขนาด'), h('dd',{}, ep.video_bytes?(ep.video_bytes/1048576).toFixed(1)+' MB':'—'),
+        h('dt',{},'Notion'), h('dd',{}, ep.notion.url ? h('a',{href:ep.notion.url,target:'_blank',rel:'noopener'}, used?'บันทึกแล้ว · ติ๊กใช้แล้ว':'บันทึกแล้ว') : ep.notion.error ? h('span',{style:'color:var(--bad)'},'บันทึกไม่สำเร็จ') : 'รอซิงก์')),
+      h('div',{class:'actions'},
+        h('button',{class:'btn primary',on:{click:()=>publish(ep, body, close)}},'โพสต์คลิปนี้'),
+        h('button',{class:'btn',on:{click:async()=>{ try{ await navigator.clipboard.writeText(ep.video_url); toast('คัดลอกลิงก์วิดีโอแล้ว'); }catch{ prompt('ลิงก์วิดีโอ',ep.video_url); } }}},'คัดลอกลิงก์'),
+        h('button',{class:'btn quiet',on:{click:async()=>{ await api('/app/api/episodes/'+ep.id+'/used',{method:'POST',body:JSON.stringify({used:!used})}); toast(used?'ย้ายกลับไปพร้อมใช้แล้ว':'ย้ายไปเสร็จแล้ว'); close(true); }}}, used?'ย้ายกลับไปพร้อมใช้':'ย้ายไปเสร็จแล้ว')),
+      rows.length ? h('div',{}, h('h4',{},'แต่ละแพลตฟอร์ม'), h('div',{class:'plat'}, rows)) : '');
+  });
+}
+
+/* ---------- publish ---------- */
+async function publish(ep, body, close){
+  put(body, h('p',{class:'sub'},'กำลังโหลดช่องจาก Buffer…'));
+  if (!S.channels || S.channels.error) { try{ S.channels = await api('/app/api/channels'); }catch(x){ S.channels={configured:true,channels:[],error:x.message}; } }
+  const C = S.channels;
+  const taken = new Set(ep.publications.filter(p=>p.status==='sent'||p.status==='pending').map(p=>p.channel_id));
+  const sel = [];
+  const chans = [...(C.channels||[])].sort((a,b)=>ORDER.indexOf(a.service)-ORDER.indexOf(b.service)).map(ch=>{
+    const done = taken.has(ch.id);
+    const cb = h('input',{type:'checkbox',disabled:done});
+    const ta = h('textarea',{'aria-label':'ข้อความสำหรับ '+SVC[ch.service]});
     ta.value = ep.captions[ch.service]||'';
-    const cnt = el('div',{class:'count'});
-    const upd = () => { const n=[...ta.value].length; if(ch.service==='twitter'){ cnt.textContent=n+' / 280'; cnt.className='count'+(n>280?' over':''); } else cnt.textContent=n+' ตัวอักษร'; };
+    const cnt = h('div',{class:'count','aria-live':'polite'});
+    const upd = ()=>{ const n=[...ta.value].length; if(ch.service==='twitter'){ cnt.textContent=n+' / 280'; cnt.className='count'+(n>280?' over':''); } else cnt.textContent=n+' ตัวอักษร'; };
     ta.addEventListener('input',upd); upd();
-    const box = el('div',{class:'ch'+(done?' off':'')},
-      el('label',{class:'top'}, cb, SVC[ch.service]||ch.service, el('span',{class:'meta',style:'font-weight:400'},ch.name), done?el('span',{class:'chip ok'},'โพสต์แล้ว'):null),
-      el('div',{style:'display:none'}, ta, cnt));
-    cb.addEventListener('change',()=>{ box.lastChild.style.display = cb.checked?'block':'none'; });
-    sel[ch.id] = {cb, ta, ch};
-    list.append(box);
+    const edit = h('div',{hidden:true}, ta, cnt);
+    cb.addEventListener('change',()=>{ edit.hidden=!cb.checked; });
+    sel.push({cb, ta, ch});
+    return h('div',{class:'ch'+(done?' off':'')}, h('label',{class:'top'}, cb, h('b',{},SVC[ch.service]), h('span',{class:'sub'},ch.name), done?h('span',{class:'sub',style:'margin-left:auto'},'โพสต์แล้ว'):''), edit);
+  });
+  const missing = (C.not_connected||[]).map(s=>h('div',{class:'ch off'}, h('b',{},SVC[s]), h('div',{class:'sub'},'ยังไม่ได้เชื่อมใน Buffer')));
+  const note = !C.configured ? 'ยังไม่ได้ตั้งค่า BUFFER_API_KEY บนเซิร์ฟเวอร์' : C.error ? 'โหลดช่องจาก Buffer ไม่ได้: '+C.error : '';
+  const modes = [['addToQueue','เข้าคิวของ Buffer','โพสต์ตามช่วงเวลาที่ตั้งไว้ใน Buffer'],['shareNow','โพสต์ทันที',''],['customScheduled','ตั้งเวลาเอง','']];
+  let mode = 'addToQueue';
+  const due = h('input',{type:'datetime-local',hidden:true,'aria-label':'เวลาโพสต์'});
+  const modeBox = h('div',{role:'radiogroup','aria-label':'เวลาโพสต์'}, modes.map(([v,l,d])=>h('label',{class:'radio'}, h('input',{type:'radio',name:'mode',value:v,checked:v===mode,on:{change:()=>{ mode=v; due.hidden = v!=='customScheduled'; }}}), h('span',{},l, d?h('span',{class:'sub'},'  '+d):''))), due);
+  const err = h('div',{class:'err',role:'alert'});
+
+  function pick(){
+    put(body, h('h2',{class:'d-title'},'โพสต์ “'+ep.title+'”'), h('p',{class:'sub',style:'margin:-10px 0 0'}, 'เลือกช่องและแก้ข้อความได้'+(C.organization?' · Buffer: '+C.organization:'')),
+      note?h('div',{class:'note'},note):'', h('div',{},chans,missing), h('h4',{},'เวลา'), modeBox, err,
+      h('div',{class:'actions'}, h('button',{class:'btn quiet',on:{click:()=>{ close(); detail(ep); }}},'ยกเลิก'), h('button',{class:'btn primary',on:{click:review}},'ตรวจทานก่อนโพสต์')));
   }
-  for (const s of (C.not_connected||[])) list.append(el('div',{class:'ch off'}, el('strong',{},SVC[s]||s), el('div',{class:'meta'},'ยังไม่ได้เชื่อมต่อใน Buffer')));
-
-  const mode = {v:'addToQueue'};
-  const due = el('input',{type:'datetime-local',style:'display:none;margin-top:8px'});
-  const modes = [['addToQueue','เข้าคิวของ Buffer'],['shareNow','โพสต์ทันที'],['customScheduled','ตั้งเวลา']];
-  const modeBox = el('div',{}, modes.map(([v,l])=>el('label',{style:'display:block;margin:4px 0'}, el('input',{type:'radio',name:'mode',value:v,checked:v===mode.v,on:{change:()=>{mode.v=v;due.style.display=v==='customScheduled'?'block':'none';}}}),' '+l)), due);
-
-  const err = el('div',{class:'err'});
-  const body = el('div',{});
-  const modal = el('div',{class:'modal',on:{click:e=>{ if(e.target===modal) modal.remove(); }}}, el('div',{class:'sheet'}, body));
-  document.body.append(modal);
-
-  function stepPick(){
-    body.replaceChildren(
-      el('h2',{},'โพสต์: '+ep.title), el('div',{class:'meta'},'เลือกช่องและแก้ข้อความได้ก่อนโพสต์'+(C.organization?' · Buffer: '+C.organization:'')),
-      note?el('div',{class:'err'},note):'', list, el('h3',{style:'margin:14px 0 4px;font-size:15px'},'เวลา'), modeBox, err,
-      el('div',{class:'row',style:'margin-top:14px'},
-        el('button',{on:{click:()=>modal.remove()}},'ยกเลิก'),
-        el('button',{class:'primary',on:{click:stepConfirm}},'ตรวจสอบก่อนโพสต์')));
-  }
-  function stepConfirm(){
+  function review(){
     err.textContent='';
-    const picked = Object.values(sel).filter(s=>s.cb.checked);
-    if(!picked.length){ err.textContent='เลือกอย่างน้อย 1 ช่อง'; return; }
-    const over = picked.find(s=>s.ch.service==='twitter' && [...s.ta.value].length>280);
-    if(over){ err.textContent='ข้อความ X เกิน 280 ตัวอักษร'; return; }
+    const picked = sel.filter(s=>s.cb.checked);
+    if (!picked.length){ err.textContent='เลือกอย่างน้อยหนึ่งช่อง'; return; }
+    if (picked.some(s=>s.ch.service==='twitter' && [...s.ta.value].length>280)){ err.textContent='ข้อความสำหรับ X ยาวเกิน 280 ตัวอักษร'; return; }
     let dueIso;
-    if(mode.v==='customScheduled'){
-      const t = due.value ? new Date(due.value) : null;
-      if(!t || t.getTime() < Date.now()+2*60000){ err.textContent='เลือกเวลาในอนาคต (อย่างน้อย 2 นาที)'; return; }
-      dueIso = t.toISOString();
-    }
-    const modeLabel = modes.find(m=>m[0]===mode.v)[1] + (dueIso?(' — '+fmt(dueIso)):'');
-    const go = el('button',{class:'primary',on:{click:async()=>{
+    if (mode==='customScheduled'){ const t=due.value?new Date(due.value):null; if(!t||t.getTime()<Date.now()+120000){ err.textContent='เลือกเวลาที่ห่างจากตอนนี้อย่างน้อย 2 นาที'; return; } dueIso=t.toISOString(); }
+    const label = modes.find(m=>m[0]===mode)[1] + (dueIso?' — '+fmtD(dueIso):'');
+    const err2 = h('div',{class:'err',role:'alert'});
+    const go = h('button',{class:'btn primary',on:{click:async()=>{
       go.disabled=true; go.textContent='กำลังโพสต์…';
-      try {
-        const res = await api('/app/api/episodes/'+ep.id+'/publish',{method:'POST',body:JSON.stringify({confirm:true,mode:mode.v,dueAt:dueIso,posts:picked.map(s=>({channelId:s.ch.id,text:s.ta.value}))})});
-        showResult(res);
-      } catch(e){ err2.textContent=e.message; go.disabled=false; go.textContent='ยืนยันโพสต์'; }
-    }}},'ยืนยันโพสต์');
-    const err2 = el('div',{class:'err'});
-    body.replaceChildren(
-      el('h2',{},'ยืนยันการโพสต์'),
-      el('p',{},'คลิป: '+ep.title), el('p',{},'วิธี: '+modeLabel),
-      el('ul',{}, picked.map(s=>el('li',{}, el('strong',{},(SVC[s.ch.service]||s.ch.service)+' · '+s.ch.name), el('div',{class:'meta',style:'white-space:pre-wrap'}, s.ta.value.slice(0,160)+(s.ta.value.length>160?'…':''))))),
-      err2, el('div',{class:'row'}, el('button',{on:{click:stepPick}},'กลับไปแก้'), go));
+      try{ const res = await api('/app/api/episodes/'+ep.id+'/publish',{method:'POST',body:JSON.stringify({confirm:true,mode,dueAt:dueIso,posts:picked.map(s=>({channelId:s.ch.id,text:s.ta.value}))})}); result(res); }
+      catch(x){ err2.textContent=x.message; go.disabled=false; go.textContent='ยืนยันและโพสต์'; }
+    }}},'ยืนยันและโพสต์');
+    put(body, h('h2',{class:'d-title'},'ตรวจทานก่อนโพสต์'),
+      h('dl',{class:'facts'}, h('dt',{},'คลิป'), h('dd',{},ep.title), h('dt',{},'เวลา'), h('dd',{},label)),
+      h('ul',{class:'summary'}, picked.map(s=>h('li',{}, h('b',{},SVC[s.ch.service]+' · '+s.ch.name), h('div',{class:'cap'}, s.ta.value.length>220? s.ta.value.slice(0,220)+'…' : s.ta.value || '(ไม่มีข้อความ)')))),
+      h('p',{class:'note'},'กดยืนยันแล้วจะส่งไป Buffer ทันที คลิปจะย้ายไปแท็บเสร็จแล้วและติ๊กว่าใช้แล้วใน Notion'),
+      err2, h('div',{class:'actions'}, h('button',{class:'btn quiet',on:{click:pick}},'กลับไปแก้'), go));
   }
-  function showResult(res){
-    body.replaceChildren(el('h2',{},res.ok?'ส่งไป Buffer แล้ว':'บางช่องไม่สำเร็จ'),
-      el('ul',{}, res.results.map(r=>el('li',{}, (SVC[r.service]||r.service)+': ', el('span',{class:'chip '+(r.status==='sent'?'ok':r.status==='skipped'?'warn':'bad')}, r.status==='sent'?'สำเร็จ':r.status==='skipped'?'ข้าม (โพสต์ไปแล้ว)':'ล้มเหลว'), r.error?el('div',{class:'meta'},r.error):null))),
-      res.moved_to_used?el('p',{class:'meta'},'ย้ายคลิปไปแท็บ “เสร็จแล้ว” ให้แล้ว'):'',
-      el('button',{class:'primary',on:{click:()=>{ modal.remove(); load(); }}},'ปิด'));
+  function result(res){
+    put(body, h('h2',{class:'d-title'}, res.ok?'ส่งไป Buffer แล้ว':'บางช่องส่งไม่สำเร็จ'),
+      h('div',{class:'plat'}, res.results.map(r=>h('div',{class:'plat-row'}, h('b',{},SVC[r.service]||r.service),
+        h('span',{class:'st '+(r.status==='sent'?'ok':r.status==='skipped'?'wait':'bad')}, r.status==='sent'?'ส่งแล้ว':r.status==='skipped'?'ข้าม เพราะโพสต์ช่องนี้ไปแล้ว':'ไม่สำเร็จ', r.error&&r.status!=='skipped'?h('div',{class:'sub'},r.error):''), h('span',{})))),
+      res.moved_to_used ? h('p',{class:'sub'},'ย้ายคลิปไปแท็บเสร็จแล้ว และกำลังบันทึกลง Notion') : '',
+      h('div',{class:'actions'}, h('button',{class:'btn primary',on:{click:()=>close(true)}},'เสร็จ')));
   }
-  stepPick();
+  pick();
 }
+
+/* ---------- working ---------- */
+const STAGE = {GENERATING_AUDIO:'สร้างเสียง', BUILDING_TIMELINE:'จัดไทม์ไลน์', RENDERING:'เรนเดอร์ภาพ', QUALITY_CHECK:'ตรวจคุณภาพ', UPLOADING_DRIVE:'อัปโหลด', NEW:'รอคิว', FAILED:'ล้มเหลว', CANCELLED:'ยกเลิก'};
+function working(jobs){
+  const head = h('div',{class:'head'}, h('div',{}, h('h1',{},'กำลังทำ'), h('p',{},'งานที่กำลังเรนเดอร์ หรือหยุดเพราะมีปัญหา')));
+  if (!jobs.length){ put(mainEl, head, h('div',{class:'empty'}, h('h2',{},'ไม่มีงานค้าง'), h('p',{},'ทุกคลิปทำเสร็จแล้ว'))); return; }
+  put(mainEl, head, h('div',{}, jobs.map(j=>{
+    const bad = j.status==='FAILED' || j.status==='CANCELLED';
+    return h('div',{class:'job'}, h('b',{},j.title||j.id.slice(0,8)),
+      h('span',{class:'state '+(bad?'bad':'wait')}, bad ? (STAGE[j.status]+' ที่ขั้น '+(STAGE[j.stage]||j.stage||'')) : (STAGE[j.status]||j.status)),
+      h('div',{class:'bar',role:'progressbar','aria-valuenow':Math.round((j.progress||0)*100),'aria-valuemin':0,'aria-valuemax':100}, h('i',{style:'width:'+Math.round((j.progress||0)*100)+'%'})),
+      h('div',{class:'sub'},'อัปเดต '+fmtD(j.updated_at)+' · ลองแล้ว '+j.attempts+' จาก '+j.max_attempts+' ครั้ง', j.error?h('div',{style:'color:var(--bad)'},String(j.error).slice(0,280)):''),
+      bad ? h('div',{style:'grid-column:1/3'}, h('button',{class:'btn primary',on:{click:async()=>{ try{ await api('/app/api/jobs/'+j.id+'/retry',{method:'POST'}); toast('เริ่มทำต่อจากขั้นที่ค้างแล้ว'); load(); }catch(x){ toast(x.message); } }}},'ทำต่อจากขั้นที่ค้าง')) : '');
+  })));
+}
+
+/* ---------- analytics ---------- */
+function analytics(a, integ){
+  const tot = k => { const v=a.platforms.map(p=>p.totals[k]).filter(x=>x!=null); return v.length? v.reduce((x,y)=>x+y,0) : null; };
+  const posts = a.platforms.reduce((n,p)=>n+p.posts,0), published = a.platforms.reduce((n,p)=>n+p.published,0);
+  const range = h('div',{class:'seg',role:'group','aria-label':'ช่วงเวลา'}, [7,30,90].map(d=>h('button',{'aria-pressed':String(S.days===d),on:{click:()=>{ S.days=d; load(); }}}, d+' วัน')));
+  const refresh = h('button',{class:'btn',on:{click:async()=>{ refresh.disabled=true; refresh.textContent='กำลังอัปเดต…'; try{ const r=await api('/app/api/analytics/refresh',{method:'POST'}); toast('ตรวจแล้ว '+r.checked+' โพสต์'); load(); }catch(x){ toast(x.message); refresh.disabled=false; refresh.textContent='อัปเดตตอนนี้'; } }}},'อัปเดตตอนนี้');
+  const head = h('div',{class:'head'}, h('div',{}, h('h1',{},'สถิติ'), h('p',{}, a.last_checked_at ? 'ตรวจกับ Buffer ล่าสุด '+fmtD(a.last_checked_at) : 'ยังไม่เคยดึงสถิติ')), h('div',{class:'actions'}, range, refresh));
+
+  const views = tot('views');
+  const lede = !posts ? h('p',{class:'lede'},'ยังไม่มีโพสต์ เมื่อโพสต์คลิปผ่าน Buffer สถานะและยอดจะขึ้นที่นี่')
+    : h('p',{class:'lede'}, 'โพสต์ไปแล้ว ', h('strong',{},fmtN(posts)), ' ครั้ง เผยแพร่จริง ', h('strong',{},fmtN(published)), ' ครั้ง',
+        views!=null ? [' มียอดดูรวม ', h('strong',{},fmtN(views)), ' ครั้ง'] : ' ยังไม่มียอดดูจากแพลตฟอร์ม');
+
+  // chart
+  let chartPanel = '';
+  if (a.series.length===1){
+    chartPanel = h('section',{class:'panel'}, h('h2',{},'ยอดดูสะสม ทุกแพลตฟอร์ม'), h('p',{class:'sub',style:'margin:6px 0 0'},'มีข้อมูลวันเดียว ('+fmtDay(a.series[0].date)+': ดู '+fmtN(a.series[0].views)+') กราฟแนวโน้มจะขึ้นเมื่อ Buffer ส่งสถิติมาครบสองวันขึ้นไป'));
+  } else if (a.series.length){
+    chartPanel = h('section',{class:'panel'}, h('h2',{},'ยอดดูสะสม ทุกแพลตฟอร์ม'), h('div',{class:'sub'},'นับจากสถิติที่ Buffer ดึงมาวันละครั้ง'), lineChart(a.series,'views'),
+      h('details',{}, h('summary',{},'ดูเป็นตารางรายวัน'), h('div',{class:'scroll'}, h('table',{}, h('thead',{},h('tr',{},h('th',{},'วันที่'),h('th',{},'ยอดดู'),h('th',{},'ถูกใจ'),h('th',{},'คอมเมนต์'))),
+        h('tbody',{}, a.series.slice().reverse().map(r=>h('tr',{},h('td',{},fmtDay(r.date)),h('td',{},fmtN(r.views)),h('td',{},fmtN(r.reactions)),h('td',{},fmtN(r.comments)))))))));
+  }
+
+  // platform ledger
+  const maxV = Math.max(1, ...a.platforms.map(p=>p.totals.views||0));
+  const ledger = h('section',{class:'panel'}, h('h2',{},'แยกตามแพลตฟอร์ม'), h('div',{class:'sub'},'— คือแพลตฟอร์มยังไม่ส่งตัวเลขนั้นมา ไม่ได้แปลว่าเป็นศูนย์'),
+    h('div',{class:'scroll'}, h('table',{},
+      h('thead',{}, h('tr',{}, ['แพลตฟอร์ม','โพสต์','เผยแพร่','ยอดดู','ถูกใจ','คอมเมนต์','แชร์','บันทึก','Engagement'].map(t=>h('th',{scope:'col'},t)))),
+      h('tbody',{}, a.platforms.map(p=>h('tr',{},
+        h('td',{class:'name'},SVC[p.service]),
+        h('td',{},fmtN(p.posts)), h('td',{}, fmtN(p.published), p.waiting?h('span',{class:'sub'},' (+'+p.waiting+' รอ)'):'', p.errors?h('span',{style:'color:var(--bad)'},' · '+p.errors+' พลาด'):''),
+        h('td',{class:'views'}, h('div',{class:'vb'}, p.totals.views!=null?h('span',{style:'width:'+Math.max(2,Math.round(90*p.totals.views/maxV))+'px','aria-hidden':'true'}):'', fmtN(p.totals.views))),
+        h('td',{},fmtN(p.totals.reactions)), h('td',{},fmtN(p.totals.comments)), h('td',{},fmtN(p.totals.shares)), h('td',{},fmtN(p.totals.saves)),
+        h('td',{}, p.totals.engagementRate!=null ? p.totals.engagementRate.toFixed(2)+'%' : '—')))))));
+
+  // per clip
+  const clipPanel = a.clips.length ? h('section',{class:'panel'}, h('h2',{},'แยกตามคลิป'),
+    h('div',{class:'scroll'}, h('table',{},
+      h('thead',{}, h('tr',{}, h('th',{scope:'col'},'คลิป'), ORDER.map(s=>h('th',{scope:'col'},SVC[s]+' (ดู)')), h('th',{scope:'col'},'ถูกใจ'), h('th',{scope:'col'},'คอมเมนต์'))),
+      h('tbody',{}, a.clips.map(c=>{ const by=latestByService(c.posts.map(p=>({...p, status:p.status}))); return h('tr',{},
+        h('td',{class:'name'}, (c.number?'EP'+String(c.number).padStart(3,'0')+'  ':'')+c.title),
+        ORDER.map(s=>{ const p=by[s]; if(!p) return h('td',{class:'sub'},''); const st=postState({...p, mode:null}); return h('td',{}, p.metrics&&p.metrics.views!=null ? (p.link?h('a',{href:p.link,target:'_blank',rel:'noopener',style:'color:inherit'},fmtN(p.metrics.views)):fmtN(p.metrics.views)) : h('span',{class:'sub'},st.text)); }),
+        h('td',{},fmtN(c.totals.reactions)), h('td',{},fmtN(c.totals.comments))); }))))) : '';
+
+  // connections
+  const b=integ.buffer, n=integ.notion;
+  const notionBtn = h('button',{class:'btn quiet',on:{click:async()=>{ notionBtn.disabled=true; try{ const r=await api('/app/api/notion/sync',{method:'POST'}); toast(r.skipped?'ยังไม่ได้ตั้งค่า NOTION_TOKEN':r.ok?'ซิงก์ Notion แล้ว '+r.synced+' คลิป':'ซิงก์ไม่สำเร็จ: '+(r.errors||[]).join(', ')); load(); }catch(x){ toast(x.message); notionBtn.disabled=false; } }}},'ซิงก์ Notion ตอนนี้');
+  const conn = h('section',{class:'panel'}, h('h2',{},'การเชื่อมต่อ'), h('div',{class:'conn',style:'margin-top:12px'},
+    h('div',{}, h('b',{},'Buffer'), b.configured ? h('span',{class:'ok'},'เชื่อมแล้ว') : h('span',{class:'bad'},'ยังไม่ได้ตั้งค่า BUFFER_API_KEY')),
+    h('div',{}, h('b',{},'สถิติจากแพลตฟอร์ม'), !b.configured ? h('span',{class:'sub'},'—') : b.metrics_available ? h('span',{class:'ok'},'อ่านได้ · อัปเดตวันละครั้ง') : h('span',{class:'wait'},'API key ยังไม่มีสิทธิ์อ่านสถิติ (insights) — ยังติดตามสถานะโพสต์ได้')),
+    h('div',{}, h('b',{},'Notion'), !n.configured ? h('span',{class:'wait'},'ยังไม่ได้ตั้งค่า NOTION_TOKEN') : n.errors ? h('span',{class:'bad'},'มีปัญหา: '+(n.error||'')) : h('span',{class:'ok'},'บันทึกแล้ว '+n.linked+' คลิป'+(n.last_synced_at?' · ล่าสุด '+fmtD(n.last_synced_at):'')), n.configured?h('div',{},notionBtn):'')));
+
+  put(mainEl, head, lede, chartPanel, ledger, clipPanel, conn);
+}
+
+function lineChart(series, key){
+  const W=720, H=240, L=48, R=12, T=14, B=28;
+  const vals = series.map(d=>d[key]||0), max = Math.max(1, ...vals);
+  const step = niceStep(max/4), top = Math.ceil(max/step)*step;
+  const x = i => L + (series.length===1?0:(i*(W-L-R)/(series.length-1)));
+  const y = v => T + (H-T-B) * (1 - v/top);
+  const ns='http://www.w3.org/2000/svg', s=(t,a)=>{ const e=document.createElementNS(ns,t); for(const k in a) e.setAttribute(k,a[k]); return e; };
+  const svg = s('svg',{viewBox:`0 0 ${W} ${H}`,preserveAspectRatio:'none',role:'img','aria-label':'กราฟยอดดูสะสมรายวัน'});
+  const g = s('g',{class:'grid'}), ax = s('g',{class:'axis'});
+  for (let v=0; v<=top; v+=step){ g.append(s('line',{x1:L,x2:W-R,y1:y(v),y2:y(v)})); const t=s('text',{x:L-8,y:y(v)+4,'text-anchor':'end'}); t.textContent=compact(v); ax.append(t); }
+  const every = Math.ceil(series.length/6);
+  series.forEach((d,i)=>{ if(i%every===0||i===series.length-1){ const t=s('text',{x:x(i),y:H-8,'text-anchor':i===0?'start':i===series.length-1?'end':'middle'}); t.textContent=fmtDay(d.date); ax.append(t);} });
+  const path = s('path',{class:'line',d:series.map((d,i)=>(i?'L':'M')+x(i).toFixed(1)+' '+y(d[key]||0).toFixed(1)).join(' '),'vector-effect':'non-scaling-stroke'});
+  const cross = s('line',{class:'cross',y1:T,y2:H-B,visibility:'hidden','vector-effect':'non-scaling-stroke'});
+  const dot = s('circle',{class:'dot',r:4.5,visibility:'hidden'});
+  svg.append(g, ax, path, cross, dot);
+  const wrap = h('div',{class:'chart'}); wrap.append(svg);
+  const tip = h('div',{class:'tip',hidden:true}); wrap.append(tip);
+  svg.addEventListener('pointermove', e=>{
+    const r = svg.getBoundingClientRect(), px = (e.clientX - r.left) * W / r.width;
+    let i = Math.round((px-L)/((W-L-R)/Math.max(1,series.length-1))); i=Math.max(0,Math.min(series.length-1,i));
+    const d = series[i];
+    cross.setAttribute('x1',x(i)); cross.setAttribute('x2',x(i)); cross.setAttribute('visibility','visible');
+    dot.setAttribute('cx',x(i)); dot.setAttribute('cy',y(d[key]||0)); dot.setAttribute('visibility','visible');
+    tip.hidden=false; tip.textContent = fmtDay(d.date)+'  ·  ดู '+fmtN(d[key]);
+    tip.style.left = (x(i)*r.width/W)+'px'; tip.style.top = (y(d[key]||0)*r.height/H)+'px';
+  });
+  svg.addEventListener('pointerleave', ()=>{ cross.setAttribute('visibility','hidden'); dot.setAttribute('visibility','hidden'); tip.hidden=true; });
+  return wrap;
+}
+function niceStep(raw){ const p=Math.pow(10,Math.floor(Math.log10(Math.max(raw,1)))); const f=raw/p; return (f<=1?1:f<=2?2:f<=5?5:10)*p; }
+function compact(v){ return v>=1e6? (v/1e6).toFixed(v%1e6?1:0)+'M' : v>=1e3? (v/1e3).toFixed(v%1e3?1:0)+'K' : String(v); }
 
 async function start(){
-  try { const me = await api('/app/api/me'); if(!me.ui_enabled){ $app.replaceChildren(el('div',{class:'login'},el('h1',{},'Motion Studio'),el('p',{},'UI ยังไม่เปิดใช้งาน: ตั้งค่า MOTION_UI_PASSWORD บน Railway'))); return; }
-    if(!me.authed) return renderLogin(); load(); }
-  catch(e){ if(e.message!=='unauthorized') $app.textContent = e.message; }
+  try{
+    const me = await api('/app/api/me');
+    if (!me.ui_enabled){ put(root, h('div',{class:'login'}, h('div',{}, h('h1',{},'Motion Studio'), h('p',{},'หน้านี้ยังปิดอยู่ ตั้งค่า MOTION_UI_PASSWORD บน Railway แล้ว deploy ใหม่')))); return; }
+    if (!me.authed) return login();
+    try{ const v=localStorage.getItem('ms.view'); if (v && VIEWS.some(x=>x[0]===v)) S.view=v; }catch{}
+    load();
+  }catch(x){ if (x.message!=='unauthorized') root.textContent=x.message; }
 }
 start();
-setInterval(()=>{ if(state.tab==='working' && !document.querySelector('.modal')) load(); }, 15000);
+setInterval(()=>{ if (S.view==='working' && !document.querySelector('.drawer')) load(); }, 15000);
 </script>
 </body>
 </html>

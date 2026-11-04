@@ -7,6 +7,8 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import * as buffer from './buffer.js';
+import * as notion from './notion.js';
+import { analytics, syncPosts } from './metrics.js';
 
 const env = process.env;
 const UI_PASSWORD = env.MOTION_UI_PASSWORD || '';
@@ -68,7 +70,7 @@ export function registerUi(app: Hono, pool: pg.Pool, deps: { API_TOKEN: string; 
     c.header('cache-control', 'no-store');
     c.header('x-frame-options', 'DENY');
     c.header('referrer-policy', 'no-referrer');
-    c.header('content-security-policy', `default-src 'self'; img-src 'self' ${MEDIA_ORIGIN} data:; media-src ${MEDIA_ORIGIN}; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; frame-ancestors 'none'`);
+    c.header('content-security-policy', `default-src 'self'; img-src 'self' ${MEDIA_ORIGIN} data:; media-src ${MEDIA_ORIGIN}; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self' 'unsafe-inline'; frame-ancestors 'none'`);
     return c.html(html);
   });
 
@@ -104,10 +106,11 @@ export function registerUi(app: Hono, pool: pg.Pool, deps: { API_TOKEN: string; 
 
   // ---- clips
   const CLIP_SQL = `
-    SELECT e.id, e.number, e.title_th, e.topic, e.ui_status, e.used_at, e.created_at,
+    SELECT e.id, e.number, e.title_th, e.topic, e.ui_status, e.used_at, e.created_at, e.notion_page_id, e.notion_synced_at, e.notion_error,
            h.files, h.created_at AS delivered_at, j.package->'captions' AS captions, j.package->>'series_tag' AS series_tag,
            COALESCE((SELECT json_agg(json_build_object('id', p.id, 'channel_id', p.channel_id, 'channel_name', p.channel_name, 'service', p.service, 'mode', p.mode,
-                     'due_at', p.due_at, 'status', p.status, 'error', p.error, 'created_at', p.created_at) ORDER BY p.id DESC)
+                     'due_at', p.due_at, 'status', p.status, 'error', COALESCE(p.post_error, p.error), 'created_at', p.created_at,
+                     'post_status', p.post_status, 'link', p.external_link, 'sent_at', p.sent_at, 'metrics', p.metrics) ORDER BY p.id DESC)
                      FROM publish_log p WHERE p.episode_id = e.id), '[]'::json) AS publications
     FROM episodes e
     JOIN LATERAL (SELECT * FROM publication_handoffs WHERE episode_id = e.id ORDER BY id DESC LIMIT 1) h ON true
@@ -126,13 +129,17 @@ export function registerUi(app: Hono, pool: pg.Pool, deps: { API_TOKEN: string; 
         twitter: caps.twitter ?? caps.tiktok ?? caps.instagram ?? '', youtube: caps.youtube ?? '',
       },
       publications: r.publications,
+      notion: { url: r.notion_page_id ? `https://www.notion.so/${String(r.notion_page_id).replace(/-/g, '')}` : null, synced_at: r.notion_synced_at, error: r.notion_error },
     };
   }
 
   app.get('/app/api/episodes', requireUi, async (c) => {
     const tab = c.req.query('tab') === 'used' ? 'used' : 'ready';
     const r = await pool.query(`${CLIP_SQL} WHERE e.ui_status = $1 ORDER BY e.number DESC NULLS LAST LIMIT 200`, [tab]);
-    return c.json({ episodes: r.rows.map(shape).filter((e) => e.video_url) });
+    const cnt = (await pool.query(`SELECT e.ui_status, count(*)::int AS n FROM episodes e WHERE EXISTS (SELECT 1 FROM publication_handoffs h WHERE h.episode_id = e.id) GROUP BY 1`)).rows;
+    const working = (await pool.query("SELECT count(*)::int AS n FROM jobs WHERE kind='episode' AND status NOT IN ('READY_TO_POST','CANCELLED')")).rows[0].n;
+    const counts = { ready: cnt.find((x) => x.ui_status === 'ready')?.n ?? 0, used: cnt.find((x) => x.ui_status === 'used')?.n ?? 0, working };
+    return c.json({ episodes: r.rows.map(shape).filter((e) => e.video_url), counts });
   });
 
   app.post('/app/api/episodes/:id/used', requireUi, async (c) => {
@@ -142,6 +149,7 @@ export function registerUi(app: Hono, pool: pg.Pool, deps: { API_TOKEN: string; 
     const used = body?.used !== false;
     const r = await pool.query('UPDATE episodes SET ui_status=$2, used_at=CASE WHEN $2=\'used\' THEN now() ELSE NULL END WHERE id=$1 RETURNING id', [id, used ? 'used' : 'ready']);
     if (!r.rowCount) return c.json({ error: 'not found' }, 404);
+    notion.syncLater(pool, [id]);
     return c.json({ ok: true, ui_status: used ? 'used' : 'ready' });
   });
 
@@ -242,8 +250,33 @@ export function registerUi(app: Hono, pool: pg.Pool, deps: { API_TOKEN: string; 
     }
     const anySent = results.some((x) => x.status === 'sent');
     if (anySent) await pool.query("UPDATE episodes SET ui_status='used', used_at=COALESCE(used_at, now()) WHERE id=$1", [id]);
+    if (anySent) setTimeout(() => { syncPosts(pool, { limit: 10 }).then((x) => notion.syncLater(pool, [id, ...x.changed])).catch(() => notion.syncLater(pool, [id])); }, 5000);
     return c.json({ ok: results.every((x) => x.status !== 'failed'), moved_to_used: anySent, results });
   });
+
+  // ---- analytics + integrations
+  app.get('/app/api/analytics', requireUi, async (c) => {
+    const days = Math.min(90, Math.max(7, Number(c.req.query('days') || 30)));
+    return c.json(await analytics(pool, days));
+  });
+
+  app.post('/app/api/analytics/refresh', requireUi, async (c) => {
+    const r = await syncPosts(pool, { limit: 40, force: true });
+    notion.syncLater(pool, r.changed);
+    return c.json(r);
+  });
+
+  app.get('/app/api/integrations', requireUi, async (c) => {
+    const n = (await pool.query(`SELECT count(*) FILTER (WHERE notion_page_id IS NOT NULL)::int AS linked, count(*) FILTER (WHERE notion_error IS NOT NULL)::int AS errors,
+      max(notion_synced_at) AS last, (array_agg(notion_error) FILTER (WHERE notion_error IS NOT NULL))[1] AS error FROM episodes`)).rows[0];
+    return c.json({
+      buffer: { configured: buffer.configured(), metrics_available: buffer.metricsAvailable() },
+      notion: { configured: notion.configured(), linked: n.linked, errors: n.errors, last_synced_at: n.last, error: n.error },
+      alerts: { configured: !!env.MOTION_ALERT_WEBHOOK_URL },
+    });
+  });
+
+  app.post('/app/api/notion/sync', requireUi, async (c) => c.json(await notion.syncAll(pool)));
 
   // A 'pending' row is left only if the server died between calling Buffer and recording the answer.
   // It blocks re-posting on purpose; after checking Buffer the owner can clear it here.

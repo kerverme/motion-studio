@@ -115,6 +115,33 @@ export function buildMutation(p: PostRequest) {
   return `mutation { createPost(input: ${lit(buildInput(p))}) { ... on PostActionSuccess { post { id status dueAt } } ... on MutationError { message } } }`;
 }
 
+export type PostInfo = {
+  id: string; status: string; sentAt?: string | null; dueAt?: string | null; externalLink?: string | null;
+  error?: { message: string } | null; metrics?: { type: string; value: number; unit: string }[] | null; metricsUpdatedAt?: string | null;
+};
+
+// Reading metrics needs the insightsRead scope on the API key. If it is missing, keep tracking status without metrics.
+let metricsDeniedUntil = 0;
+export function metricsAvailable() {
+  return Date.now() >= metricsDeniedUntil;
+}
+export async function getPost(id: string): Promise<{ post: PostInfo | null; metrics: boolean }> {
+  const base = 'id status sentAt dueAt externalLink error { message }';
+  const q = (withM: boolean) => `query { post(input: {id: ${JSON.stringify(id)}}) { ${base}${withM ? ' metrics { type value unit } metricsUpdatedAt' : ''} } }`;
+  if (metricsAvailable()) {
+    try {
+      const d = await gql<{ post: PostInfo | null }>(q(true), 2);
+      return { post: d.post, metrics: true };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (!/scope|insight|permission|forbidden|not authori[sz]ed/i.test(msg)) throw e;
+      metricsDeniedUntil = Date.now() + 3600_000;
+    }
+  }
+  const d = await gql<{ post: PostInfo | null }>(q(false), 2);
+  return { post: d.post, metrics: false };
+}
+
 export async function createPost(p: PostRequest): Promise<{ id: string; status?: string; dueAt?: string | null }> {
   const d = await gql<{ createPost: { post?: { id: string; status?: string; dueAt?: string | null }; message?: string } }>(buildMutation(p), 1);
   if (d.createPost.post) return d.createPost.post;
