@@ -58,3 +58,17 @@ motion-worker: `R2_BUCKET`, `R2_ENDPOINT`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS
 ## Local development
 
 `scripts/motion.py` talks to the API. The worker has a dev-only `MOTION_FAKE_ELEVEN=1` mode (tones + synthetic alignment) and a local storage backend (`MOTION_LOCAL_STORAGE`).
+
+## Personal web UI (`/app`)
+
+Served by `motion-api` at `https://<api-domain>/app`. Password login (`MOTION_UI_PASSWORD`), signed HttpOnly/SameSite=Strict session cookie, login throttling.
+Tabs: **พร้อมใช้** (ready) · **เสร็จแล้ว** (used) · **กำลังทำ** (running/failed jobs with a retry button).
+Publish sends the clip's permanent R2 video URL to Buffer (one `createPost` per channel; Reels for Instagram/Facebook, video for TikTok/X),
+with editable per-platform captions, a confirmation step, and modes: add to Buffer queue / share now / schedule.
+A clip moves to **เสร็จแล้ว** automatically after at least one channel is sent (or manually). One live publication per clip+channel is enforced by a unique index, so double clicks and retries cannot double-post.
+Channels are read live from Buffer; a platform that is not connected in Buffer (e.g. X) is shown as not connected.
+
+New motion-api variables: `MOTION_UI_PASSWORD`, `BUFFER_API_KEY` (Buffer → Settings → API), optional `BUFFER_ORGANIZATION_ID`, `MOTION_MEDIA_BASE` (default `https://media.cloudbath.co`),
+`MOTION_AI_DISCLOSURE` (default true: marks posts as AI-generated where the platform has the flag, because the narration is synthetic),
+`MOTION_ALERT_WEBHOOK_URL` (Slack/Discord-style incoming webhook: failed/stuck job alerts), `MOTION_RETENTION_DAYS` + `MOTION_RETENTION_APPLY=true` (delete re-creatable intermediates of delivered jobs; dry-run by default; never touches R2 deliverables or the audio cache).
+Backups: `GET /app/api/export` (JSON of episodes, scripts, sources, handoffs, publish log) next to Railway's own Postgres backups.

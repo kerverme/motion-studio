@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>Motion Studio</title>
+<style>
+:root{--bg:#f6f5f2;--card:#fff;--ink:#1d1d1f;--mute:#6b6b70;--line:#e3e1dc;--acc:#2f5bea;--acc-ink:#fff;--ok:#1a7f4b;--bad:#c0392b;--warn:#a96a00;--chip:#efede8}
+@media (prefers-color-scheme:dark){:root{--bg:#121214;--card:#1c1c20;--ink:#f1f1f3;--mute:#9a9aa3;--line:#2c2c32;--acc:#6d8dff;--acc-ink:#0b0b10;--ok:#4cc38a;--bad:#ff7b6b;--warn:#e0a53a;--chip:#26262c}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Noto Sans Thai","Sarabun",sans-serif}
+header{display:flex;align-items:center;gap:12px;padding:14px 16px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:5}
+header h1{font-size:18px;margin:0;flex:1}
+button,.btn{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:10px;padding:8px 14px;cursor:pointer;min-height:40px}
+button.primary{background:var(--acc);color:var(--acc-ink);border-color:var(--acc);font-weight:600}
+button.danger{color:var(--bad)}
+button:disabled{opacity:.5;cursor:not-allowed}
+nav{display:flex;gap:6px;padding:12px 16px 0;max-width:980px;margin:0 auto}
+nav button{border-radius:999px;padding:6px 16px}
+nav button.on{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+main{max-width:980px;margin:0 auto;padding:12px 16px 60px}
+.grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(300px,1fr))}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden;display:flex;flex-direction:column}
+.card video,.card .thumb{width:100%;aspect-ratio:9/16;max-height:420px;object-fit:cover;background:#000;display:block}
+.card .body{padding:12px 14px;display:flex;flex-direction:column;gap:8px}
+.card h3{margin:0;font-size:16px}
+.meta{color:var(--mute);font-size:13px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.chip{display:inline-block;background:var(--chip);border-radius:999px;padding:2px 10px;font-size:12px}
+.chip.ok{color:var(--ok)}.chip.bad{color:var(--bad)}.chip.warn{color:var(--warn)}
+.empty{color:var(--mute);text-align:center;padding:60px 0}
+.login{max-width:340px;margin:18vh auto;padding:0 16px;display:flex;flex-direction:column;gap:12px}
+input[type=password],input[type=datetime-local],textarea{font:inherit;width:100%;padding:10px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+textarea{min-height:110px;resize:vertical}
+.err{color:var(--bad);font-size:14px;min-height:20px}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:flex-end;justify-content:center;z-index:20}
+@media (min-width:700px){.modal{align-items:center}}
+.sheet{background:var(--card);width:100%;max-width:640px;max-height:92vh;overflow:auto;border-radius:18px 18px 0 0;padding:18px 16px 24px}
+@media (min-width:700px){.sheet{border-radius:18px}}
+.sheet h2{margin:0 0 4px;font-size:18px}
+.ch{border:1px solid var(--line);border-radius:12px;padding:10px;margin:10px 0}
+.ch label.top{display:flex;gap:10px;align-items:center;font-weight:600}
+.ch.off{opacity:.55}
+.count{font-size:12px;color:var(--mute);text-align:right}
+.count.over{color:var(--bad);font-weight:700}
+.job{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:10px}
+.bar{height:6px;background:var(--chip);border-radius:3px;overflow:hidden;margin:6px 0}.bar i{display:block;height:100%;background:var(--acc)}
+.toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:10px;z-index:30;max-width:90vw}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+'use strict';
+const $app = document.getElementById('app');
+for (const P of [Element.prototype]) { const rc = P.replaceChildren; P.replaceChildren = function(...k){ return rc.apply(this, k.filter(x=>x!=null && x!==false && x!=='')); }; }
+const SVC = {instagram:'Instagram', facebook:'Facebook', tiktok:'TikTok', twitter:'X (Twitter)'};
+let state = {tab:'ready', episodes:[], jobs:[], channels:null};
+
+function el(tag, attrs, ...kids){
+  const e = document.createElement(tag);
+  for (const [k,v] of Object.entries(attrs||{})){
+    if (k==='class') e.className=v; else if (k==='on') for (const [ev,fn] of Object.entries(v)) e.addEventListener(ev,fn);
+    else if (v===true) e.setAttribute(k,''); else if (v!==false && v!=null) e.setAttribute(k,v);
+  }
+  for (const kid of kids.flat()) if (kid!=null && kid!==false) e.append(kid.nodeType?kid:document.createTextNode(String(kid)));
+  return e;
+}
+async function api(path, opts={}){
+  const r = await fetch(path, {credentials:'same-origin', ...opts, headers:{'x-motion-ui':'1','content-type':'application/json',...(opts.headers||{})}});
+  let j = null; try { j = await r.json(); } catch {}
+  if (r.status===401 && !path.endsWith('/login')) { renderLogin(); throw new Error('unauthorized'); }
+  if (!r.ok) { const e = new Error((j&&j.error)||('HTTP '+r.status)); e.body=j; throw e; }
+  return j;
+}
+function toast(msg){ const t=el('div',{class:'toast'},msg); document.body.append(t); setTimeout(()=>t.remove(),3500); }
+const fmt = d => d ? new Date(d).toLocaleString('th-TH',{dateStyle:'medium',timeStyle:'short'}) : '';
+
+function renderLogin(msg){
+  const pw = el('input',{type:'password',placeholder:'รหัสผ่าน',autocomplete:'current-password',autofocus:true});
+  const err = el('div',{class:'err'},msg||'');
+  const go = async () => {
+    err.textContent='';
+    try { await api('/app/api/login',{method:'POST',body:JSON.stringify({password:pw.value})}); start(); }
+    catch(e){ err.textContent = e.message==='wrong password' ? 'รหัสผ่านไม่ถูกต้อง' : e.message; pw.value=''; }
+  };
+  pw.addEventListener('keydown',e=>{ if(e.key==='Enter') go(); });
+  $app.replaceChildren(el('div',{class:'login'}, el('h1',{},'Motion Studio'), pw, el('button',{class:'primary',on:{click:go}},'เข้าสู่ระบบ'), err));
+}
+
+function shell(content){
+  const tabs = [['ready','พร้อมใช้'],['used','เสร็จแล้ว'],['working','กำลังทำ']];
+  $app.replaceChildren(
+    el('header',{}, el('h1',{},'Motion Studio'),
+      el('a',{class:'btn',href:'/app/api/export',download:true,style:'text-decoration:none'},'สำรองข้อมูล'),
+      el('button',{on:{click:async()=>{ await api('/app/api/logout',{method:'POST'}); renderLogin(); }}},'ออก')),
+    el('nav',{}, tabs.map(([k,l])=>el('button',{class:state.tab===k?'on':'',on:{click:()=>{state.tab=k;load();}}},l))),
+    el('main',{}, content));
+}
+
+async function load(){
+  try {
+    if (state.tab==='working') {
+      state.jobs = (await api('/app/api/working')).jobs;
+      shell(state.jobs.length ? state.jobs.map(jobView) : el('div',{class:'empty'},'ไม่มีงานที่กำลังทำหรือค้างอยู่'));
+    } else {
+      state.episodes = (await api('/app/api/episodes?tab='+state.tab)).episodes;
+      shell(state.episodes.length ? el('div',{class:'grid'}, state.episodes.map(clipView))
+        : el('div',{class:'empty'}, state.tab==='ready'?'ยังไม่มีคลิปที่พร้อมใช้':'ยังไม่มีคลิปที่ใช้แล้ว'));
+    }
+  } catch(e){ if(e.message!=='unauthorized') toast(e.message); }
+}
+
+function jobView(j){
+  const failed = j.status==='FAILED';
+  return el('div',{class:'job'},
+    el('div',{class:'row'}, el('strong',{},j.title||j.id.slice(0,8)), el('span',{class:'chip '+(failed?'bad':'warn')}, j.status)),
+    el('div',{class:'bar'}, el('i',{style:'width:'+Math.round((j.progress||0)*100)+'%'})),
+    el('div',{class:'meta'},'อัปเดต '+fmt(j.updated_at)+' · ลองแล้ว '+j.attempts+'/'+j.max_attempts),
+    j.error ? el('div',{class:'meta',style:'color:var(--bad)'}, String(j.error).slice(0,300)) : null,
+    failed || j.status==='CANCELLED' ? el('button',{class:'primary',on:{click:async()=>{ try{ await api('/app/api/jobs/'+j.id+'/retry',{method:'POST'}); toast('สั่งลองใหม่แล้ว'); load(); }catch(e){ toast(e.message); } }}},'ลองใหม่ (ต่อจากขั้นที่ค้าง)') : null);
+}
+
+function clipView(ep){
+  const sent = ep.publications.filter(p=>p.status==='sent');
+  const pend = ep.publications.filter(p=>p.status==='pending');
+  const used = ep.ui_status==='used';
+  const video = el('video',{controls:true,preload:'none',playsinline:true,poster:ep.thumbnail_url||false,src:ep.video_url});
+  return el('div',{class:'card'}, video,
+    el('div',{class:'body'},
+      el('h3',{}, (ep.number?('EP'+String(ep.number).padStart(3,'0')+' · '):'')+ep.title),
+      el('div',{class:'meta'}, 'ส่งมอบ '+fmt(ep.delivered_at)+(ep.video_bytes?(' · '+(ep.video_bytes/1048576).toFixed(1)+' MB'):'')),
+      el('div',{class:'row'},
+        sent.map(p=>el('span',{class:'chip ok'},'✓ '+(SVC[p.service]||p.service)+(p.mode==='customScheduled'?' (ตั้งเวลา)':p.mode==='addToQueue'?' (คิว)':''))),
+        pend.map(p=>el('span',{class:'chip warn',title:'ค้างอยู่ — ตรวจใน Buffer ก่อน แล้วกดล้าง',on:{click:async()=>{ if(confirm('ตรวจใน Buffer แล้วว่าไม่มีโพสต์นี้ ต้องการล้างสถานะค้าง?')){ await api('/app/api/publications/'+p.id+'/clear',{method:'POST'}); load(); } }}},'… '+(SVC[p.service]||p.service)+' ค้าง (แตะเพื่อล้าง)'))),
+      el('div',{class:'row'},
+        el('button',{class:'primary',on:{click:()=>openPublish(ep)}},'Publish'),
+        el('button',{on:{click:async()=>{ try{ await navigator.clipboard.writeText(ep.video_url); toast('คัดลอกลิงก์แล้ว'); }catch{ prompt('ลิงก์วิดีโอ',ep.video_url); } }}},'คัดลอกลิงก์'),
+        el('button',{on:{click:async()=>{ await api('/app/api/episodes/'+ep.id+'/used',{method:'POST',body:JSON.stringify({used:!used})}); load(); }}}, used?'ย้ายกลับ พร้อมใช้':'ย้ายไป เสร็จแล้ว'))));
+}
+
+async function openPublish(ep){
+  if (!state.channels || state.channels.error) {
+    try { state.channels = await api('/app/api/channels'); } catch(e){ state.channels = {configured:true,channels:[],error:e.message}; }
+  }
+  const C = state.channels;
+  const already = new Set(ep.publications.filter(p=>p.status==='sent'||p.status==='pending').map(p=>p.channel_id));
+  const sel = {}; // channelId -> {on, ta}
+  const list = el('div',{});
+  const note = !C.configured ? 'ยังไม่ได้ตั้งค่า BUFFER_API_KEY บนเซิร์ฟเวอร์ — ยังโพสต์ไม่ได้'
+              : C.error ? 'โหลดช่องจาก Buffer ไม่สำเร็จ: '+C.error : '';
+  for (const ch of (C.channels||[])) {
+    const done = already.has(ch.id);
+    const cb = el('input',{type:'checkbox',disabled:done});
+    const ta = el('textarea',{}, ep.captions[ch.service]||'');
+    ta.value = ep.captions[ch.service]||'';
+    const cnt = el('div',{class:'count'});
+    const upd = () => { const n=[...ta.value].length; if(ch.service==='twitter'){ cnt.textContent=n+' / 280'; cnt.className='count'+(n>280?' over':''); } else cnt.textContent=n+' ตัวอักษร'; };
+    ta.addEventListener('input',upd); upd();
+    const box = el('div',{class:'ch'+(done?' off':'')},
+      el('label',{class:'top'}, cb, SVC[ch.service]||ch.service, el('span',{class:'meta',style:'font-weight:400'},ch.name), done?el('span',{class:'chip ok'},'โพสต์แล้ว'):null),
+      el('div',{style:'display:none'}, ta, cnt));
+    cb.addEventListener('change',()=>{ box.lastChild.style.display = cb.checked?'block':'none'; });
+    sel[ch.id] = {cb, ta, ch};
+    list.append(box);
+  }
+  for (const s of (C.not_connected||[])) list.append(el('div',{class:'ch off'}, el('strong',{},SVC[s]||s), el('div',{class:'meta'},'ยังไม่ได้เชื่อมต่อใน Buffer')));
+
+  const mode = {v:'addToQueue'};
+  const due = el('input',{type:'datetime-local',style:'display:none;margin-top:8px'});
+  const modes = [['addToQueue','เข้าคิวของ Buffer'],['shareNow','โพสต์ทันที'],['customScheduled','ตั้งเวลา']];
+  const modeBox = el('div',{}, modes.map(([v,l])=>el('label',{style:'display:block;margin:4px 0'}, el('input',{type:'radio',name:'mode',value:v,checked:v===mode.v,on:{change:()=>{mode.v=v;due.style.display=v==='customScheduled'?'block':'none';}}}),' '+l)), due);
+
+  const err = el('div',{class:'err'});
+  const body = el('div',{});
+  const modal = el('div',{class:'modal',on:{click:e=>{ if(e.target===modal) modal.remove(); }}}, el('div',{class:'sheet'}, body));
+  document.body.append(modal);
+
+  function stepPick(){
+    body.replaceChildren(
+      el('h2',{},'โพสต์: '+ep.title), el('div',{class:'meta'},'เลือกช่องและแก้ข้อความได้ก่อนโพสต์'+(C.organization?' · Buffer: '+C.organization:'')),
+      note?el('div',{class:'err'},note):'', list, el('h3',{style:'margin:14px 0 4px;font-size:15px'},'เวลา'), modeBox, err,
+      el('div',{class:'row',style:'margin-top:14px'},
+        el('button',{on:{click:()=>modal.remove()}},'ยกเลิก'),
+        el('button',{class:'primary',on:{click:stepConfirm}},'ตรวจสอบก่อนโพสต์')));
+  }
+  function stepConfirm(){
+    err.textContent='';
+    const picked = Object.values(sel).filter(s=>s.cb.checked);
+    if(!picked.length){ err.textContent='เลือกอย่างน้อย 1 ช่อง'; return; }
+    const over = picked.find(s=>s.ch.service==='twitter' && [...s.ta.value].length>280);
+    if(over){ err.textContent='ข้อความ X เกิน 280 ตัวอักษร'; return; }
+    let dueIso;
+    if(mode.v==='customScheduled'){
+      const t = due.value ? new Date(due.value) : null;
+      if(!t || t.getTime() < Date.now()+2*60000){ err.textContent='เลือกเวลาในอนาคต (อย่างน้อย 2 นาที)'; return; }
+      dueIso = t.toISOString();
+    }
+    const modeLabel = modes.find(m=>m[0]===mode.v)[1] + (dueIso?(' — '+fmt(dueIso)):'');
+    const go = el('button',{class:'primary',on:{click:async()=>{
+      go.disabled=true; go.textContent='กำลังโพสต์…';
+      try {
+        const res = await api('/app/api/episodes/'+ep.id+'/publish',{method:'POST',body:JSON.stringify({confirm:true,mode:mode.v,dueAt:dueIso,posts:picked.map(s=>({channelId:s.ch.id,text:s.ta.value}))})});
+        showResult(res);
+      } catch(e){ err2.textContent=e.message; go.disabled=false; go.textContent='ยืนยันโพสต์'; }
+    }}},'ยืนยันโพสต์');
+    const err2 = el('div',{class:'err'});
+    body.replaceChildren(
+      el('h2',{},'ยืนยันการโพสต์'),
+      el('p',{},'คลิป: '+ep.title), el('p',{},'วิธี: '+modeLabel),
+      el('ul',{}, picked.map(s=>el('li',{}, el('strong',{},(SVC[s.ch.service]||s.ch.service)+' · '+s.ch.name), el('div',{class:'meta',style:'white-space:pre-wrap'}, s.ta.value.slice(0,160)+(s.ta.value.length>160?'…':''))))),
+      err2, el('div',{class:'row'}, el('button',{on:{click:stepPick}},'กลับไปแก้'), go));
+  }
+  function showResult(res){
+    body.replaceChildren(el('h2',{},res.ok?'ส่งไป Buffer แล้ว':'บางช่องไม่สำเร็จ'),
+      el('ul',{}, res.results.map(r=>el('li',{}, (SVC[r.service]||r.service)+': ', el('span',{class:'chip '+(r.status==='sent'?'ok':r.status==='skipped'?'warn':'bad')}, r.status==='sent'?'สำเร็จ':r.status==='skipped'?'ข้าม (โพสต์ไปแล้ว)':'ล้มเหลว'), r.error?el('div',{class:'meta'},r.error):null))),
+      res.moved_to_used?el('p',{class:'meta'},'ย้ายคลิปไปแท็บ “เสร็จแล้ว” ให้แล้ว'):'',
+      el('button',{class:'primary',on:{click:()=>{ modal.remove(); load(); }}},'ปิด'));
+  }
+  stepPick();
+}
+
+async function start(){
+  try { const me = await api('/app/api/me'); if(!me.ui_enabled){ $app.replaceChildren(el('div',{class:'login'},el('h1',{},'Motion Studio'),el('p',{},'UI ยังไม่เปิดใช้งาน: ตั้งค่า MOTION_UI_PASSWORD บน Railway'))); return; }
+    if(!me.authed) return renderLogin(); load(); }
+  catch(e){ if(e.message!=='unauthorized') $app.textContent = e.message; }
+}
+start();
+setInterval(()=>{ if(state.tab==='working' && !document.querySelector('.modal')) load(); }, 15000);
+</script>
+</body>
+</html>

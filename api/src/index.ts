@@ -8,6 +8,9 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { registerUi } from './ui.js';
+import * as buffer from './buffer.js';
+import { alertSweep, retention } from './ops.js';
 
 const env = process.env;
 const PORT = Number(env.PORT || 8080);
@@ -143,7 +146,7 @@ app.get('/health', async (c) => {
   try {
     const r = await pool.query('SELECT count(*)::int AS jobs FROM jobs');
     const g = await pool.query("SELECT 1 FROM integrations WHERE provider='google_drive'");
-    return c.json({ ok: true, db: 'up', jobs: r.rows[0].jobs, drive_connected: g.rowCount === 1, auth_configured: !!API_TOKEN });
+    return c.json({ ok: true, db: 'up', jobs: r.rows[0].jobs, drive_connected: g.rowCount === 1, auth_configured: !!API_TOKEN, ui_enabled: !!env.MOTION_UI_PASSWORD, buffer_configured: buffer.configured(), alerts_configured: !!env.MOTION_ALERT_WEBHOOK_URL, retention_days: Number(env.MOTION_RETENTION_DAYS || 0) || null });
   } catch (e) {
     return c.json({ ok: false, error: String(e) }, 503);
   }
@@ -268,14 +271,21 @@ app.get('/jobs/:id/assets', requireAuth, async (c) => {
   return c.json({ assets: out });
 });
 
-app.post('/jobs/:id/retry', requireAuth, async (c) => {
-  const j = await loadJob(c.req.param('id'));
-  if (!j) return c.json({ error: 'not found' }, 404);
-  if (!['FAILED', 'CANCELLED'].includes(j.status)) return c.json({ error: `job is ${j.status}` }, 409);
+async function retryJob(id: string): Promise<{ ok: boolean; status?: string; error?: string }> {
+  const j = await loadJob(id);
+  if (!j) return { ok: false, error: 'not found' };
+  if (!['FAILED', 'CANCELLED'].includes(j.status)) return { ok: false, error: `job is ${j.status}` };
   const resume = j.stage || 'GENERATING_AUDIO';
   await pool.query('UPDATE jobs SET status=$2, error=NULL, attempts=0, locked_by=NULL, locked_until=NULL, updated_at=now() WHERE id=$1', [j.id, resume]);
   await event(j.id, 'retry requested; resuming from last completed stage', null, 'info', resume);
-  return c.json({ id: j.id, status: resume });
+  return { ok: true, status: resume };
+}
+
+app.post('/jobs/:id/retry', requireAuth, async (c) => {
+  const j = await loadJob(c.req.param('id'));
+  if (!j) return c.json({ error: 'not found' }, 404);
+  const r = await retryJob(j.id);
+  return r.ok ? c.json({ id: j.id, status: r.status }) : c.json({ error: r.error }, 409);
 });
 
 app.post('/jobs/:id/cancel', requireAuth, async (c) => {
@@ -351,10 +361,25 @@ app.get('/internal/google/access-token', async (c) => {
   return c.json({ access_token: tok.access_token, expires_in: tok.expires_in });
 });
 
+registerUi(app, pool, { API_TOKEN, retryJob });
+
+// ---------------------------------------------------------------- operations
+app.post('/ops/retention', requireAuth, async (c) => {
+  const apply = c.req.query('apply') === '1' && env.MOTION_RETENTION_APPLY === 'true';
+  return c.json(await retention(pool, s3, apply));
+});
+app.post('/ops/alerts', requireAuth, async (c) => c.json(await alertSweep(pool)));
+
 app.onError((err, c) => {
   console.error(err);
   return c.json({ error: 'internal error' }, 500);
 });
 
 await migrate();
+setInterval(() => { alertSweep(pool).catch((e) => console.error('alert sweep', e instanceof Error ? e.message : e)); }, 60_000).unref();
+if (Number(env.MOTION_RETENTION_DAYS || 0) >= 3) {
+  const run = () => retention(pool, s3, env.MOTION_RETENTION_APPLY === 'true').then((r) => console.log('retention', JSON.stringify(r))).catch((e) => console.error('retention', e instanceof Error ? e.message : e));
+  setTimeout(run, 60_000).unref();
+  setInterval(run, 24 * 3600_000).unref();
+}
 serve({ fetch: app.fetch, port: PORT, hostname: env.HOST || '::' }, (i) => console.log(`motion-api listening on ${i.port}`));
