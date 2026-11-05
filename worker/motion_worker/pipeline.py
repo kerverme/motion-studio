@@ -82,7 +82,8 @@ def stage_audio(ctx):
         for i, chunk in enumerate(chunks):
             a, al, m = eleven.tts_with_timestamps(chunk, v['voice_id'], v.get('model_id', 'eleven_v4'), v.get('language_code', 'th'),
                                                   v.get('stability', 0.4), v.get('similarity_boost', 0.75),
-                                                  previous_text=chunks[i - 1] if i else None, next_text=chunks[i + 1] if i + 1 < len(chunks) else None)
+                                                  previous_text=chunks[i - 1] if i else None, next_text=chunks[i + 1] if i + 1 < len(chunks) else None,
+                                                  speed=v.get('speed'))
             pp = ctx.path('audio', f'part_{i:02d}.mp3')
             open(pp, 'wb').write(a)
             c, s, e = tl.flatten_alignment(al, offset)

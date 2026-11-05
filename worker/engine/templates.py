@@ -260,29 +260,99 @@ def name_tag(img, p, x, y, size=40):
     put(img, tag, x, y)
 
 
+# ---------------------------------------------------------------- character motion (owner's rule: a character in EVERY frame,
+# moving differently with the context of each scene)
+ACTIONS = ('idle', 'wave', 'hop', 'jump', 'nod', 'sway', 'shake', 'dance', 'lean', 'peek', 'run', 'cheer')
+MOOD_ACTION = {'happy': 'hop', 'shock': 'shake', 'think': 'sway', 'worried': 'shake'}
+# default action per template when the script does not choose one (the cat and the person get different ones)
+CAT_ACTION = {'hook': 'jump', 'number': 'lean', 'compare': 'nod', 'bars': 'sway', 'list': 'nod', 'quiz': 'sway', 'reveal': 'cheer', 'dots': 'peek',
+              'timeline': 'run', 'truth': 'shake', 'scenario': 'hop', 'icons': 'dance', 'outro': 'dance', 'chat': 'peek', 'versus': 'lean', 'scale': 'hop'}
+PERSON_ACTION = {'hook': 'peek', 'number': 'nod', 'compare': 'sway', 'bars': 'nod', 'list': 'lean', 'quiz': 'sway', 'reveal': 'jump', 'dots': 'nod',
+                 'timeline': 'lean', 'truth': 'nod', 'scenario': 'sway', 'icons': 'hop', 'outro': 'cheer', 'chat': 'nod', 'versus': 'shake', 'scale': 'peek'}
+
+
+def motion(name, t, t0, side=1):
+    """Body motion for a character: -> (dx, dy, rot_degrees, squash, wave). `side` is +1 when it stands on the right, -1 on the left."""
+    u = t - t0
+    if u < 0 or not name or name == 'idle':
+        return 0.0, 0.0, 0.0, 1.0, 0.0
+    s, ab = math.sin, lambda v: abs(math.sin(v))
+    if name == 'wave':
+        return 0.0, -ab(u * 5) * 8, s(u * 3) * 3, 1.0, 1.0
+    if name == 'hop':
+        h = ab(u * 4.2)
+        return 0.0, -h * 40, 0.0, 1.0 + 0.06 * h - 0.05 * (1 - h) ** 6, 0.0
+    if name == 'jump':
+        k = min(u / 0.8, 1.0)
+        h = s(math.pi * k) if u < 0.8 else ab((u - 0.8) * 3.6) * 0.28
+        return 0.0, -h * 150, 0.0, 1.0 + 0.1 * h, 0.0
+    if name == 'nod':
+        return 0.0, s(u * 7) * 14, s(u * 3.5) * 3, 1.0, 0.0
+    if name == 'sway':
+        return s(u * 2.2) * 16, 0.0, s(u * 2.2) * 8, 1.0, 0.0
+    if name == 'shake':
+        k = math.exp(-u * 0.9) * 0.8 + 0.2
+        return s(u * 26) * 16 * k, 0.0, s(u * 26) * 4 * k, 1.0, 0.0
+    if name == 'dance':
+        return s(u * 2.5) * 34, -ab(u * 5) * 30, s(u * 5) * 11, 1.0, 1.0
+    if name == 'lean':
+        k = eo(min(u / 0.5, 1.0))
+        return -side * 70 * k, s(u * 3) * 6, -side * 7 * k, 1.0, 0.0
+    if name == 'peek':
+        k = eo(min(u / 0.6, 1.0))
+        return side * 300 * (1 - k), s(u * 3) * 8 * k, 0.0, 1.0, 0.0
+    if name == 'run':
+        return -side * (0.5 - 0.5 * math.cos(u * 0.9)) * 460, -ab(u * 6.5) * 22, -side * 5, 1.0, 0.0
+    if name == 'cheer':
+        return 0.0, -ab(u * 6) * 55, s(u * 6) * 6, 1.0, 1.0
+    return 0.0, 0.0, 0.0, 1.0, 0.0
+
+
+def _actor(spec, seg, t, kind, table, moods):
+    """Resolve a character's mood and action for time t: an explicit "action" wins, then the mood (explicit or reacted), then the template default."""
+    mood = spec.get('mood', 'normal')
+    t_act = 0.0
+    r = spec.get('react')
+    if isinstance(r, dict) and t >= at(seg, r.get('at'), 0.5):
+        mood = r.get('mood', mood)
+        t_act = at(seg, r.get('at'), 0.5)
+    mood = mood if mood in moods else 'normal'
+    a = spec.get('action')
+    if isinstance(a, str):
+        a = {'name': a}
+    if isinstance(a, dict) and a.get('name') in ACTIONS:
+        return mood, a['name'], at(seg, a.get('at'), 0.0)
+    if mood in MOOD_ACTION:
+        return mood, MOOD_ACTION[mood], t_act
+    return mood, table.get(kind, 'nod'), 0.0
+
+
 def mascots(img, t, seg, sp, default_cat=True):
     talk = talk_amount(t)
+    kind = sp.get('type')
+    flip = bool(sp.get('_flip'))     # alternate the corners from scene to scene so the characters do not sit in the same spot every time
     p = sp.get('person')
+    if not p and CAST and kind not in OWN_CAST:  # the cast is on screen in every scene, even when the script does not place them
+        names = list(CAST)
+        p = {'who': names[int(sp.get('_i', 0)) % len(names)]}
     if p:
         p = p if isinstance(p, dict) else {}
-        mood = p.get('mood', 'normal')
-        r = p.get('react')
-        if isinstance(r, dict) and t >= at(seg, r.get('at'), 0.5):
-            mood = r.get('mood', mood)
-        x = {'left': 190, 'right': 890, 'center': 540}.get(p.get('x', 'left'), 190)
-        draw_person(img, x, 1255, 150, t, style=person_style(p), pose='stand', mood=mood if mood in ('normal', 'happy', 'shock', 'think') else 'normal',
+        mood, act, t0 = _actor(p, seg, t, kind, PERSON_ACTION, ('normal', 'happy', 'shock', 'think'))
+        x = {'left': 190, 'right': 890, 'center': 540}.get(p.get('x', 'right' if flip else 'left'), 190)
+        dx, dy, _, _, wv = motion(act, t, t0, 1 if x > 540 else -1)
+        draw_person(img, x + dx, 1255 + dy, 150, t, style=person_style(p), pose='stand', mood=mood, wave=wv, talk=0.0,
                     glasses=p.get('glasses') is not False, hand_chin=mood == 'think', look=(0.3 if x < 540 else -0.3, -0.2))
         if p.get('show_name') is True:
-            name_tag(img, p, x, 1150, 34)
+            name_tag(img, p, x + dx, 1150 + dy, 34)
     c = sp.get('cat', {} if default_cat else None)
-    if c is not None and c is not False:
+    if c is False:      # the owner's rule: a character in every frame; the narrator cat can no longer be switched off
+        c = {}
+    if c is not None:
         c = c if isinstance(c, dict) else {}
-        mood = c.get('mood', 'normal')
-        r = c.get('react')
-        if isinstance(r, dict) and t >= at(seg, r.get('at'), 0.5):
-            mood = r.get('mood', mood)
-        x = {'left': 180, 'right': 900, 'center': 540}.get(c.get('x', 'right'), 900)
-        draw_cat(img, x, 1300, 150, t, mood=mood if mood in ('normal', 'happy', 'shock', 'worried') else 'normal', talk=talk,
+        mood, act, t0 = _actor(c, seg, t, kind, CAT_ACTION, ('normal', 'happy', 'shock', 'worried'))
+        x = {'left': 180, 'right': 900, 'center': 540}.get(c.get('x', 'left' if flip else 'right'), 900)
+        dx, dy, rot, sq, wv = motion(act, t, t0, 1 if x > 540 else -1)
+        draw_cat(img, x + dx, 1300 + dy, 150, t, mood=mood, talk=talk, rot=rot, sq=sq, wave=wv,
                  look=(-0.4 if x > 540 else 0.4, -0.2), kind=c.get('kind', 'mint') if c.get('kind') in ('mint', 'peach', 'ghost', 'grey') else 'mint')
 
 
@@ -627,35 +697,29 @@ def T_scenario(img, d, t, seg, sp):
     talk = talk_amount(t)
     p = sp.get('person', {}) or {}
     p = p if isinstance(p, dict) else {}
-    mood = p.get('mood', 'normal')
-    r = p.get('react')
-    if isinstance(r, dict) and t >= at(seg, r.get('at'), 0.5):
-        mood = r.get('mood', mood)
+    if not p and CAST:
+        p = {'who': next(iter(CAST))}
+    mood, act, t0 = _actor(p, seg, t, 'scenario', PERSON_ACTION, ('normal', 'happy', 'shock', 'think'))
     p2 = sp.get('person2')
     px, ps = (300, 230) if isinstance(p2, dict) else (380, 250)
-    draw_person(img, px, 860, ps, t, style=person_style(p), pose='stand',
-                mood=mood if mood in ('normal', 'happy', 'shock', 'think') else 'normal', glasses=p.get('glasses') is not False,
-                hand_chin=mood == 'think', look=(0.4, -0.2))
-    name_tag(img, p, px, 860 + ps * 1.85)
+    dx, dy, _, _, wv = motion(act, t, t0, -1)
+    draw_person(img, px + dx, 860 + dy, ps, t, style=person_style(p), pose='stand', mood=mood, wave=wv, talk=0.0,
+                glasses=p.get('glasses') is not False, hand_chin=mood == 'think', look=(0.4, -0.2))
+    name_tag(img, p, px + dx, 860 + dy + ps * 1.85)
     if isinstance(p2, dict):  # a second character, e.g. "แบงค์ vs ตั้ม"
-        m2 = p2.get('mood', 'normal')
-        r2 = p2.get('react')
-        if isinstance(r2, dict) and t >= at(seg, r2.get('at'), 0.5):
-            m2 = r2.get('mood', m2)
-        draw_person(img, 780, 860, 230, t, style=person_style(p2), pose='stand',
-                    mood=m2 if m2 in ('normal', 'happy', 'shock', 'think') else 'normal', glasses=p2.get('glasses') is not False,
-                    hand_chin=m2 == 'think', look=(-0.4, -0.2))
-        name_tag(img, p2, 780, 860 + 230 * 1.85)
+        m2, act2, t02 = _actor(p2, seg, t, 'versus', PERSON_ACTION, ('normal', 'happy', 'shock', 'think'))
+        dx2, dy2, _, _, wv2 = motion(act2, t, t02, 1)
+        draw_person(img, 780 + dx2, 860 + dy2, 230, t, style=person_style(p2), pose='stand', mood=m2, wave=wv2,
+                    glasses=p2.get('glasses') is not False, hand_chin=m2 == 'think', look=(-0.4, -0.2))
+        name_tag(img, p2, 780 + dx2, 860 + dy2 + 230 * 1.85)
     c = sp.get('cat', {}) or {}
     c = c if isinstance(c, dict) else {}
-    cm = c.get('mood', 'normal')
-    cr = c.get('react')
-    if isinstance(cr, dict) and t >= at(seg, cr.get('at'), 0.5):
-        cm = cr.get('mood', cm)
+    cm, cact, ct0 = _actor(c, seg, t, 'scenario', CAT_ACTION, ('normal', 'happy', 'shock', 'worried'))
+    cdx, cdy, crot, csq, cwv = motion(cact, t, ct0, 1)
     if isinstance(p2, dict):
-        draw_cat(img, 950, 1330, 110, t, mood=cm if cm in ('normal', 'happy', 'shock', 'worried') else 'normal', talk=talk, look=(-0.5, -0.2))
+        draw_cat(img, 950 + cdx, 1330 + cdy, 110, t, mood=cm, talk=talk, rot=crot, sq=csq, wave=cwv, look=(-0.5, -0.2))
     else:
-        draw_cat(img, 830, 1170, 170, t, mood=cm if cm in ('normal', 'happy', 'shock', 'worried') else 'normal', talk=talk, look=(-0.5, -0.2))
+        draw_cat(img, 830 + cdx, 1170 + cdy, 170, t, mood=cm, talk=talk, rot=crot, sq=csq, wave=cwv, look=(-0.5, -0.2))
     b = sp.get('bubble')
     if b:
         b = b if isinstance(b, dict) else {'text': b}
@@ -902,7 +966,7 @@ def build_scenes(spec):
         if not seg:
             continue
         pal = PALETTES.get(sp.get('bg')) or PALETTES[PAL_ORDER[i % len(PAL_ORDER)]]
-        out[seg] = (_scene(seg, sp, i + 3), pal)
+        out[seg] = (_scene(seg, dict(sp, _flip=bool(i % 2), _i=i), i + 3), pal)
     for i, sid in enumerate(core.ORDER):
         if sid not in out:  # a segment the spec forgot still gets a decent scene
             out[sid] = (_scene(sid, {'type': 'scenario', 'bubble': {'text': _TEXT.get(sid, '')[:60]}}, 50 + i), PALETTES[PAL_ORDER[i % len(PAL_ORDER)]])

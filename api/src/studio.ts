@@ -63,12 +63,14 @@ export const FORMATS: Record<string, { th: string; how: string }> = {
   then_now: { th: 'อดีต vs ปัจจุบัน vs อนาคต', how: 'how the topic looked years ago, how it is now, and what the data says comes next' },
 };
 const BEATS = ['hook', 'rehook', 'info', 'payoff', 'cta'] as const;
-const CPS = 12;          // estimated Thai narration speed (characters per second), same as the credit estimate
+const VOICE_SPEED = 1.12; // owner's rule: a brisker voice (ElevenLabs speed, 0.7-1.2)
+const CPS = 12 * VOICE_SPEED; // estimated Thai narration speed (characters per second); 12 at normal pace
 const HOOK_SECS = 5;     // owner's rule: the hook lands within the first 5 seconds
 const REHOOK_SECS = 15;  // and a new hook at least every 15 seconds
 export const ICONS = ['baby', 'battery', 'bolt', 'book', 'brain', 'bulb', 'calendar', 'car', 'cart', 'cat', 'chart', 'chart_down', 'check', 'clock', 'coffee', 'coin',
   'cross', 'down', 'exclaim', 'eye', 'fire', 'fitness', 'food', 'game', 'globe', 'health', 'heart', 'hot', 'house', 'money', 'moon', 'music', 'people', 'person',
   'phone', 'pin', 'plane', 'question', 'rain', 'school', 'sleep', 'star', 'sun', 'thai_flag', 'trash', 'tree', 'trophy', 'up', 'warning', 'water', 'wifi'];
+const ACTIONS = ['idle', 'wave', 'hop', 'jump', 'nod', 'sway', 'shake', 'dance', 'lean', 'peek', 'run', 'cheer'];
 const HAIRSTYLES = ['helmet', 'short', 'spiky', 'side_part', 'curly', 'bald', 'long', 'bob', 'ponytail', 'bun'];
 const TOPS = ['blazer', 'tshirt', 'hoodie', 'shirt', 'dress'];
 const BOTTOMS = ['pants', 'shorts', 'skirt'];
@@ -91,12 +93,14 @@ const SFX: Record<string, { prompt: string; duration: number }> = {
   sparkle: { prompt: 'Cartoon magical sparkle glint ting, short and playful', duration: 1.2 },
   stamp: { prompt: 'Rubber stamp thump on paper, punchy and short', duration: 0.6 },
 };
+// Owner's rule: faster music with a catchy "mood hook" that stays engaging the whole time (no slow intro, no drop-outs, a loop-able motif).
+const MUSIC_BASE = 'catchy melodic hook that repeats and develops, constant forward momentum from the first second, no slow intro, no long pauses or breakdowns, rhythmic drive, builds a little every few seconds, steady and not too busy under narration, instrumental';
 const MUSIC: Record<string, string> = {
-  playful: 'Playful, curious background music for a short fun-fact video: bouncy pizzicato strings, ukulele and light marimba, soft claps, about 100 BPM, bright and friendly like a quirky quiz show, steady groove under narration, instrumental',
-  curious: 'Curious, light investigative background music: soft plucked synths, gentle glockenspiel, muted bass, about 95 BPM, inquisitive and warm, steady under narration, instrumental',
-  upbeat: 'Upbeat energetic background music for a short explainer: funky bass, crisp drums, bright synth stabs, about 112 BPM, positive and punchy, steady under narration, instrumental',
-  dramatic: 'Light dramatic background music for a surprising-facts video: low strings pulse, soft taiko hits, rising tension without being scary, about 90 BPM, steady under narration, instrumental',
-  chill: 'Chill lo-fi background music: warm electric piano, soft vinyl texture, relaxed drums, about 85 BPM, calm and friendly, steady under narration, instrumental',
+  playful: `Fast playful background music for a short fun-fact video: bouncy pizzicato, ukulele, bright marimba lead and handclaps, about 128 BPM, quirky quiz-show energy; ${MUSIC_BASE}`,
+  curious: `Fast curious investigative background music: plucked synth arpeggios, glockenspiel hook, punchy muted bass and light drums, about 124 BPM, inquisitive and driving; ${MUSIC_BASE}`,
+  upbeat: `Upbeat high-energy background music for a short explainer: funky bass, crisp drums, bright synth stabs and a singable lead, about 132 BPM, positive and punchy; ${MUSIC_BASE}`,
+  dramatic: `Driving dramatic background music for a surprising-facts video: pulsing strings, taiko and tight percussion, rising tension without being scary, about 120 BPM; ${MUSIC_BASE}`,
+  chill: `Light groovy lo-fi pop background music with a warm electric-piano hook, tight drums and a bouncy bass, about 110 BPM, easy but never slow or sleepy; ${MUSIC_BASE}`,
 };
 
 // ---------------------------------------------------------------- helpers
@@ -349,6 +353,18 @@ Give each character a look that fits who they are; make characters in the same e
 Fields: {"name" (as spoken/shown, e.g. "แบงค์"), "hairstyle": ${HAIRSTYLES.join('|')}, "hair_color": ${HAIR_COLORS.join('|')},
 "skin": ${SKINS.join('|')}, "top": ${TOPS.join('|')}, "top_color", "bottom": ${BOTTOMS.join('|')}, "bottom_color" (colours: ${CLOTH.join('|')}),
 "glasses": round|square|none, "accessories": [${ACCESSORIES.join(', ')}], "accessory_color"}.
+## Characters in EVERY frame, acting out the context (the owner's standing rule)
+The jelly cat narrator is on screen in every scene and any cast member appears in every scene too (the engine adds them even if you do not place them; "cat": false is not allowed).
+They must MOVE differently with what is being said. Give every scene's "cat" an "action": {"name", "at"} (and "person" one when it is placed; the person's action should differ from the cat's).
+Actions: ${ACTIONS.join(', ')} — wave (greeting/CTA), hop (good news), jump (the big hook or reveal), nod (agreeing, facts), sway (thinking, quiz), shake (shock, no, myth),
+dance (celebration, outro), lean (pointing at the number/item on screen), peek (a surprise slides in), run (journey, timeline, getting away), cheer (the answer is right), idle (calm).
+"at" is a word from that segment's narration (the action starts when it is spoken). Combine with moods (cat: normal|happy|shock|worried, person: normal|happy|shock|think) and "react".
+Match the action to the meaning of the words, change it between consecutive scenes, and use at least 4 different actions in an episode. Move the characters with "x": left|right|center in some scenes.
+
+## Pace (the owner wants it faster)
+The voice runs fast (about ${CPS.toFixed(1)} characters per second) and the music is upbeat with a catchy hook. Write punchy, energetic narration: short phrases, active verbs, no filler or
+repetition, a fresh fact, number or twist every few seconds, and let the mood hook the viewer from the first word to the last. Choose the music mood "upbeat", "playful" or "curious" unless the story really needs "dramatic".
+
 "ตั้ม" is the recurring guy from earlier episodes (hairstyle helmet, top blazer navy, glasses round, accessories [bag]); reuse exactly that look if he appears.
 A "scenario" scene can show two characters: "person" (left) and "person2" (right), with "bubble" and "bubble2" speech lines; name tags show automatically.
 Elsewhere "person" appears small in a corner. The cat is always the narrator.
@@ -457,7 +473,7 @@ function iconRefs(node: any, out: string[] = []) {
 // After the owner edits narration, a timing word that is gone only moves that animation to its approximate position.
 const SOFT = /timing word|sfx .*word/;
 // The owner's own edits are never blocked by storytelling rules; they are shown as warnings instead.
-const OWNER_SOFT = /timing word|sfx .*word|hook|re-hook|beat "cta"|both use|is used \d+ times|format|scene sequence/;
+const OWNER_SOFT = /timing word|sfx .*word|hook|re-hook|beat "cta"|both use|is used \d+ times|format|scene sequence|action/;
 
 // problems: must be fixed. warnings: shown to the owner, do not block.
 export type Recent = { format: string; types: string[]; title: string };
@@ -538,6 +554,20 @@ export function checkDraft(d: DraftT, seen: Map<string, Seen> | null, recent: Re
     const early = !refs.length || Math.min(...refs) <= 8 /* ≈ 0.7 s */ || ['hook', 'chat', 'scenario'].includes(sc.type) && !sc.headline;
     if (!early) problems.push(`scene ${sg.id} is a ${sg.beat} but nothing appears until later in the segment; time a headline, stamp or the first element to its first words`);
   }
+  // ---- characters: one in every frame, moving with the context
+  const acts: string[] = [];
+  for (const sc of d.scenes as any[]) {
+    if (sc.cat === false) problems.push(`scene ${sc.seg}: "cat": false is not allowed; a character must be on screen in every scene`);
+    const a = sc.cat && typeof sc.cat === 'object' ? sc.cat.action : undefined;
+    const name = typeof a === 'string' ? a : a?.name;
+    if (!name) { problems.push(`scene ${sc.seg}: give the character an "action" (cat.action {"name","at"}) that matches what is being said`); acts.push(''); continue; }
+    if (!ACTIONS.includes(name)) problems.push(`scene ${sc.seg}: unknown action "${name}" (use ${ACTIONS.join(', ')})`);
+    acts.push(name);
+    const pa = sc.person?.action; const pn = typeof pa === 'string' ? pa : pa?.name;
+    if (pn && !ACTIONS.includes(pn)) problems.push(`scene ${sc.seg}: unknown person action "${pn}"`);
+  }
+  for (let i = 1; i < acts.length; i++) if (acts[i] && acts[i] === acts[i - 1] && acts[i] !== 'idle') problems.push(`scenes ${d.scenes[i - 1].seg} and ${d.scenes[i].seg} give the character the same action "${acts[i]}"; vary the movement`);
+  if (new Set(acts.filter((x) => x && x !== 'idle')).size < Math.min(4, d.scenes.length)) problems.push('use at least 4 different character actions across the episode');
   // ---- variety
   const types = d.script.map((s) => (d.scenes.find((x) => x.seg === s.id) as any)?.type).filter(Boolean) as string[];
   for (let i = 1; i < types.length; i++) if (types[i] === types[i - 1] && types[i] !== 'scenario') problems.push(`scenes ${d.script[i - 1].id} and ${d.script[i].id} both use "${types[i]}"; change one (avoid the same layout twice in a row)`);
@@ -586,7 +616,7 @@ export function buildPackage(topic: string, d: DraftT, research: Seen[]) {
   return {
     topic, title_th: d.title_th.slice(0, 120), series_tag: SERIES_TAG,
     script: d.script,
-    voice: { voice_id: VOICE_ID, model_id: 'eleven_v4', language_code: 'th', stability: 0.4, similarity_boost: 0.75 },
+    voice: { voice_id: VOICE_ID, model_id: 'eleven_v4', language_code: 'th', stability: 0.35, similarity_boost: 0.75, speed: VOICE_SPEED },
     music: { prompt: MUSIC[d.music] || MUSIC.playful, model_id: 'music_v1', volume: 0.28 },
     sfx: [...cues.entries()].map(([id, cs]) => ({ id, prompt: SFX[id].prompt, duration: SFX[id].duration, cues: cs })),
     scene_code: sceneCode(d),

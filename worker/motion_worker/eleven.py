@@ -38,15 +38,25 @@ def cache_key(kind, payload):
 
 
 def tts_with_timestamps(text, voice_id, model_id='eleven_v4', language_code='th', stability=0.4, similarity_boost=0.75,
-                        previous_text=None, next_text=None):
+                        previous_text=None, next_text=None, speed=None):
     body = {'text': text, 'model_id': model_id, 'language_code': language_code,
             'voice_settings': {'stability': stability, 'similarity_boost': similarity_boost}}
+    if speed and abs(float(speed) - 1.0) > 0.01:   # owner's rule: a brisk voice (ElevenLabs accepts 0.7-1.2)
+        body['voice_settings']['speed'] = max(0.7, min(1.2, float(speed)))
     if previous_text:
         body['previous_text'] = previous_text
     if next_text:
         body['next_text'] = next_text
     try:
-        data, meta = _post(f'/v1/text-to-speech/{voice_id}/with-timestamps', body, {'output_format': 'mp3_44100_128'})
+        try:
+            data, meta = _post(f'/v1/text-to-speech/{voice_id}/with-timestamps', body, {'output_format': 'mp3_44100_128'})
+        except ElevenError as e:
+            if 'speed' in body['voice_settings'] and 'speed' in str(e).lower():   # this model refuses "speed": keep the default pace rather than fail
+                del body['voice_settings']['speed']
+                data, meta = _post(f'/v1/text-to-speech/{voice_id}/with-timestamps', body, {'output_format': 'mp3_44100_128'})
+                meta['speed_ignored'] = True
+            else:
+                raise
     except ElevenError as e:
         # some models reject language_code / settings combinations; retry with the documented Thai-capable v3 model
         if model_id != 'eleven_v3' and ('model' in str(e).lower() or '422' in str(e) or '400' in str(e)):
@@ -83,8 +93,8 @@ if __import__('os').environ.get('MOTION_FAKE_ELEVEN') == '1':
         return _sp.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', f'sine=frequency={freq}:duration={seconds:.3f}',
                         '-af', 'volume=0.4,tremolo=f=6:d=0.8', '-b:a', '128k', '-f', 'mp3', '-'], capture_output=True, check=True).stdout
 
-    def tts_with_timestamps(text, voice_id, model_id='fake', language_code='th', stability=0.4, similarity_boost=0.75, previous_text=None, next_text=None):
-        per = 0.075
+    def tts_with_timestamps(text, voice_id, model_id='fake', language_code='th', stability=0.4, similarity_boost=0.75, previous_text=None, next_text=None, speed=None):
+        per = 0.075 / (speed or 1.0)
         chars = list(text)
         st = [0.2 + i * per for i in range(len(chars))]
         en = [s + per for s in st]
