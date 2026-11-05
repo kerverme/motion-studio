@@ -426,6 +426,8 @@ const TOOLS = [
 ];
 
 // ---------------------------------------------------------------- validation of a draft
+// a colour is a name from the lists above or an exact [r,g,b] (cast made from a photo)
+const Colour = z.union([z.string(), z.array(z.number().int().min(0).max(255)).length(3)]);
 const Draft = z.object({
   title_th: z.string().min(4).max(90),
   angle: z.string().default(''),
@@ -441,9 +443,9 @@ const Draft = z.object({
   sfx: z.array(z.object({ sfx: z.string(), seg: z.string(), at: z.string(), gain: z.number().min(0).max(1.2).default(0.5) })).max(14).default([]),
   music: z.string().default('playful'),
   cast: z.array(z.object({
-    name: z.string().min(1).max(20), hairstyle: z.string().optional(), hair_color: z.string().optional(), skin: z.string().optional(),
-    top: z.string().optional(), top_color: z.string().optional(), bottom: z.string().optional(), bottom_color: z.string().optional(),
-    glasses: z.string().optional(), accessories: z.array(z.string()).optional(), accessory_color: z.string().optional(),
+    name: z.string().min(1).max(20), hairstyle: z.string().optional(), hair_color: Colour.optional(), skin: Colour.optional(),
+    top: z.string().optional(), top_color: Colour.optional(), bottom: z.string().optional(), bottom_color: Colour.optional(),
+    glasses: z.string().optional(), accessories: z.array(z.string()).optional(), accessory_color: Colour.optional(),
   })).max(4).default([]),
   thumbnail: z.object({ seg: z.string().optional(), title: z.string().optional() }).optional(),
 });
@@ -516,11 +518,11 @@ export function checkDraft(d: DraftT, seen: Map<string, Seen> | null, recent: Re
   for (const c of d.cast) {
     const bad: string[] = [];
     if (c.hairstyle && !HAIRSTYLES.includes(c.hairstyle)) bad.push(`hairstyle "${c.hairstyle}"`);
-    if (c.hair_color && !HAIR_COLORS.includes(c.hair_color)) bad.push(`hair_color "${c.hair_color}"`);
-    if (c.skin && !SKINS.includes(c.skin)) bad.push(`skin "${c.skin}"`);
+    if (typeof c.hair_color === 'string' && !HAIR_COLORS.includes(c.hair_color)) bad.push(`hair_color "${c.hair_color}"`);
+    if (typeof c.skin === 'string' && !SKINS.includes(c.skin)) bad.push(`skin "${c.skin}"`);
     if (c.top && !TOPS.includes(c.top)) bad.push(`top "${c.top}"`);
     if (c.bottom && !BOTTOMS.includes(c.bottom)) bad.push(`bottom "${c.bottom}"`);
-    for (const k of ['top_color', 'bottom_color', 'accessory_color'] as const) if (c[k] && !CLOTH.includes(c[k]!)) bad.push(`${k} "${c[k]}"`);
+    for (const k of ['top_color', 'bottom_color', 'accessory_color'] as const) if (typeof c[k] === 'string' && !CLOTH.includes(c[k] as string)) bad.push(`${k} "${c[k]}"`);
     if (c.glasses && !['round', 'square', 'none'].includes(c.glasses)) bad.push(`glasses "${c.glasses}"`);
     for (const a of c.accessories || []) if (!ACCESSORIES.includes(a)) bad.push(`accessory "${a}"`);
     if (bad.length) problems.push(`cast ${c.name}: unknown ${bad.join(', ')}`);
@@ -642,6 +644,65 @@ type Deps = {
   validate: (p: unknown) => string[];
 };
 
+// ---------------------------------------------------------------- characters from a photo
+// The photo is only ANALYSED (vision) into the parameters the code-drawn chibi engine understands; nothing is generated from it.
+type Look = { hairstyle: string; hair_color: number[]; skin: number[]; top: string; top_color: number[]; bottom: string; bottom_color: number[]; glasses: string; accessories: string[]; accessory_color: number[] };
+const rgb = (v: any, d: number[]): number[] => (Array.isArray(v) && v.length >= 3 ? v.slice(0, 3).map((n) => Math.max(0, Math.min(255, Math.round(Number(n) || 0)))) : d);
+const pick = (v: any, list: string[], d: string) => (list.includes(v) ? v : d);
+const RGB3 = { type: 'array', items: { type: 'integer' }, minItems: 3, maxItems: 3 };
+const LOOK_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  required: ['person_visible', 'hairstyle', 'hair_color', 'skin', 'top', 'top_color', 'bottom', 'bottom_color', 'glasses', 'accessories', 'accessory_color'],
+  properties: {
+    person_visible: { type: 'boolean' },
+    hairstyle: { type: 'string', enum: HAIRSTYLES }, hair_color: RGB3, skin: RGB3,
+    top: { type: 'string', enum: TOPS }, top_color: RGB3, bottom: { type: 'string', enum: BOTTOMS }, bottom_color: RGB3,
+    glasses: { type: 'string', enum: ['round', 'square', 'none'] }, accessories: { type: 'array', items: { type: 'string', enum: ACCESSORIES } }, accessory_color: RGB3,
+  },
+};
+const PHOTO_PROMPT = `You turn a photo of a person into the parameters of a flat, friendly cartoon character that is drawn by code. Look only at what is visible: the hair, the clothes, glasses, skin tone, accessories.
+Do NOT identify the person or guess their name, age, ethnicity or health; describe the styling only.
+- hairstyle: the closest of ${HAIRSTYLES.join(', ')} (helmet = a rounded bowl cut with a fringe, spiky = short upright hair, side_part, curly, bald, long, bob = chin length, ponytail, bun).
+- hair_color, skin, top_color, bottom_color, accessory_color: [r,g,b] 0-255 read from the picture as the colour of the lit surface (not the shadow). skin is the lit skin tone of the face.
+- top: blazer (jacket or suit), tshirt, hoodie, shirt (collared or buttoned), dress. bottom: pants, shorts or skirt (if only the upper body is visible, choose pants).
+- glasses: round, square or none. accessories: any of ${ACCESSORIES.join(', ')} that are clearly visible (cap for a hat or cap, mustache, beard, earrings, headband, bow, bag for a visible bag strap; lashes only when stylised makeup stands out).
+- If there is no person in the picture set person_visible to false and fill the rest with neutral values.`;
+
+export async function analyzePhoto(dataUrl: string): Promise<Look> {
+  const m = /^data:(image\/(?:jpeg|png|webp));base64,(.+)$/.exec(dataUrl);
+  if (!m) throw new Error('รูปต้องเป็น JPG, PNG หรือ WebP');
+  let raw: any;
+  if (PROVIDER === 'openai') {
+    const j: any = await openai({ model: MODEL, reasoning: { effort: 'low' }, max_output_tokens: 3000,
+      input: [{ role: 'user', content: [{ type: 'input_text', text: PHOTO_PROMPT }, { type: 'input_image', image_url: dataUrl }] }],
+      text: { format: { type: 'json_schema', name: 'character_look', strict: true, schema: LOOK_SCHEMA } } });
+    const txt = j.output_text ?? (j.output || []).flatMap((o: any) => o.content || []).find((c: any) => c.type === 'output_text')?.text;
+    raw = JSON.parse(String(txt || '{}'));
+  } else {
+    const j: any = await claude({ model: MODEL, max_tokens: 2000, messages: [{ role: 'user', content: [
+      { type: 'image', source: { type: 'base64', media_type: m[1], data: m[2] } },
+      { type: 'text', text: PHOTO_PROMPT + '\nReply with one JSON object only, with exactly these keys: ' + Object.keys(LOOK_SCHEMA.properties).join(', ') }] }] });
+    const txt = (j.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('');
+    raw = JSON.parse(txt.slice(txt.indexOf('{'), txt.lastIndexOf('}') + 1));
+  }
+  if (raw.person_visible === false) throw new Error('ไม่เห็นคนในรูป ลองรูปที่เห็นหน้าและลำตัวชัดๆ');
+  return {
+    hairstyle: pick(raw.hairstyle, HAIRSTYLES, 'short'), hair_color: rgb(raw.hair_color, [24, 24, 34]), skin: rgb(raw.skin, [244, 207, 178]),
+    top: pick(raw.top, TOPS, 'tshirt'), top_color: rgb(raw.top_color, [116, 122, 136]), bottom: pick(raw.bottom, BOTTOMS, 'pants'), bottom_color: rgb(raw.bottom_color, [70, 100, 150]),
+    glasses: pick(raw.glasses, ['round', 'square', 'none'], 'none'), accessories: (Array.isArray(raw.accessories) ? raw.accessories : []).filter((a: string) => ACCESSORIES.includes(a)).slice(0, 3),
+    accessory_color: rgb(raw.accessory_color, [230, 70, 90]),
+  };
+}
+
+// The owner's photo characters are forced into the draft's cast with exactly their stored look.
+type ReqChar = { id?: string; name: string; look: Look };
+export function applyCast(d: DraftT, req: ReqChar[]): DraftT {
+  if (!req?.length) return d;
+  const names = new Set(req.map((r) => r.name));
+  const forced = req.map((r) => ({ name: r.name, ...r.look }));
+  return { ...d, cast: [...forced, ...d.cast.filter((c) => !names.has(c.name))].slice(0, 4) } as DraftT;
+}
+
 export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
   async function recentEpisodes(excludeId?: string): Promise<Recent[]> {
     const r = await pool.query(`SELECT id, draft FROM drafts WHERE draft IS NOT NULL AND status IN ('ready','submitted') AND id <> $1
@@ -692,6 +753,12 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       userText += `\n\nThis is a rewrite. Previous version (title "${p.title_th}"):\n${(p.script || []).map((s: any) => `[${s.id}] ${s.text}`).join('\n')}\n` +
         `Previous sources (already fetched with Firecrawl recently, you may cite them again without re-reading):\n${(p.sources || []).map((s: any) => `- ${s.url} (${s.publisher}, ${s.published})`).join('\n')}\n` +
         `Apply the owner's direction; check for newer data where it matters.`;
+    }
+    const reqChars: ReqChar[] = Array.isArray(row.characters) ? row.characters : [];
+    if (reqChars.length) {
+      userText += `\n\nRequired characters (the owner uploaded photos of them; their look is applied automatically, do not change it): ${reqChars.map((c) => `"${c.name}"`).join(', ')}. ` +
+        `Make them the main cast of this episode: put them in "cast" by exactly these names, write them into the story (what they do, say and feel) and refer to them in scenes with "person": {"who": name}. ` +
+        `You may add at most ${Math.max(0, 4 - reqChars.length)} other characters.`;
     }
     const recent = await recentEpisodes(id);
     userText += recent.length
@@ -755,7 +822,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
               results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: `Fix these and submit again:\n- ${issues.join('\n- ')}` });
               continue;
             }
-            const d = parsed.data;
+            const d = applyCast(parsed.data, reqChars);
             const { problems, warnings } = checkDraft(d, seen, recent);
             let est: number | null = null;
             if (!problems.length) {
@@ -898,6 +965,34 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       models: MODEL_CHOICES[PROVIDER], reasoning: PROVIDER === 'openai' ? REASONING : null, reasoning_levels: PROVIDER === 'openai' ? REASONING_LEVELS : [], drafts_today: n, daily_limit: DAILY_LIMIT, busy, max_credits: DRAFT_MAX_CREDITS });
   });
 
+  // ---- characters made from photos
+  app.get('/app/api/studio/characters', g, async (c) => {
+    const r = await pool.query('SELECT id, name, look, thumb, created_at FROM characters ORDER BY created_at DESC LIMIT 60');
+    return c.json({ characters: r.rows });
+  });
+
+  app.post('/app/api/studio/characters', g, async (c) => {
+    const b = await c.req.json().catch(() => ({}));
+    const name = String(b.name || '').trim().slice(0, 20);
+    if (!name) return c.json({ error: 'ตั้งชื่อตัวละครก่อน (ไม่เกิน 20 ตัวอักษร)' }, 422);
+    const image = String(b.image || '');
+    if (!/^data:image\/(jpeg|png|webp);base64,/.test(image) || image.length > 2_500_000) return c.json({ error: 'รูปต้องเป็น JPG, PNG หรือ WebP ขนาดไม่เกินประมาณ 1.8 MB' }, 422);
+    if (!configured().llm) return c.json({ error: `ยังไม่ได้ตั้งค่า ${configured().key_name} ใน Railway (motion-api)` }, 503);
+    if ((await pool.query('SELECT 1 FROM characters WHERE lower(name)=lower($1)', [name])).rowCount) return c.json({ error: 'มีตัวละครชื่อนี้แล้ว' }, 409);
+    let look: Look;
+    try { look = await analyzePhoto(image); } catch (e) { return c.json({ error: e instanceof Error ? e.message : String(e) }, 422); }
+    const thumb = typeof b.thumb === 'string' && /^data:image\/jpeg;base64,/.test(b.thumb) && b.thumb.length < 60_000 ? b.thumb : null;
+    const r = await pool.query('INSERT INTO characters (name, look, thumb) VALUES ($1,$2,$3) RETURNING id, name, look, thumb, created_at', [name, JSON.stringify(look), thumb]);
+    return c.json({ character: r.rows[0] }, 201);
+  });
+
+  app.delete('/app/api/studio/characters/:id', g, async (c) => {
+    const id = c.req.param('id');
+    if (!isId(id)) return c.json({ error: 'not found' }, 404);
+    await pool.query('DELETE FROM characters WHERE id=$1', [id]);
+    return c.json({ ok: true });
+  });
+
   app.get('/app/api/studio/drafts', g, async (c) => {
     const r = await pool.query(`SELECT d.*, j.status AS job_status, j.progress AS job_progress, e.number AS episode_number FROM drafts d
       LEFT JOIN jobs j ON j.id = d.job_id LEFT JOIN episodes e ON e.id = d.episode_id
@@ -927,8 +1022,10 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     if (n >= DAILY_LIMIT) return c.json({ error: `ครบโควตา ${DAILY_LIMIT} ร่างต่อวันแล้ว` }, 429);
     const model = typeof b.model === 'string' && MODEL_RE.test(b.model) ? b.model : MODEL;
     const reasoning = REASONING_LEVELS.includes(b.reasoning) ? b.reasoning : REASONING;
-    const r = await pool.query('INSERT INTO drafts (topic, note, auto_produce, model, reasoning) VALUES ($1,$2,$3,$4,$5) RETURNING id',
-      [topic, String(b.note || '').trim().slice(0, 1000) || null, !!b.auto_produce, model, PROVIDER === 'openai' ? reasoning : null]);
+    const ids: string[] = (Array.isArray(b.characters) ? b.characters : []).map(String).filter(isId).slice(0, 3);
+    const chars = ids.length ? (await pool.query('SELECT id, name, look FROM characters WHERE id = ANY($1::uuid[]) ORDER BY created_at', [ids])).rows : [];
+    const r = await pool.query('INSERT INTO drafts (topic, note, auto_produce, model, reasoning, characters) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id',
+      [topic, String(b.note || '').trim().slice(0, 1000) || null, !!b.auto_produce, model, PROVIDER === 'openai' ? reasoning : null, JSON.stringify(chars)]);
     await log(r.rows[0].id, 'รับหัวข้อแล้ว รอคิว');
     pump();
     return c.json({ id: r.rows[0].id }, 201);
@@ -979,9 +1076,10 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const b = await c.req.json().catch(() => ({}));
     const cf = configured();
     if (!cf.llm || !cf.firecrawl) return c.json({ error: 'ยังไม่ได้ตั้งค่า API key ใน Railway' }, 503);
-    const r = await pool.query('INSERT INTO drafts (topic, note, parent_id, auto_produce, model, reasoning) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id',
+    const r = await pool.query('INSERT INTO drafts (topic, note, parent_id, auto_produce, model, reasoning, characters) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id',
       [row.topic, String(b.note ?? row.note ?? '').trim().slice(0, 1000) || null, row.draft ? row.id : null, !!b.auto_produce,
-        typeof b.model === 'string' && MODEL_RE.test(b.model) ? b.model : row.model, REASONING_LEVELS.includes(b.reasoning) ? b.reasoning : row.reasoning]);
+        typeof b.model === 'string' && MODEL_RE.test(b.model) ? b.model : row.model, REASONING_LEVELS.includes(b.reasoning) ? b.reasoning : row.reasoning,
+        JSON.stringify(row.characters ?? [])]);
     if (['ready', 'failed'].includes(row.status)) await pool.query("UPDATE drafts SET status='discarded', updated_at=now() WHERE id=$1", [id]);
     await log(r.rows[0].id, row.draft ? 'เขียนใหม่จากร่างเดิม รอคิว' : 'ลองใหม่ รอคิว');
     pump();

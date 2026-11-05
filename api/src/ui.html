@@ -188,6 +188,24 @@ td.views{min-width:170px}
 details summary{cursor:pointer;color:var(--ink-2);font-size:14px;margin-top:10px}
 
 
+
+/* characters from photos */
+.chars{border-top:1px solid var(--line-2);padding-top:12px;display:flex;flex-direction:column;gap:10px}
+.chars h3{font-size:14.5px;font-weight:600;margin:0}
+.chars .hint{font-size:13px;color:var(--ink-3);line-height:1.5}
+.charlist{display:flex;gap:10px;flex-wrap:wrap}
+.char{position:relative;display:flex;gap:10px;align-items:center;padding:8px 12px 8px 8px;border:1px solid var(--line);border-radius:var(--r-md);background:var(--raised);cursor:pointer;max-width:100%}
+.char.on{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent)}
+.char img,.char .ph{width:44px;height:44px;border-radius:10px;object-fit:cover;background:var(--line-2);flex:none}
+.char b{font-size:14.5px;font-weight:600;display:block}
+.char .sw{display:flex;gap:3px;margin-top:3px}
+.char .sw i{width:13px;height:13px;border-radius:50%;border:1px solid rgba(0,0,0,.25);display:block}
+.char .x{all:unset;cursor:pointer;color:var(--ink-3);font-size:13px;padding:2px 6px;margin-left:2px}
+.char .x:hover{color:var(--bad)}
+.charnew{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.charnew img{width:64px;height:64px;border-radius:12px;object-fit:cover}
+.charnew input[type=text]{padding:9px 12px;border-radius:var(--r-md);border:1px solid var(--line);background:var(--raised);width:180px}
+
 /* studio */
 .composer{background:var(--surface);border:1px solid var(--line-2);border-radius:var(--r-lg);padding:20px 22px;display:flex;flex-direction:column;gap:12px}
 .composer textarea,.field{width:100%;padding:12px 14px;border-radius:var(--r-md);border:1px solid var(--line);background:var(--raised);line-height:1.55;resize:vertical}
@@ -332,8 +350,8 @@ function go(v){ S.view=v; S.liveOn=false; try{ localStorage.setItem('ms.view',v)
 async function load(){
   try{
     if (S.view==='create'){
-      const [st, dr, e] = await Promise.all([api('/app/api/studio/status'), api('/app/api/studio/drafts'), api('/app/api/episodes?tab=ready')]);
-      S.formats=st.formats; S.counts={...e.counts, create: dr.drafts.filter(d=>d.status==='ready').length||null}; frame(); studio(st, dr.drafts);
+      const [st, dr, e, ch] = await Promise.all([api('/app/api/studio/status'), api('/app/api/studio/drafts'), api('/app/api/episodes?tab=ready'), api('/app/api/studio/characters')]);
+      CHARS = ch.characters||[]; S.formats=st.formats; S.counts={...e.counts, create: dr.drafts.filter(d=>d.status==='ready').length||null}; frame(); studio(st, dr.drafts);
     } else if (S.view==='ready' || S.view==='used'){
       const r = await api('/app/api/episodes?tab='+S.view); S.counts=r.counts; S.eps=r.episodes; frame(); clips();
     } else if (S.view==='working'){
@@ -504,6 +522,60 @@ function draftState(d){
 }
 const inProgress = d => ['queued','researching','writing'].includes(d.status) || (d.status==='submitted' && !['READY_TO_POST','FAILED','CANCELLED'].includes(d.job_status));
 
+
+/* ---------- characters made from an uploaded photo ---------- */
+async function shrinkImage(file, max, q){
+  let bmp; try{ bmp = await createImageBitmap(file); }catch{ throw new Error('เปิดรูปนี้ไม่ได้ ใช้ JPG, PNG หรือ WebP (ถ้าเป็น HEIC ให้แปลงก่อน)'); }
+  const k = Math.min(1, max/Math.max(bmp.width,bmp.height)), c = document.createElement('canvas');
+  c.width = Math.max(1,Math.round(bmp.width*k)); c.height = Math.max(1,Math.round(bmp.height*k));
+  const x = c.getContext('2d'); x.fillStyle='#fff'; x.fillRect(0,0,c.width,c.height); x.drawImage(bmp,0,0,c.width,c.height);
+  return c.toDataURL('image/jpeg', q);
+}
+const rgbCss = a => Array.isArray(a)&&a.length>=3 ? 'rgb('+a.slice(0,3).join(',')+')' : '#ccc';
+const HAIR_TH = {helmet:'ทรงบอบหน้าม้า',short:'ผมสั้น',spiky:'ผมตั้ง',side_part:'ผมแสกข้าง',curly:'ผมหยิก',bald:'ศีรษะล้าน',long:'ผมยาว',bob:'ผมบ๊อบ',ponytail:'ผมมัดหาง',bun:'ผมจุก'};
+const TOP_TH = {blazer:'สูท/เบลเซอร์',tshirt:'เสื้อยืด',hoodie:'ฮู้ด',shirt:'เสื้อเชิ้ต',dress:'ชุดเดรส'};
+let CHARS = [];
+function selectedChars(){ try{ return JSON.parse(localStorage.getItem('ms.chars')||'[]').filter(id=>CHARS.some(c=>c.id===id)); }catch{ return []; } }
+function setSelectedChars(a){ try{ localStorage.setItem('ms.chars', JSON.stringify(a)); }catch{} }
+
+function characterPanel(){
+  const wrap = h('div',{class:'chars'});
+  const pend = S.charNew || (S.charNew = {});
+  function draw(){
+    const sel = selectedChars();
+    const list = CHARS.length ? h('div',{class:'charlist'}, CHARS.map(c=>{
+      const on = sel.includes(c.id), l = c.look||{};
+      return h('div',{class:'char'+(on?' on':''),role:'checkbox','aria-checked':String(on),tabindex:'0',title:[HAIR_TH[l.hairstyle],TOP_TH[l.top],l.glasses&&l.glasses!=='none'?'แว่น':''].filter(Boolean).join(' · '),
+          on:{click:()=>toggle(c.id),keydown:e=>{ if(e.key===' '||e.key==='Enter'){ e.preventDefault(); toggle(c.id); } }}},
+        c.thumb ? h('img',{src:c.thumb,alt:''}) : h('div',{class:'ph'}),
+        h('div',{}, h('b',{},c.name), h('div',{class:'sw','aria-hidden':'true'}, [l.skin,l.hair_color,l.top_color,l.bottom_color].map(v=>h('i',{style:'background:'+rgbCss(v)})))),
+        h('button',{class:'x','aria-label':'ลบ '+c.name,on:{click:async e=>{ e.stopPropagation(); try{ await api('/app/api/studio/characters/'+c.id,{method:'DELETE'}); CHARS=CHARS.filter(x=>x.id!==c.id); setSelectedChars(selectedChars()); draw(); }catch(x){ toast(x.message); } }}},'ลบ'));
+    })) : h('div',{class:'hint'},'ยังไม่มีตัวละคร อัปโหลดรูปคนที่ต้องการให้เป็นตัวละครในคลิป');
+    const file = h('input',{type:'file',accept:'image/jpeg,image/png,image/webp',hidden:true,on:{change:async e=>{
+      const f=e.target.files[0]; if(!f) return; err.textContent='';
+      try{ pend.image = await shrinkImage(f,1024,.85); pend.thumb = await shrinkImage(f,120,.8); if(!pend.name) pend.name=''; draw(); }catch(x){ err.textContent=x.message; } }}});
+    const err = h('div',{class:'err',role:'alert'});
+    let nm, mk;
+    const form = pend.image ? h('div',{class:'charnew'},
+      h('img',{src:pend.thumb,alt:'รูปที่เลือก'}),
+      nm = h('input',{type:'text',maxlength:20,placeholder:'ชื่อตัวละคร',value:pend.name||'','aria-label':'ชื่อตัวละคร',on:{input:e=>{ pend.name=e.target.value; }}}),
+      mk = h('button',{class:'btn primary',on:{click:async()=>{
+        err.textContent=''; if(!(pend.name||'').trim()){ err.textContent='ตั้งชื่อตัวละครก่อน'; nm.focus(); return; }
+        mk.disabled=true; mk.textContent='กำลังวิเคราะห์รูป…';
+        try{ const r=await api('/app/api/studio/characters',{method:'POST',body:JSON.stringify({name:pend.name,image:pend.image,thumb:pend.thumb})});
+          CHARS=[r.character,...CHARS]; setSelectedChars([...selectedChars(),r.character.id].slice(-3)); S.charNew={}; Object.keys(pend).forEach(k=>delete pend[k]); toast('สร้างตัวละคร '+r.character.name+' แล้ว'); draw(); }
+        catch(x){ err.textContent=x.message; mk.disabled=false; mk.textContent='สร้างตัวละคร'; } }}},'สร้างตัวละคร'),
+      h('button',{class:'btn quiet',on:{click:()=>{ Object.keys(pend).forEach(k=>delete pend[k]); draw(); }}},'ยกเลิก'))
+      : h('div',{class:'row',style:'justify-content:flex-start'}, h('button',{class:'btn',on:{click:()=>file.click()}},'+ อัปโหลดรูปเป็นตัวละคร'), file);
+    put(wrap, h('h3',{},'ตัวละครจากรูป'),
+      h('div',{class:'hint'},'ระบบดูโครงจากรูป (ทรงผม สีผม สีผิว เสื้อผ้า แว่น เครื่องประดับ) แล้ววาดเป็นตัวการ์ตูนด้วยโค้ด ไม่ได้ใช้รูปจริงในคลิป และไม่ใช้ AI สร้างภาพ · เลือกได้สูงสุด 3 คนต่อคลิป'),
+      list, form, err);
+  }
+  function toggle(id){ let a=selectedChars(); a = a.includes(id) ? a.filter(x=>x!==id) : [...a,id].slice(-3); setSelectedChars(a); draw(); }
+  draw();
+  return wrap;
+}
+
 function studio(st, drafts){
   S.studioBusy = drafts.some(inProgress);
   const head = h('div',{class:'head'}, h('div',{}, h('h1',{},'สร้างคลิปใหม่'), h('p',{},'พิมพ์หัวข้อ ระบบจะค้นข้อมูลล่าสุดด้วย Firecrawl เขียนสคริปต์และวางฉากให้ตรวจก่อนผลิต')));
@@ -525,7 +597,7 @@ function studio(st, drafts){
   const go = h('button',{class:'btn primary',disabled:!ready,on:{click:async()=>{
     err.textContent=''; const t=topic.value.trim(); if (t.length<4){ err.textContent='พิมพ์หัวข้ออย่างน้อย 4 ตัวอักษร'; topic.focus(); return; }
     go.disabled=true; go.textContent='กำลังส่ง…';
-    try{ const r=await api('/app/api/studio/drafts',{method:'POST',body:JSON.stringify({topic:t,note:note.value,auto_produce:auto.checked,model:modelSel.value,reasoning:effSel?effSel.value:undefined})});
+    try{ const r=await api('/app/api/studio/drafts',{method:'POST',body:JSON.stringify({topic:t,note:note.value,auto_produce:auto.checked,model:modelSel.value,reasoning:effSel?effSel.value:undefined,characters:selectedChars()})});
       try{ sessionStorage.removeItem('ms.topic'); }catch{} toast('เริ่มค้นข้อมูลแล้ว'); await load(); openDraft(r.id); }
     catch(x){ err.textContent=x.message; go.disabled=false; go.textContent='เริ่มค้นและเขียน'; } }}},'เริ่มค้นและเขียน');
   const composer = h('div',{class:'composer'},
@@ -533,6 +605,7 @@ function studio(st, drafts){
     topic,
     h('div',{class:'ideas'}, h('span',{class:'sub'},'ลองหัวข้อ:'), IDEAS.map(i=>h('button',{on:{click:()=>{ topic.value=i; topic.focus(); }}},i))),
     h('details',{}, h('summary',{},'เพิ่มแนวทาง (ไม่บังคับ)'), h('div',{style:'margin-top:10px'},note)),
+    characterPanel(),
     h('div',{class:'row',style:'justify-content:flex-start;gap:8px'}, h('span',{class:'sub'},'สมอง'), modelSel, effSel),
     h('label',{class:'check'}, auto, h('span',{},'ผลิตต่อทันทีเมื่อร่างผ่านการตรวจกฎ (ไม่ต้องรอฉันตรวจ)')),
     h('div',{class:'row'}, h('span',{class:'sub'}, 'วันนี้ใช้ไป '+st.drafts_today+' จาก '+st.daily_limit+' ร่าง · ค่าเสียงไม่เกิน '+fmtN(st.max_credits)+' เครดิต/คลิป'), go),

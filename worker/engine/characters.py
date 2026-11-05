@@ -41,8 +41,12 @@ def look_style(look):
         st['hairstyle'] = look['hairstyle']
     if look.get('hair_color'):
         st['hair'] = _c(look['hair_color'], HAIR_COLORS, DEFAULT_STYLE['hair'])
-    if look.get('skin') in SKINS:
-        st['skin'], st['skin_shadow'] = SKINS[look['skin']]
+    sk = look.get('skin')
+    if isinstance(sk, (list, tuple)) and len(sk) >= 3:   # an exact tone sampled from an uploaded photo
+        st['skin'] = tuple(max(0, min(255, int(v))) for v in sk[:3])
+        st['skin_shadow'] = tuple(int(v * 0.82) for v in st['skin'])
+    elif sk in SKINS:
+        st['skin'], st['skin_shadow'] = SKINS[sk]
     if look.get('top') in TOPS:
         st['top'] = look['top']
     if look.get('top_color'):
