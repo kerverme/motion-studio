@@ -5,6 +5,7 @@
 import type { Hono, Context, Next } from 'hono';
 import type pg from 'pg';
 import { z } from 'zod';
+import { communityBlock } from './community.js';
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -438,7 +439,7 @@ const Draft = z.object({
     url: z.string().url(), title: z.string().optional(), publisher: z.string().default(''), published: z.string().default(''), claim: z.string().default(''),
     methodology: z.string().optional(), confidence: z.enum(['high', 'medium', 'low']).default('medium'), limitations: z.string().optional(), freshness_note: z.string().optional(),
   })).min(1).max(15),
-  claims: z.array(z.object({ text: z.string(), source_ids: z.array(z.number().int().min(0)).default([]), kind: z.enum(['fact', 'assumption', 'opinion']).default('fact') })).min(1),
+  claims: z.array(z.object({ text: z.string(), source_ids: z.array(z.number().int().min(0)).default([]), kind: z.enum(['fact', 'assumption', 'opinion', 'community']).default('fact') })).min(1),
   captions: z.object({ facebook: z.string(), instagram: z.string(), tiktok: z.string(), youtube: z.string(), twitter: z.string() }),
   sfx: z.array(z.object({ sfx: z.string(), seg: z.string(), at: z.string(), gain: z.number().min(0).max(1.2).default(0.5) })).max(14).default([]),
   music: z.string().default('playful'),
@@ -754,6 +755,10 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
         `Previous sources (already fetched with Firecrawl recently, you may cite them again without re-reading):\n${(p.sources || []).map((s: any) => `- ${s.url} (${s.publisher}, ${s.published})`).join('\n')}\n` +
         `Apply the owner's direction; check for newer data where it matters.`;
     }
+    if (row.source_type === 'community' && row.community_id) {
+      const cw = (await pool.query('SELECT payload FROM community_winners WHERE id=$1', [row.community_id])).rows[0];
+      if (cw) userText += communityBlock(cw.payload);
+    }
     const reqChars: ReqChar[] = Array.isArray(row.characters) ? row.characters : [];
     if (reqChars.length) {
       userText += `\n\nRequired characters (the owner uploaded photos of them; their look is applied automatically, do not change it): ${reqChars.map((c) => `"${c.name}"`).join(', ')}. ` +
@@ -842,7 +847,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
                 JSON.stringify(usage), problems.length ? 'ยังผ่านกฎไม่ครบหลังแก้ 4 รอบ ดูรายการด้านล่าง' : null]);
             if (problems.length) { await log(id, 'ยังไม่ผ่านกฎ หยุดไว้ให้ตรวจ'); return; }
             await log(id, `ร่างพร้อมให้ตรวจ ✓ (ประมาณ ${est} เครดิตเสียง)`);
-            if (row.auto_produce) await produce(id).catch((e) => log(id, `ส่งผลิตอัตโนมัติไม่สำเร็จ: ${e instanceof Error ? e.message : e}`));
+            if (row.auto_produce && row.source_type !== 'community') await produce(id).catch((e) => log(id, `ส่งผลิตอัตโนมัติไม่สำเร็จ: ${e instanceof Error ? e.message : e}`));
             return;
           } else {
             results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: `unknown tool ${u.name}` });
@@ -890,6 +895,11 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     if (!row) return { status: 404, body: { error: 'not found' } };
     if (row.status === 'submitted' && row.job_id) return { status: 200, body: { job_id: row.job_id, duplicate: true } };
     if (row.status !== 'ready') return { status: 409, body: { error: `draft is ${row.status}` } };
+    if (row.source_type === 'community') {
+      const cw = (await pool.query('SELECT rejected_at, draft_id FROM community_winners WHERE id=$1', [row.community_id])).rows[0];
+      if (!cw || cw.rejected_at) return { status: 409, body: { error: 'เรื่อง Community นี้ถูกปฏิเสธแล้ว จึงส่งผลิตไม่ได้' } };
+      if (cw.draft_id !== id) return { status: 409, body: { error: 'นี่ไม่ใช่ร่างล่าสุดของเรื่อง Community นี้' } };
+    }
     const d = Draft.parse(row.draft);
     const research: Seen[] = row.draft.research_seen || [];
     const { problems } = checkDraft(d, null);
@@ -898,6 +908,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     if (errs.length) return { status: 422, body: { error: 'draft does not pass the checks', problems: errs } };
     const r = await deps.createJob({ kind: 'episode', package: f.pkg }, `draft:${id}`);
     if (r.status >= 300) return r;
+    await pool.query('UPDATE jobs SET source_type=$2 WHERE id=$1', [r.body.id, row.source_type || 'studio']);
     await pool.query("UPDATE drafts SET status='submitted', job_id=$2, episode_id=$3, updated_at=now() WHERE id=$1", [id, r.body.id, r.body.episode_id ?? null]);
     await log(id, 'ส่งเข้าคิวผลิตแล้ว (เสียง → ภาพ → ตรวจ → อัปโหลด)');
     return { status: 201, body: r.body };
@@ -956,7 +967,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
   const summary = (r: any) => ({
     id: r.id, topic: r.topic, note: r.note, status: r.status, title: r.draft?.title_th ?? null, angle: r.draft?.angle ?? null, created_at: r.created_at,
     updated_at: r.updated_at, estimated_credits: r.estimated_credits, job_id: r.job_id, job_status: r.job_status ?? null, job_progress: r.job_progress ?? null,
-    episode_number: r.episode_number ?? null, last: (r.log || []).slice(-1)[0]?.msg ?? null, error: r.error, auto_produce: r.auto_produce,
+    episode_number: r.episode_number ?? null, last: (r.log || []).slice(-1)[0]?.msg ?? null, error: r.error, auto_produce: r.auto_produce, source_type: r.source_type ?? 'studio', community_id: r.community_id ?? null,
   });
 
   app.get('/app/api/studio/status', g, async (c) => {
@@ -1076,10 +1087,11 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const b = await c.req.json().catch(() => ({}));
     const cf = configured();
     if (!cf.llm || !cf.firecrawl) return c.json({ error: 'ยังไม่ได้ตั้งค่า API key ใน Railway' }, 503);
-    const r = await pool.query('INSERT INTO drafts (topic, note, parent_id, auto_produce, model, reasoning, characters) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id',
-      [row.topic, String(b.note ?? row.note ?? '').trim().slice(0, 1000) || null, row.draft ? row.id : null, !!b.auto_produce,
+    const r = await pool.query('INSERT INTO drafts (topic, note, parent_id, auto_produce, model, reasoning, characters, source_type, community_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id',
+      [row.topic, String(b.note ?? row.note ?? '').trim().slice(0, 1000) || null, row.draft ? row.id : null, row.source_type === 'community' ? false : !!b.auto_produce,
         typeof b.model === 'string' && MODEL_RE.test(b.model) ? b.model : row.model, REASONING_LEVELS.includes(b.reasoning) ? b.reasoning : row.reasoning,
-        JSON.stringify(row.characters ?? [])]);
+        JSON.stringify(row.characters ?? []), row.source_type || 'studio', row.community_id ?? null]);
+    if (row.community_id) await pool.query('UPDATE community_winners SET draft_id=$2, updated_at=now() WHERE id=$1 AND draft_id=$3', [row.community_id, r.rows[0].id, id]);
     if (['ready', 'failed'].includes(row.status)) await pool.query("UPDATE drafts SET status='discarded', updated_at=now() WHERE id=$1", [id]);
     await log(r.rows[0].id, row.draft ? 'เขียนใหม่จากร่างเดิม รอคิว' : 'ลองใหม่ รอคิว');
     pump();
@@ -1093,5 +1105,16 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     return r.rowCount ? c.json({ ok: true }) : c.json({ error: 'ลบได้เฉพาะร่างที่ยังไม่ส่งผลิต' }, 409);
   });
 
-  return { pump };
+  // a draft for a community winner: written by the same brain, never auto-produced, linked both ways
+  async function newCommunityDraft(winnerId: string, p: { winner: { title: string } }) {
+    const r = await pool.query(`INSERT INTO drafts (topic, auto_produce, model, reasoning, source_type, community_id) VALUES ($1,false,$2,$3,'community',$4) RETURNING id`,
+      [p.winner.title.slice(0, 400), MODEL, PROVIDER === 'openai' ? REASONING : null, winnerId]);
+    const id = r.rows[0].id;
+    await pool.query('UPDATE community_winners SET draft_id=$2, updated_at=now() WHERE id=$1', [winnerId, id]);
+    await log(id, 'เรื่องผู้ชนะโหวต Community เข้ามาแล้ว รอคิวเขียนร่าง (ต้องให้เจ้าของอนุมัติก่อนผลิต)');
+    pump();
+    return id as string;
+  }
+
+  return { pump, newCommunityDraft };
 }

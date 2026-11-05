@@ -334,7 +334,7 @@ function login(msg){
 }
 
 /* ---------- frame ---------- */
-const VIEWS = [['create','สร้าง'],['ready','พร้อมใช้'],['used','เสร็จแล้ว'],['working','กำลังทำ'],['analytics','สถิติ']];
+const VIEWS = [['create','สร้าง'],['community','Community'],['ready','พร้อมใช้'],['used','เสร็จแล้ว'],['working','กำลังทำ'],['analytics','สถิติ']];
 let mainEl;
 function frame(){
   const nav = h('nav',{class:'nav','aria-label':'หมวด'}, VIEWS.map(([k,l])=>h('button',{'aria-current':S.view===k?'page':false,on:{click:()=>go(k)}}, h('span',{},l), h('span',{class:'n'}, k!=='analytics' && S.counts[k]!=null ? S.counts[k] : '\u00a0'))));
@@ -352,6 +352,9 @@ async function load(){
     if (S.view==='create'){
       const [st, dr, e, ch] = await Promise.all([api('/app/api/studio/status'), api('/app/api/studio/drafts'), api('/app/api/episodes?tab=ready'), api('/app/api/studio/characters')]);
       CHARS = ch.characters||[]; S.formats=st.formats; S.counts={...e.counts, create: dr.drafts.filter(d=>d.status==='ready').length||null}; frame(); studio(st, dr.drafts);
+    } else if (S.view==='community'){
+      const [cm, e] = await Promise.all([api('/app/api/community'), api('/app/api/episodes?tab=ready')]);
+      S.counts={...S.counts, ...e.counts, community: cm.winners.filter(w=>w.status==='claude_draft_ready').length||null}; frame(); community(cm);
     } else if (S.view==='ready' || S.view==='used'){
       const r = await api('/app/api/episodes?tab='+S.view); S.counts=r.counts; S.eps=r.episodes; frame(); clips();
     } else if (S.view==='working'){
@@ -385,6 +388,7 @@ function clips(){
       Object.keys(by).length ? h('div',{class:'marks'}, ORDER.filter(s=>by[s]).map(s=>{ const st=postState(by[s]); return h('span',{class:'mark '+st.cls,title:st.text},h('i',{'aria-hidden':'true'}),SVC[s]); }))
         : h('div',{class:'sub'},'ส่งมอบ '+fmtD(ep.delivered_at)),
       ep.produce_seconds>0 ? h('div',{class:'sub'},'ใช้เวลาผลิต '+fmtDur(ep.produce_seconds)) : '',
+      ep.source_type==='community' ? h('div',{class:'sub'}, h('span',{class:'chip go'},'Community')) : '',
       hasViews ? h('div',{class:'sub'},'ยอดดู '+fmtN(views)) : '');
   }));
   put(mainEl, head, grid);
@@ -576,6 +580,39 @@ function characterPanel(){
   return wrap;
 }
 
+
+/* ---------- community: winning viewer stories from the website ---------- */
+const CSTATE = {awaiting_claude:['wait','กำลังเขียนร่าง'], claude_draft_ready:['go','รออนุมัติ'], claude_failed:['bad','เขียนร่างไม่สำเร็จ'], draft_discarded:['','ทิ้งร่างแล้ว'],
+  queued_for_production:['wait','อนุมัติแล้ว · กำลังผลิต'], production_failed:['bad','ผลิตไม่สำเร็จ'], produced:['ok','ผลิตเสร็จ'], published:['ok','โพสต์แล้ว'], rejected:['bad','ปฏิเสธแล้ว']};
+function community(cm){
+  S.commBusy = cm.winners.some(w=>w.status==='awaiting_claude'||w.status==='queued_for_production');
+  const head = h('div',{class:'head'}, h('div',{}, h('h1',{},'Community'), h('p',{},'เรื่องผู้ชนะโหวตจากเว็บ “นี่ถ้าเกิด” เข้ามาเองหลังปิดรอบ ระบบเขียนร่างให้ แต่จะผลิตก็ต่อเมื่อคุณกดอนุมัติเท่านั้น')));
+  const warn = !cm.configured ? h('div',{class:'note'},'ยังไม่เปิดรับจากเว็บ: ตั้งค่า MOTION_COMMUNITY_TOKEN ใน Railway → motion-api → Variables แล้วใส่ค่าเดียวกันในเว็บ Manus') : '';
+  const fld = (k,v) => v && (!Array.isArray(v)||v.length) ? [h('dt',{},k), h('dd',{style:'white-space:pre-wrap'}, Array.isArray(v)?v.join(', '):v)] : '';
+  const list = cm.winners.length ? h('div',{class:'drafts'}, cm.winners.map(w=>{
+    const [cls, txt] = CSTATE[w.status]||['',w.status];
+    const x = w.winner||{};
+    const act = async (path, body, ok) => { try{ const r=await api(path,{method:'POST',body:JSON.stringify(body||{})}); toast(ok); await load(); return r; }catch(e){ toast(e.message); } };
+    let rejNote;
+    return h('details',{class:'panel',style:'margin-bottom:10px;padding:14px 16px'},
+      h('summary',{style:'display:grid;grid-template-columns:1fr auto;gap:2px 12px;margin:0'},
+        h('b',{style:'font-family:var(--serif);font-size:16.5px;color:var(--ink)'}, x.title),
+        h('span',{class:'chip '+cls}, (w.status==='awaiting_claude'||w.status==='queued_for_production')?h('i',{class:'pulse','aria-hidden':'true'}):'', txt),
+        h('span',{class:'sub',style:'grid-column:1/3'}, [x.nickname?'โดย '+x.nickname:'', 'รอบ '+w.round_id, fmtN(w.verified_vote_count)+' โหวต', 'รับเมื่อ '+fmtD(w.received_at), w.episode_number?'EP'+String(w.episode_number).padStart(3,'0'):''].filter(Boolean).join(' · '))),
+      h('dl',{class:'facts',style:'margin-top:12px'}, fld('ชื่อเล่น',x.nickname), fld('รายละเอียด',x.details), fld('บุคลิก',x.traits), fld('สถานที่',x.place), fld('วีรกรรม',x.anecdote),
+        fld('Submission',w.submission_id+' · rev '+w.content_revision), fld('Notion',w.notion_page_id)),
+      w.error||w.draft_error ? h('div',{class:'err'}, w.error||w.draft_error) : '',
+      w.reject_note ? h('div',{class:'sub'},'เหตุผลที่ปฏิเสธ: '+w.reject_note) : '',
+      h('div',{class:'row',style:'display:flex;gap:8px;flex-wrap:wrap;margin-top:10px'},
+        w.draft_id && !['rejected'].includes(w.status) ? h('button',{class:'btn primary',on:{click:()=>openDraft(w.draft_id)}}, w.status==='claude_draft_ready'?'ตรวจร่างและอนุมัติ':'เปิดร่าง') : '',
+        ['claude_failed','draft_discarded'].includes(w.status) ? h('button',{class:'btn',on:{click:()=>act('/app/api/community/'+w.id+'/redraft',{},'เริ่มเขียนร่างใหม่')}},'เขียนร่างใหม่') : '',
+        !['queued_for_production','produced','published','rejected'].includes(w.status) ? [
+          rejNote = h('input',{type:'text',class:'field',style:'width:auto;flex:1;min-width:160px;padding:8px 10px',placeholder:'เหตุผลที่ปฏิเสธ (ไม่บังคับ)','aria-label':'เหตุผลที่ปฏิเสธ'}),
+          h('button',{class:'btn quiet',on:{click:()=>act('/app/api/community/'+w.id+'/reject',{note:rejNote.value},'ปฏิเสธแล้ว')}},'ปฏิเสธ')] : ''));
+  })) : h('div',{class:'empty'}, h('h2',{},'ยังไม่มีเรื่องจาก Community'), h('p',{},'เมื่อเว็บปิดรอบโหวตและส่งผู้ชนะมา รายการจะขึ้นที่นี่'));
+  put(mainEl, head, warn, list);
+}
+
 function studio(st, drafts){
   S.studioBusy = drafts.some(inProgress);
   const head = h('div',{class:'head'}, h('div',{}, h('h1',{},'สร้างคลิปใหม่'), h('p',{},'พิมพ์หัวข้อ ระบบจะค้นข้อมูลล่าสุดด้วย Firecrawl เขียนสคริปต์และวางฉากให้ตรวจก่อนผลิต')));
@@ -613,7 +650,7 @@ function studio(st, drafts){
   const list = drafts.length ? h('div',{class:'drafts'}, h('h2',{},'ร่างล่าสุด'), drafts.map(d=>{
     const [cls, txt] = draftState(d);
     return h('button',{class:'draft',on:{click:()=>openDraft(d.id)}},
-      h('b',{}, d.title||d.topic), h('span',{class:'chip '+cls}, inProgress(d)?h('i',{class:'pulse','aria-hidden':'true'}):'', txt),
+      h('b',{}, d.source_type==='community'?'[Community] ':'', d.title||d.topic), h('span',{class:'chip '+cls}, inProgress(d)?h('i',{class:'pulse','aria-hidden':'true'}):'', txt),
       h('span',{class:'sub'}, fmtD(d.created_at)+(d.last?' · '+d.last:'')));
   })) : h('div',{class:'empty'}, h('h2',{},'ยังไม่มีร่าง'), h('p',{},'พิมพ์หัวข้อด้านบน แล้วระบบจะเริ่มค้นข้อมูลให้'));
   put(mainEl, head, composer, list);
@@ -659,8 +696,8 @@ function openDraft(id){
         return bits.filter(Boolean).join(' · '); };
       const chars = ()=>Object.values(segAreas).reduce((n,a)=>n+a.value.length,0);
       const charInfo = h('span',{class:'sub'});
-      const updChars = ()=>{ const n=chars(); charInfo.textContent = n+' ตัวอักษร ≈ '+Math.round(n/12)+' วินาที'; };
-      let tAcc=0; const T0={}; (dr.script||[]).forEach(s=>{ T0[s.id]=tAcc; tAcc+=s.text.replace(/\s+/g,'').length/12+0.35; });
+      const updChars = ()=>{ const n=chars(); charInfo.textContent = n+' ตัวอักษร ≈ '+Math.round(n/13.4)+' วินาที'; };
+      let tAcc=0; const T0={}; (dr.script||[]).forEach(s=>{ T0[s.id]=tAcc; tAcc+=s.text.replace(/\s+/g,'').length/13.4+0.35; });
       const BEAT={hook:'ฮุค',rehook:'ดึงกลับ',info:'ข้อมูล',payoff:'เฉลย',cta:'ชวนคอมเมนต์'};
       const mmss=x=>Math.floor(x/60)+':'+String(Math.round(x%60)).padStart(2,'0');
       const segs = h('div',{}, (dr.script||[]).map(s=>{
@@ -681,21 +718,24 @@ function openDraft(id){
         h('div',{}, h('b',{},'['+i+'] '), s.publisher||s.title||'', ' · ', h('span',{},s.published)),
         h('div',{}, s.claim), h('a',{href:s.url,target:'_blank',rel:'noopener noreferrer'}, s.url),
         h('div',{class:'meta'}, 'ความน่าเชื่อถือ '+({high:'สูง',medium:'กลาง',low:'ต่ำ'}[s.confidence]||s.confidence)+(s.freshness_note?' · '+s.freshness_note:'')+(s.limitations?' · ข้อจำกัด: '+s.limitations:'')))));
-      const claims = h('ul',{class:'summary',style:'margin:0;padding-left:18px;font-size:14px'}, (dr.claims||[]).map(c=>h('li',{}, c.text, ' ', h('span',{class:'sub'}, c.kind==='fact'?'ข้อเท็จจริง ['+c.source_ids.join(', ')+']':c.kind==='assumption'?'สมมติ':'ความเห็น'))));
+      const claims = h('ul',{class:'summary',style:'margin:0;padding-left:18px;font-size:14px'}, (dr.claims||[]).map(c=>h('li',{}, c.text, ' ', h('span',{class:'sub'}, c.kind==='fact'?'ข้อเท็จจริง ['+c.source_ids.join(', ')+']':c.kind==='assumption'?'สมมติ':c.kind==='community'?'เรื่องจากผู้ชม':'ความเห็น'))));
       const searches = (d.research||[]).map(r=>h('li',{}, r.kind==='search'?'ค้นหา “'+r.query+'”':'อ่าน '+(r.title||r.url)));
       const err = h('div',{class:'err',role:'alert'});
       const collect = ()=>({title_th:title.value, script:(dr.script||[]).map(s=>({id:s.id,text:segAreas[s.id].value})), captions:Object.fromEntries(Object.entries(caps).map(([k,t])=>[k,t.value]))});
       const save = h('button',{class:'btn',disabled:true,on:{click:async()=>{ err.textContent=''; save.disabled=true;
         try{ const r=await api('/app/api/studio/drafts/'+id,{method:'PATCH',body:JSON.stringify(collect())}); dirty=false; toast('บันทึกแล้ว · ประมาณ '+fmtN(r.estimated_credits)+' เครดิต'); refresh(); }
         catch(x){ err.replaceChildren(x.message, x.body&&x.body.problems?h('ul',{class:'probl'},x.body.problems.map(p=>h('li',{},p))):''); save.disabled=false; } }}},'บันทึกการแก้ไข');
+      const isComm = d.source_type==='community'; let confirmed=false;
       const produce = h('button',{class:'btn primary',on:{click:async()=>{ err.textContent=''; produce.disabled=true; produce.textContent='กำลังส่ง…';
         try{ if (dirty){ await api('/app/api/studio/drafts/'+id,{method:'PATCH',body:JSON.stringify(collect())}); dirty=false; }
+          if (isComm && !confirmed){ confirmed=true; produce.disabled=false; produce.textContent='กดอีกครั้งเพื่อยืนยันอนุมัติ'; return; }
           await api('/app/api/studio/drafts/'+id+'/produce',{method:'POST',body:'{}'}); toast('ส่งเข้าคิวผลิตแล้ว ดูความคืบหน้าที่แท็บ "กำลังทำ"'); close(true); }
-        catch(x){ err.replaceChildren(x.message, x.body&&x.body.problems?h('ul',{class:'probl'},x.body.problems.map(p=>h('li',{},p))):''); produce.disabled=false; produce.textContent='ผลิตคลิปนี้'; } }}},'ผลิตคลิปนี้');
+        catch(x){ err.replaceChildren(x.message, x.body&&x.body.problems?h('ul',{class:'probl'},x.body.problems.map(p=>h('li',{},p))):''); produce.disabled=false; produce.textContent=isComm?'อนุมัติและส่งผลิต':'ผลิตคลิปนี้'; } }}},isComm?'อนุมัติและส่งผลิต':'ผลิตคลิปนี้');
       const noteBox = h('textarea',{class:'field',rows:3,placeholder:'อยากให้แก้อะไร เช่น "ฮุคให้แรงกว่านี้ ตัดเรื่องโลกออก เพิ่มตัวเลขไทยปีล่าสุด"'});
       const rewriteBox = h('details',{}, h('summary',{},'สั่งเขียนใหม่พร้อมคำแนะนำ'), h('div',{style:'margin-top:10px;display:flex;flex-direction:column;gap:8px'}, noteBox,
         h('div',{}, h('button',{class:'btn',on:{click:()=>rewrite(d, noteBox.value)}},'เขียนใหม่'))));
       put(body, head,
+        isComm ? h('div',{class:'note'}, h('b',{},'เรื่องจากผู้ชนะโหวต Community'), ' · ร่างนี้เขียนจากเรื่องที่ผู้ชมส่งมา ตรวจว่าไม่มีข้อมูลส่วนตัวหรือเนื้อหาที่ไม่เหมาะ แล้วกด “อนุมัติและส่งผลิต” (ระบบไม่ผลิตและไม่โพสต์เอง)') : '',
         title, dr.angle?h('p',{class:'sub',style:'margin:0'}, dr.angle):'',
         h('dl',{class:'facts'}, h('dt',{},'ความยาว'), h('dd',{},charInfo), h('dt',{},'ค่าเสียงโดยประมาณ'), h('dd',{}, fmtN(d.estimated_credits)+' เครดิต ElevenLabs'),
           h('dt',{},'รูปแบบเรื่อง'), h('dd',{}, (S.formats&&S.formats[dr.format])||dr.format||'—'),
@@ -924,6 +964,7 @@ async function start(){
 }
 start();
 setInterval(()=>{ if (S.view==='working' && !document.querySelector('.drawer') && !document.hidden) load(); }, 2000);
+setInterval(()=>{ if (S.view==='community' && S.commBusy && !document.querySelector('.drawer') && !(document.activeElement && /TEXTAREA|INPUT/.test(document.activeElement.tagName))) load(); }, 5000);
 setInterval(()=>{ if (S.view==='create' && S.studioBusy && !document.querySelector('.drawer') && !(document.activeElement && /TEXTAREA|INPUT/.test(document.activeElement.tagName))) load(); }, 5000);
 </script>
 </body>

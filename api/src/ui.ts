@@ -108,7 +108,7 @@ export function registerUi(app: Hono, pool: pg.Pool, deps: { API_TOKEN: string; 
   const CLIP_SQL = `
     SELECT e.id, e.number, e.title_th, e.topic, e.ui_status, e.used_at, e.created_at, e.notion_page_id, e.notion_synced_at, e.notion_error,
            h.files, h.created_at AS delivered_at, j.package->'captions' AS captions,
-           EXTRACT(EPOCH FROM (COALESCE(j.finished_at, h.created_at) - j.created_at))::int AS produce_seconds, j.package->>'series_tag' AS series_tag,
+           EXTRACT(EPOCH FROM (COALESCE(j.finished_at, h.created_at) - j.created_at))::int AS produce_seconds, j.package->>'series_tag' AS series_tag, j.source_type,
            COALESCE((SELECT json_agg(json_build_object('id', p.id, 'channel_id', p.channel_id, 'channel_name', p.channel_name, 'service', p.service, 'mode', p.mode,
                      'due_at', p.due_at, 'status', p.status, 'error', COALESCE(p.post_error, p.error), 'created_at', p.created_at,
                      'post_status', p.post_status, 'link', p.external_link, 'sent_at', p.sent_at, 'metrics', p.metrics) ORDER BY p.id DESC)
@@ -123,7 +123,7 @@ export function registerUi(app: Hono, pool: pg.Pool, deps: { API_TOKEN: string; 
     const thumb = files.find((f) => String(f.name).endsWith('_thumbnail.png'));
     const caps = (r.captions || {}) as Record<string, string>;
     return {
-      id: r.id, number: r.number, title: titleOf(r), topic: r.topic, series_tag: r.series_tag, ui_status: r.ui_status, used_at: r.used_at, delivered_at: r.delivered_at, produce_seconds: r.produce_seconds ?? null,
+      id: r.id, number: r.number, title: titleOf(r), topic: r.topic, series_tag: r.series_tag, ui_status: r.ui_status, used_at: r.used_at, delivered_at: r.delivered_at, produce_seconds: r.produce_seconds ?? null, source_type: r.source_type ?? 'studio',
       video_url: video?.url ?? null, thumbnail_url: thumb?.url ?? null, video_bytes: video?.bytes ?? null,
       captions: {
         facebook: caps.facebook ?? '', instagram: caps.instagram ?? '', tiktok: caps.tiktok ?? '',

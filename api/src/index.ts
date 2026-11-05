@@ -13,6 +13,7 @@ import * as buffer from './buffer.js';
 import { alertSweep, retention } from './ops.js';
 import { syncPosts } from './metrics.js';
 import { registerStudio, configured as studioConfigured } from './studio.js';
+import { registerCommunity } from './community.js';
 import * as notion from './notion.js';
 
 const env = process.env;
@@ -124,7 +125,7 @@ const Package = z.object({
     retrieved_via: z.string().optional(),   // 'firecrawl' (search or scrape)
     freshness_note: z.string().optional(),  // why an older figure is still the latest available (e.g. a 10-yearly census)
   })).default([]),
-  claims: z.array(z.object({ text: z.string(), source_ids: z.array(z.number().int().min(0)).default([]), kind: z.enum(['fact', 'assumption', 'opinion']).default('fact') })).default([]),
+  claims: z.array(z.object({ text: z.string(), source_ids: z.array(z.number().int().min(0)).default([]), kind: z.enum(['fact', 'assumption', 'opinion', 'community']).default('fact') })).default([]),
   captions: z.record(z.string()).default({}),
   thumbnail: z.object({ seg: z.string(), offset: z.number().default(1.5), title: z.string().optional() }).optional(),
   budget: z.object({ max_credits: z.number().int().positive() }).optional(),
@@ -401,10 +402,11 @@ app.get('/internal/google/access-token', async (c) => {
 });
 
 const ui = registerUi(app, pool, { API_TOKEN, retryJob });
-registerStudio(app, pool, { guard: ui.requireUi, createJob, estimateCredits: (p: unknown) => estimateCredits(Package.parse(p)), researchFreshness: (p: unknown) => researchFreshness(Package.parse(p)), validate: (p: unknown) => {
+const studio = registerStudio(app, pool, { guard: ui.requireUi, createJob, estimateCredits: (p: unknown) => estimateCredits(Package.parse(p)), researchFreshness: (p: unknown) => researchFreshness(Package.parse(p)), validate: (p: unknown) => {
   const r = Package.safeParse(p);
   return r.success ? [] : r.error.issues.slice(0, 10).map((i) => `${i.path.join('.')}: ${i.message}`);
 } });
+registerCommunity(app, pool, { guard: ui.requireUi, newDraft: studio.newCommunityDraft });
 
 // ---------------------------------------------------------------- operations
 app.post('/ops/retention', requireAuth, async (c) => {
