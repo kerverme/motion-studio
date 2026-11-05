@@ -143,7 +143,7 @@ input[type=datetime-local],input[type=password]{width:100%;padding:10px 12px;bor
 .pct{font-variant-numeric:tabular-nums;font-weight:600;font-size:13px}
 .who{grid-column:1/3;font-size:14px;color:var(--ink)}
 .who small{display:block;color:var(--ink-2);font-size:13px;margin-top:2px}
-.feed{grid-column:1/3;margin:2px 0 0;padding:10px 12px;background:var(--accent-soft);border-radius:var(--r-md);font-size:12.5px;line-height:1.7;color:var(--ink-2);font-variant-numeric:tabular-nums;max-height:11.5em;overflow:hidden}
+.feed{grid-column:1/3;margin:2px 0 0;padding:10px 12px;background:var(--accent-soft);border-radius:var(--r-md);font-size:12.5px;line-height:1.7;color:var(--ink-2);font-variant-numeric:tabular-nums;max-height:11.5em;overflow-y:auto}
 .feed div.new{color:var(--ink);font-weight:500}
 .feed div.warn,.feed div.error{color:var(--bad)}
 @media (prefers-reduced-motion:reduce){.bar.live i::after,.bar.live.indet i{animation:none}}
@@ -682,7 +682,7 @@ function mkCard(key){
 }
 function setFeed(c, rows){
   const sig = rows.map(r=>r.k).join('|'); if (c.feedSig===sig) return; c.feedSig=sig;
-  c.feed.replaceChildren(...rows.map((r,i)=>h('div',{class:(r.lv||'')+(i===rows.length-1?' new':'')}, r.t+'  '+r.m)));
+  c.feed.replaceChildren(...rows.map((r,i)=>h('div',{class:(r.lv||'')+(i===rows.length-1?' new':'')}, r.t+'  '+r.m))); c.feed.scrollTop = c.feed.scrollHeight;
 }
 function patchJob(c, j){
   const bad = j.status==='FAILED' || j.status==='CANCELLED';
@@ -730,9 +730,9 @@ function tick(){
   for (const c of LIVE.cards.values()){
     const idle = now - (c.last||now), stall = !c.bad && idle > c.stalledAfter;
     c.bar.classList.toggle('stall', stall);
-    if (!c.bad && !stall && !RM){
-      if (c.shown < c.target) c.shown += (c.target-c.shown)*0.12 + 0.0003;                          // catch up to the real value quickly
-      else { const lim = Math.min(c.ceil-0.015, c.target + (c.ceil-c.target)*0.45); c.shown += Math.max(0,(lim-c.shown))*0.0018; } // then keep creeping so it never looks frozen
+    if (!c.bad && !RM){
+      if (c.shown < c.target) c.shown = Math.min(c.target, c.shown + (c.target-c.shown)*0.12 + 0.0003);  // catch up to the real value quickly
+      else if (!stall){ const lim = Math.min(c.ceil-0.015, c.target + (c.ceil-c.target)*0.45); c.shown += Math.max(0,(lim-c.shown))*0.0018; } // then keep creeping so it never looks frozen (not while stalled)
     } else if (c.bad || RM) c.shown = c.target;
     const pct = Math.round(Math.min(c.shown, 1)*100);
     c.fill.style.width = (c.shown*100).toFixed(2)+'%';
