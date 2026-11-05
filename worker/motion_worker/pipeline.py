@@ -198,11 +198,13 @@ def stage_qa(ctx):
     silent = ctx.fetch(R['silent_key'], ctx.path('video_silent.mp4'))
     scale = {}
     for attempt in range(3):
+        ctx.db.event(ctx.job['id'], f'ตรวจคุณภาพ รอบที่ {attempt + 1}/3 (มิกซ์เสียง + ตรวจภาพดำ/ความดัง)', None, 'info', 'QUALITY_CHECK')
         mixwav, stems, cues, sfx_files = do_mix(ctx, T, scale)
         if attempt:
             final = rendering.mux(silent, mixwav, ctx.path('final.mp4'))
         durs = {k: audio.duration(p) for k, p in sfx_files.items()}
         rep = qa.run(final, T['end'], T['timeline'], stems, cues, durs, R.get('missing_words', []), ctx.pkg, T.get('cue_misses', []))
+        ctx.db.event(ctx.job['id'], 'ผลตรวจรอบที่ %d: %s' % (attempt + 1, 'ผ่าน' if rep['ok'] else 'ยังไม่ผ่าน'), None, 'info' if rep['ok'] else 'warn', 'QUALITY_CHECK')
         if rep['ok'] or not rep['loud_cues']:
             break
         # auto-repair: pull loud SFX down under the narration and remix (no re-render, no new audio spend)
