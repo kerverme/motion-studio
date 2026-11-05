@@ -5,6 +5,9 @@
 import type { Hono, Context, Next } from 'hono';
 import type pg from 'pg';
 import { z } from 'zod';
+import { readdirSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const env = process.env;
 const ANTHROPIC_URL = (env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/$/, '');
@@ -802,6 +805,49 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     await log(id, 'ส่งเข้าคิวผลิตแล้ว (เสียง → ภาพ → ตรวจ → อัปโหลด)');
     return { status: 201, body: r.body };
   }
+
+  // Drafts written outside the web UI (e.g. by Claude in chat) are committed to api/drafts-inbox/*.json and imported once
+  // on start-up as "ready for review", after the same rule checks. The owner still reviews and presses Produce.
+  async function importInbox() {
+    const dir = join(dirname(fileURLToPath(import.meta.url)), '..', 'drafts-inbox');
+    let files: string[] = [];
+    try { files = readdirSync(dir).filter((f) => f.endsWith('.json')).sort(); } catch { return; }
+    for (const f of files) {
+      try {
+        const x = JSON.parse(readFileSync(join(dir, f), 'utf8'));
+        if (!/^[0-9a-f-]{36}$/.test(String(x.id)) || !x.draft) continue;
+        if ((await pool.query('SELECT 1 FROM drafts WHERE id=$1', [x.id])).rowCount) continue;
+        const parsed = Draft.safeParse(x.draft);
+        const research: Seen[] = Array.isArray(x.research_seen) ? x.research_seen : [];
+        let problems: string[] = [], warnings: string[] = [], est: number | null = null;
+        if (!parsed.success) problems = parsed.error.issues.slice(0, 10).map((i) => `${i.path.join('.')}: ${i.message}`);
+        else {
+          const seen = new Map(research.map((r) => [normUrl(r.url), r]));
+          const c = checkDraft(parsed.data, seen);
+          problems = c.problems.filter((p) => !OWNER_SOFT.test(p));
+          warnings = [...c.warnings, ...c.problems.filter((p) => OWNER_SOFT.test(p))];
+          if (!problems.length) {
+            const fc = finalCheck(String(x.topic || parsed.data.title_th), parsed.data, research);
+            problems.push(...fc.errs);
+            est = fc.est;
+          }
+        }
+        const ok = !problems.length;
+        await pool.query(`INSERT INTO drafts (id, topic, note, status, draft, problems, error, model, estimated_credits, research, log)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (id) DO NOTHING`,
+          [x.id, String(x.topic || x.draft.title_th).slice(0, 400), x.note ? String(x.note).slice(0, 1000) : null, ok ? 'ready' : 'failed',
+            JSON.stringify({ ...x.draft, warnings, research_seen: research }), JSON.stringify(problems), ok ? null : 'ร่างจากแชทยังไม่ผ่านกฎ',
+            String(x.author || 'claude-chat').slice(0, 60), est,
+            JSON.stringify(research.map((r) => ({ kind: 'read', url: r.url, title: r.title, at: r.collected }))),
+            JSON.stringify([{ at: new Date().toISOString(), msg: 'นำเข้าร่างที่เขียนในแชท (ค้นข้อมูลด้วย Firecrawl แล้ว)' },
+              { at: new Date().toISOString(), msg: ok ? `ร่างพร้อมให้ตรวจ ✓ (ประมาณ ${est} เครดิตเสียง)` : `ตรวจพบ ${problems.length} จุดต้องแก้` }])]);
+        console.log('studio inbox', f, ok ? 'ready' : 'failed', problems.slice(0, 3));
+      } catch (e) {
+        console.error('studio inbox', f, e instanceof Error ? e.message : e);
+      }
+    }
+  }
+  setTimeout(() => importInbox().catch(() => {}), 8000);
 
   // drafts that were mid-generation when the process restarted cannot resume the conversation
   pool.query(`UPDATE drafts SET status='failed', error='ระบบรีสตาร์ทระหว่างเขียน กด "เขียนใหม่" เพื่อเริ่มอีกครั้ง', updated_at=now()
