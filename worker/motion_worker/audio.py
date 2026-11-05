@@ -28,11 +28,20 @@ def write_wav(path, x, sr=SR):
     return path
 
 
+def moving_avg(a, n):
+    """Same result as np.convolve(a, ones(n)/n, 'same') in O(N) instead of O(N*n)
+    (the direct convolution took minutes per mix on the worker's CPU)."""
+    a = np.asarray(a, np.float64)
+    L, n = len(a), max(1, int(n))
+    off = (n - 1) // 2
+    c = np.concatenate(([0.0], np.cumsum(a)))
+    idx = np.arange(L) + off + 1
+    return (c[np.clip(idx, 0, L)] - c[np.clip(idx - n, 0, L)]) / n
+
+
 def envelope(x, win=0.05, sr=SR):
     m = np.abs(x).max(axis=1)
-    n = max(1, int(win * sr))
-    k = np.ones(n) / n
-    return np.convolve(m, k, mode='same')
+    return moving_avg(m, max(1, int(win * sr)))
 
 
 def db(v):
@@ -66,7 +75,7 @@ def mix(vo_path, end_s, sfx_files, cues, music_path=None, music_volume=0.3, duck
         speech = np.clip(env / 0.05, 0, 1) ** 0.7
         # smooth the gain so ducking breathes instead of pumping
         k = int(0.25 * SR)
-        g = 1 - duck_depth * np.convolve(speech, np.ones(k) / k, mode='same')
+        g = 1 - duck_depth * moving_avg(speech, k)
         m *= g[:, None].astype(np.float32)
         fo = int(fade_out * SR)
         m[-fo:] *= np.linspace(1, 0, fo, dtype=np.float32)[:, None]
@@ -80,9 +89,13 @@ def mix(vo_path, end_s, sfx_files, cues, music_path=None, music_volume=0.3, duck
     return out, {'vo': vo, 'sfx': sfx, 'music': mus}
 
 
-def finish(mix_wav, out_m4a_input_wav, target_lufs=-14):
-    """Loudness-normalise to target with a true-peak ceiling."""
-    subprocess.run(['ffmpeg', '-v', 'error', '-y', '-i', mix_wav, '-af', f'loudnorm=I={target_lufs}:TP=-1.5:LRA=11,aresample=44100',
+def finish(mix_wav, out_m4a_input_wav, target_lufs=-14, trim_db=0.0):
+    """Loudness-normalise to target, then a brick-wall limiter at -2 dBFS so the AAC encode cannot overshoot past
+    the QA ceiling (-0.5 dBFS). trim_db lowers the whole master further when QA still measures a hot peak."""
+    af = f'loudnorm=I={target_lufs}:TP=-2:LRA=11,aresample=44100,alimiter=limit=0.79:attack=1:release=60:level=false'
+    if trim_db:
+        af += f',volume={trim_db:.2f}dB'
+    subprocess.run(['ffmpeg', '-v', 'error', '-y', '-i', mix_wav, '-af', af,
                     '-c:a', 'pcm_s16le', out_m4a_input_wav], check=True)
     return out_m4a_input_wav
 

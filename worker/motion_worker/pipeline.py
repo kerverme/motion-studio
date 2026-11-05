@@ -154,7 +154,7 @@ def write_scene_code(ctx):
     return p
 
 
-def do_mix(ctx, T, gains_scale=None):
+def do_mix(ctx, T, gains_scale=None, trim_db=0.0):
     a = ctx.r['GENERATING_AUDIO']
     vo = ctx.fetch(a['narration_key'], ctx.path('audio', 'narration.mp3'))
     sfx_files = {k: ctx.fetch(v, ctx.path('audio', 'sfx', f'{k}.mp3')) for k, v in a['sfx'].items()}
@@ -166,7 +166,7 @@ def do_mix(ctx, T, gains_scale=None):
     mvol = (ctx.pkg.get('music') or {}).get('volume', 0.3)
     mixed, stems = audio.mix(vo, T['end'], sfx_files, cues, mus, mvol)
     raw = audio.write_wav(ctx.path('audio', 'mix_raw.wav'), mixed)
-    fin = audio.finish(raw, ctx.path('audio', 'mix.wav'))
+    fin = audio.finish(raw, ctx.path('audio', 'mix.wav'), trim_db=trim_db)
     return fin, stems, cues, sfx_files
 
 
@@ -196,23 +196,31 @@ def stage_qa(ctx):
     a = ctx.r['GENERATING_AUDIO']
     final = ctx.fetch(R['final_key'], ctx.path('final.mp4'))
     silent = ctx.fetch(R['silent_key'], ctx.path('video_silent.mp4'))
-    scale = {}
+    scale, trim = {}, 0.0
     for attempt in range(3):
-        ctx.db.event(ctx.job['id'], f'ตรวจคุณภาพ รอบที่ {attempt + 1}/3 (มิกซ์เสียง + ตรวจภาพดำ/ความดัง)', None, 'info', 'QUALITY_CHECK')
-        mixwav, stems, cues, sfx_files = do_mix(ctx, T, scale)
-        if attempt:
-            final = rendering.mux(silent, mixwav, ctx.path('final.mp4'))
+        ctx.db.event(ctx.job['id'], f'ตรวจคุณภาพ รอบที่ {attempt + 1}/3 (มิกซ์เสียง + ตรวจภาพ/เสียง)', None, 'info', 'QUALITY_CHECK')
+        mixwav, stems, cues, sfx_files = do_mix(ctx, T, scale, trim)
+        final = rendering.mux(silent, mixwav, ctx.path('final.mp4'))  # always remux: picks up mastering fixes without re-rendering video
         durs = {k: audio.duration(p) for k, p in sfx_files.items()}
         rep = qa.run(final, T['end'], T['timeline'], stems, cues, durs, R.get('missing_words', []), ctx.pkg, T.get('cue_misses', []))
-        ctx.db.event(ctx.job['id'], 'ผลตรวจรอบที่ %d: %s' % (attempt + 1, 'ผ่าน' if rep['ok'] else 'ยังไม่ผ่าน'), None, 'info' if rep['ok'] else 'warn', 'QUALITY_CHECK')
-        if rep['ok'] or not rep['loud_cues']:
+        bad = [c['name'] for c in rep['checks'] if c['hard'] and not c['ok']]
+        ctx.db.event(ctx.job['id'], 'ผลตรวจรอบที่ %d: %s' % (attempt + 1, 'ผ่าน' if rep['ok'] else 'ยังไม่ผ่าน (' + ', '.join(bad) + ')'), None,
+                     'info' if rep['ok'] else 'warn', 'QUALITY_CHECK')
+        if rep['ok']:
             break
-        # auto-repair: pull loud SFX down under the narration and remix (no re-render, no new audio spend)
-        for c in rep['loud_cues']:
+        fixable = False
+        clip = next((c for c in rep['checks'] if c['name'] == 'no_clipping' and not c['ok']), None)
+        if clip:  # master too hot: trim the whole mix so the peak lands at about -1.5 dBFS
+            trim -= max(1.0, (clip['detail'] or {}).get('peak_dbfs', 0) + 1.5)
+            fixable = True
+        for c in rep['loud_cues']:  # pull loud SFX down under the narration
             k = f"{c['sfx']}@{c['t']}"
             over = c['sfx_db'] - c['vo_db'] + 3
             scale[k] = scale.get(k, 1.0) * (10 ** (-over / 20))
-        ctx.db.event(ctx.job['id'], f'QA repair: lowered {len(rep["loud_cues"])} SFX cues and remixed', None, 'warn', 'QUALITY_CHECK')
+            fixable = True
+        if not fixable:
+            break
+        ctx.db.event(ctx.job['id'], f'QA ซ่อมเสียง: ลดเอฟเฟกต์ {len(rep["loud_cues"])} จุด, ลดมาสเตอร์รวม {trim:.1f} dB แล้วมิกซ์ใหม่', None, 'warn', 'QUALITY_CHECK')
     rep['repairs'] = len(scale)
     ctx.db.q('UPDATE jobs SET qa_report=%s WHERE id=%s', (json.dumps(rep), ctx.job['id']))
     if not rep['ok']:

@@ -143,6 +143,7 @@ input[type=datetime-local],input[type=password]{width:100%;padding:10px 12px;bor
 .pct{font-variant-numeric:tabular-nums;font-weight:600;font-size:13px}
 .who{grid-column:1/3;font-size:14px;color:var(--ink)}
 .who small{display:block;color:var(--ink-2);font-size:13px;margin-top:2px}
+.clock{grid-column:1/3;font-size:14px;font-weight:600;font-variant-numeric:tabular-nums;color:var(--ink)}
 .feed{grid-column:1/3;margin:2px 0 0;padding:10px 12px;background:var(--accent-soft);border-radius:var(--r-md);font-size:12.5px;line-height:1.7;color:var(--ink-2);font-variant-numeric:tabular-nums;max-height:11.5em;overflow-y:auto}
 .feed div.new{color:var(--ink);font-weight:500}
 .feed div.warn,.feed div.error{color:var(--bad)}
@@ -365,6 +366,7 @@ function clips(){
       h('h3',{},ep.title),
       Object.keys(by).length ? h('div',{class:'marks'}, ORDER.filter(s=>by[s]).map(s=>{ const st=postState(by[s]); return h('span',{class:'mark '+st.cls,title:st.text},h('i',{'aria-hidden':'true'}),SVC[s]); }))
         : h('div',{class:'sub'},'ส่งมอบ '+fmtD(ep.delivered_at)),
+      ep.produce_seconds>0 ? h('div',{class:'sub'},'ใช้เวลาผลิต '+fmtDur(ep.produce_seconds)) : '',
       hasViews ? h('div',{class:'sub'},'ยอดดู '+fmtN(views)) : '');
   }));
   put(mainEl, head, grid);
@@ -662,6 +664,7 @@ const LIVE = {cards:new Map(), off:0, raf:0};
 const tm = d => d ? new Date(d).toLocaleTimeString('th-TH',{hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '';
 const mmss = ms => { const s=Math.max(0,Math.floor(ms/1000)); return Math.floor(s/60)+':'+String(s%60).padStart(2,'0'); };
 const srvNow = () => Date.now()+LIVE.off;
+const fmtDur = sec => { sec=Math.max(0,Math.round(sec)); const h=Math.floor(sec/3600), m=Math.floor(sec%3600/60), s=sec%60; return (h?h+' ชม. ':'')+(h||m?m+' นาที ':'')+s+' วินาที'; };
 
 function liveShell(){
   LIVE.cards.clear();
@@ -696,6 +699,9 @@ function patchJob(c, j){
   c.who.replaceChildren(h('div',{}, bad ? 'หยุดแล้ว — กด "ทำต่อจากขั้นที่ค้าง" ได้ ระบบใช้ผลที่ทำเสร็จแล้วต่อ ไม่เสียเครดิตเสียงซ้ำ' : (WHO[st] || st)),
     h('small',{}, 'สคริปต์เขียนโดย: '+whoWrote(j.draft_model, j.draft_reasoning)+' · เสียงพากย์: ElevenLabs · ภาพ: โค้ด (ไม่ใช้ AI สร้างภาพ)'));
   setFeed(c, (j.events||[]).map(e=>({k:e.id, t:tm(e.created_at), m:e.message, lv:e.level})));
+  c.created = +new Date(j.created_at); c.ended = bad ? +new Date(j.updated_at) : 0;
+  const se = (j.events||[]).filter(e=>e.status===j.status && /started$/.test(e.message)).pop(); c.stageStart = se ? +new Date(se.created_at) : 0;
+  if (!c.clock){ c.clock = h('div',{class:'clock'}); c.sub.before(c.clock); }
   c.sub.replaceChildren('ลองแล้ว '+j.attempts+' จาก '+j.max_attempts+' ครั้ง', j.error ? h('div',{style:'color:var(--bad)'},String(j.error).slice(0,280)) : '');
   c.act.replaceChildren(...(bad ? [h('button',{class:'btn primary',on:{click:async()=>{ try{ await api('/app/api/jobs/'+j.id+'/retry',{method:'POST'}); toast('เริ่มทำต่อจากขั้นที่ค้างแล้ว'); load(); }catch(x){ toast(x.message); } }}},'ทำต่อจากขั้นที่ค้าง')] : []));
   c.bar.classList.toggle('bad', bad); c.bar.classList.remove('indet');
@@ -707,6 +713,8 @@ function patchDraft(c, d){
   if (c.shown < c.target) c.shown = c.target*0.9;
   c.who.replaceChildren(h('div',{}, 'LLM ที่กำลังคิดอยู่: '+whoWrote(d.model, d.reasoning)), h('small',{}, 'ค้นข้อมูลล่าสุดด้วย Firecrawl แล้วเขียนสคริปต์ ฉาก และคำบรรยาย ก่อนส่งเข้ากฎตรวจ'));
   setFeed(c, (d.log||[]).map((l,i)=>({k:l.at+i, t:tm(l.at), m:l.msg})));
+  c.created = +new Date(d.created_at); c.ended = 0; c.stageStart = 0;
+  if (!c.clock){ c.clock = h('div',{class:'clock'}); c.sub.before(c.clock); }
   c.sub.textContent = 'เริ่มเมื่อ '+fmtD(d.created_at); c.act.replaceChildren(); c.bar.classList.remove('bad');
 }
 function working(w){
@@ -735,6 +743,8 @@ function tick(){
       else if (!stall){ const lim = Math.min(c.ceil-0.015, c.target + (c.ceil-c.target)*0.45); c.shown += Math.max(0,(lim-c.shown))*0.0018; } // then keep creeping so it never looks frozen (not while stalled)
     } else if (c.bad || RM) c.shown = c.target;
     const pct = Math.round(Math.min(c.shown, 1)*100);
+    if (c.clock && c.created){ const end = c.ended || now; const txt = 'เวลารวม '+fmtDur((end-c.created)/1000)+(c.ended?' (หยุดที่นี่)':'')+(c.stageStart && !c.ended ? ' · ขั้นนี้ '+fmtDur((now-c.stageStart)/1000) : '');
+      if (c.clock.textContent !== txt) c.clock.textContent = txt; }
     c.fill.style.width = (c.shown*100).toFixed(2)+'%';
     c.bar.setAttribute('aria-valuenow', pct);
     c.pct.textContent = c.bad ? pct+'%' : (stall ? pct+'% · ไม่มีความเคลื่อนไหว '+mmss(idle)+' (อาจรอ worker รับงานต่อ)' : quiet ? pct+'% · worker ยังทำงานอยู่ (สัญญาณชีพ '+mmss(now-c.beat)+' ที่แล้ว) ขั้นนี้ไม่มีรายงานย่อย' : pct+'% · อัปเดตล่าสุด '+mmss(idle)+' ที่แล้ว');
