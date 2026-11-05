@@ -515,6 +515,8 @@ async function publish(ep, body, close){
 const DSTATE = {queued:['wait','รอคิว'], researching:['wait','กำลังค้นข้อมูล'], writing:['wait','กำลังเขียน'], ready:['go','รอตรวจ'], failed:['bad','ไม่สำเร็จ'], submitted:['ok','ส่งผลิตแล้ว'], discarded:['','ทิ้งแล้ว']};
 const TPL = {chat:'แชทมือถือ', versus:'ปะทะ VS', scale:'เทียบขนาด', hook:'เปิดเรื่อง', number:'ตัวเลขนับขึ้น', compare:'เทียบแท่ง', bars:'จัดอันดับ', list:'รายการ', quiz:'ทายก่อน', reveal:'เฉลย', dots:'x ใน N', timeline:'ไทม์ไลน์', truth:'จริงหรือไม่', scenario:'ฉากสมมติ', icons:'ไอคอน', outro:'ปิดท้าย'};
 const IDEAS = ['ถ้าคนไทยทุกคนเลิกดื่มชานมไข่มุก 1 ปี จะเกิดอะไรขึ้น?','ถ้ากรุงเทพฯ ไม่มีรถติดเลย 1 วัน เราจะได้เวลาคืนกี่ชั่วโมง?','ถ้าคนไทยนอนครบ 8 ชั่วโมงทุกคน จะเกิดอะไรขึ้น?'];
+// every clip opens with "คนชื่อ X ในประเทศไทย มีกี่คน" and then follows the story (owner's default)
+const openerTopic = (name, story) => name ? ('คนชื่อ '+name+' ในประเทศไทย มีกี่คน'+(story ? ' แล้วต่อด้วยเรื่อง: '+story : '')) : story;
 const hhmm = d => new Date(d).toLocaleTimeString('th-TH',{hour:'2-digit',minute:'2-digit'});
 function draftState(d){
   if (d.status==='submitted'){
@@ -615,9 +617,12 @@ function community(cm){
 
 function studio(st, drafts){
   S.studioBusy = drafts.some(inProgress);
-  const head = h('div',{class:'head'}, h('div',{}, h('h1',{},'สร้างคลิปใหม่'), h('p',{},'พิมพ์หัวข้อ ระบบจะค้นข้อมูลล่าสุดด้วย Firecrawl เขียนสคริปต์และวางฉากให้ตรวจก่อนผลิต')));
+  const head = h('div',{class:'head'}, h('div',{}, h('h1',{},'สร้างคลิปใหม่'), h('p',{},'ใส่ชื่อตัวเอกและเรื่องที่จะเล่า ระบบจะค้นข้อมูลล่าสุดด้วย Firecrawl เขียนสคริปต์และวางฉากให้ตรวจก่อนผลิต')));
   const ready = st.llm && st.firecrawl;
-  const topic = h('textarea',{class:'topic',rows:2,maxlength:400,'aria-label':'หัวข้อ',placeholder:'เช่น ถ้าคนไทยทุกคนเลิกกินน้ำตาล 1 เดือน จะเกิดอะไรขึ้น?'});
+  const heroName = h('input',{class:'field',maxlength:14,'aria-label':'ชื่อตัวเอก',placeholder:'เช่น แบงค์ (ว่างไว้ให้ AI เลือกชื่อ)',style:'max-width:260px'});
+  try{ heroName.value = sessionStorage.getItem('ms.hero')||''; }catch{}
+  heroName.addEventListener('input',()=>{ try{ sessionStorage.setItem('ms.hero',heroName.value); }catch{} });
+  const topic = h('textarea',{class:'topic',rows:2,maxlength:360,'aria-label':'เรื่องที่จะเล่าต่อ',placeholder:'เรื่องที่จะเล่าต่อจากคำถามชื่อ เช่น ถ้าคนไทยทุกคนเลิกกินน้ำตาล 1 เดือน จะเกิดอะไรขึ้น? (ว่างไว้ให้ AI เลือกเรื่อง)'});
   try{ topic.value = sessionStorage.getItem('ms.topic')||''; }catch{}
   topic.addEventListener('input',()=>{ try{ sessionStorage.setItem('ms.topic',topic.value); }catch{} });
   const note = h('textarea',{class:'field',rows:3,maxlength:1000,placeholder:'มุมที่อยากเล่า โทน สิ่งที่ต้องมี/ห้ามมี เช่น "เน้นตัวเลขภาคอีสาน ไม่ต้องมีควิซ"'});
@@ -632,13 +637,15 @@ function studio(st, drafts){
   modelSel.addEventListener('change',remember); if (effSel) effSel.addEventListener('change',remember);
   const err = h('div',{class:'err',role:'alert'});
   const go = h('button',{class:'btn primary',disabled:!ready,on:{click:async()=>{
-    err.textContent=''; const t=topic.value.trim(); if (t.length<4){ err.textContent='พิมพ์หัวข้ออย่างน้อย 4 ตัวอักษร'; topic.focus(); return; }
+    err.textContent=''; const t=openerTopic(heroName.value.trim(), topic.value.trim()); if (t.length<4){ err.textContent='ใส่ชื่อตัวเอก หรือพิมพ์เรื่องที่จะเล่าอย่างน้อย 4 ตัวอักษร'; heroName.focus(); return; }
     go.disabled=true; go.textContent='กำลังส่ง…';
     try{ const r=await api('/app/api/studio/drafts',{method:'POST',body:JSON.stringify({topic:t,note:note.value,auto_produce:auto.checked,model:modelSel.value,reasoning:effSel?effSel.value:undefined,characters:selectedChars()})});
-      try{ sessionStorage.removeItem('ms.topic'); }catch{} toast('เริ่มค้นข้อมูลแล้ว'); await load(); openDraft(r.id); }
+      try{ sessionStorage.removeItem('ms.topic'); sessionStorage.removeItem('ms.hero'); }catch{} toast('เริ่มค้นข้อมูลแล้ว'); await load(); openDraft(r.id); }
     catch(x){ err.textContent=x.message; go.disabled=false; go.textContent='เริ่มค้นและเขียน'; } }}},'เริ่มค้นและเขียน');
   const composer = h('div',{class:'composer'},
     !ready ? h('div',{class:'note'},'ยังเขียนอัตโนมัติไม่ได้: ตั้งค่า ', [!st.llm&&('ANTHROPIC_API_KEY หรือ OPENAI_API_KEY'), !st.firecrawl&&'FIRECRAWL_API_KEY'].filter(Boolean).join(' และ '), ' ใน Railway → motion-api → Variables แล้วกด Deploy') : '',
+    h('div',{class:'sub'},'ทุกคลิปเริ่มด้วย “คนชื่อ … ในประเทศไทย มีกี่คน” (ตัวเลขล่าสุดจาก Firecrawl) แล้วค่อยเข้าเนื้อเรื่อง · ปกคลิปเป็น “คนนี้ชื่อ …” พร้อมตัวเอก'),
+    h('label',{class:'sub'},'ชื่อตัวเอก ',heroName),
     topic,
     h('div',{class:'ideas'}, h('span',{class:'sub'},'ลองหัวข้อ:'), IDEAS.map(i=>h('button',{on:{click:()=>{ topic.value=i; topic.focus(); }}},i))),
     h('details',{}, h('summary',{},'เพิ่มแนวทาง (ไม่บังคับ)'), h('div',{style:'margin-top:10px'},note)),

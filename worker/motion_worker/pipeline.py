@@ -237,9 +237,90 @@ def slug_th(s):
     return re.sub(r'\s+', '_', s)[:60]
 
 
+def make_cover(ctx, number, out):
+    """Owner's rule: every clip has a cover reading "คนนี้ชื่อ “NAME”" with the main character (cast[0]) and a hook line below."""
+    import math
+    from PIL import Image, ImageDraw
+    from engine import core, templates
+    from engine.characters import draw_person
+    cv = ctx.pkg['cover']
+    name = str(cv['name']).strip()[:20]
+    cast = {c['name']: c for c in (ctx.pkg.get('spec') or {}).get('cast', []) if isinstance(c, dict) and c.get('name')}
+    if not cast:   # the spec lives inside the generated scene code, so recover the cast from there
+        import re, json as _j
+        m = re.search(r'SPEC = json\.loads\((.*)\)\nSCENES', ctx.pkg.get('scene_code', ''), re.S)
+        if m:
+            try:
+                cast = {c['name']: c for c in _j.loads(_j.loads(m.group(1))).get('cast', []) if isinstance(c, dict) and c.get('name')}
+            except Exception:
+                cast = {}
+    templates.CAST.clear(); templates.CAST.update(cast)
+    style = templates.person_style({'who': cv['who']}) if cv['who'] in cast else {}
+    top, bot = templates.PALETTES[templates.PAL_ORDER[(int(number) * 5 + sum(map(ord, name))) % len(templates.PAL_ORDER)]]
+    img = core.gradient(top, bot).copy()
+    d = ImageDraw.Draw(img, 'RGBA')
+    # rays behind the character
+    cx, cy = 540, 1060
+    lay = Image.new('RGBA', img.size, (0, 0, 0, 0))     # translucent shapes go on their own layer: ImageDraw on RGBA overwrites instead of blending
+    ld = ImageDraw.Draw(lay)
+    for k in range(18):
+        a0 = k * 20 * math.pi / 180
+        ld.polygon([(cx, cy), (cx + 1500 * math.cos(a0), cy + 1500 * math.sin(a0)), (cx + 1500 * math.cos(a0 + 0.17), cy + 1500 * math.sin(a0 + 0.17))], fill=(255, 255, 255, 30))
+    ld.ellipse((cx - 400, cy - 400, cx + 400, cy + 400), fill=(255, 255, 255, 45))
+    img.alpha_composite(lay)
+    core.series_tag(img, d)
+    tag = core.text_img(f'EP{number:03d}', 56, 900, (30, 20, 60), 0)
+    d.rounded_rectangle((40, 120, 80 + tag.width, 140 + tag.height + 20), 24, fill=(255, 225, 60, 255))
+    core.comp(img, tag, 60, 140)
+    # "คนนี้ชื่อ"
+    t1 = core.text_img('คนนี้ชื่อ', 150, 900, (255, 255, 255), 10, (30, 20, 60))
+    core.comp(img, t1, 540 - t1.width / 2, 250)
+    # the name on a sticker, as large as fits
+    size = 260
+    while size > 90 and core.F(size, 900).getlength('“' + name + '”') > 900:
+        size -= 10
+    t2 = core.text_img('“' + name + '”', size, 900, (30, 20, 60), 0)
+    w, h = t2.width + 90, t2.height + 50
+    card = Image.new('RGBA', (w + 40, h + 40), (0, 0, 0, 0))
+    cd = ImageDraw.Draw(card)
+    cd.rounded_rectangle((26, 30, w + 26, h + 30), 44, fill=(20, 12, 30, 150))
+    cd.rounded_rectangle((20, 20, w + 14, h + 14), 44, fill=(255, 225, 60, 255), outline=(255, 255, 255, 255), width=8)
+    card.alpha_composite(t2, (20 + (w - t2.width) // 2 - 6, 20 + (h - t2.height) // 2))
+    card = card.rotate(-3, resample=Image.BICUBIC, expand=True)
+    core.comp(img, card, 540 - card.width / 2, 430)
+    # the character
+    draw_person(img, 540, 995, 335, 0.6, style=style, pose='stand', mood='happy', wave=1.0, talk=0.0)
+    band = Image.new('RGBA', img.size, (0, 0, 0, 0))
+    ImageDraw.Draw(band).rectangle((0, 1580, 1080, 1920), fill=(20, 12, 30, 235))
+    img.alpha_composite(band)
+    # bottom hook line
+    line = (cv.get('line') or ctx.pkg['title_th']).strip()
+    f = core.F(84, 900)
+    words, lines, cur = line.split(' '), [], ''
+    for wd in words:
+        cand = (cur + ' ' + wd).strip()
+        if f.getlength(cand) > 960 and cur:
+            lines.append(cur); cur = wd
+        else:
+            cur = cand
+    lines.append(cur)
+    y = 1580 + (340 - 110 * len(lines[:3])) // 2 - 6
+    for ln in lines[:3]:
+        im = core.text_img(ln, 84, 900, (255, 225, 60), 8, (30, 20, 60))
+        core.comp(img, im, 540 - im.width / 2, y)
+        y += 110
+    img.convert('RGB').save(out)
+    return out
+
+
 def make_thumbnail(ctx, T, number, out):
     from PIL import ImageDraw
     from engine import core, render
+    if ctx.pkg.get('cover'):
+        try:
+            return make_cover(ctx, number, out)
+        except Exception as e:   # a cover problem must never fail the clip: fall back to the scene-frame thumbnail
+            print(f'[thumbnail] cover failed, using the scene frame: {e!r}', flush=True)
     code = write_scene_code(ctx)
     mod = render.load_episode_module(code, T['timeline'], T['end'], ctx.pkg.get('series_tag'))
     th = ctx.pkg.get('thumbnail') or {'seg': T['timeline'][0]['id'], 'offset': 2.0}

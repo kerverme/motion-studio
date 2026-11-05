@@ -128,6 +128,7 @@ const Package = z.object({
   claims: z.array(z.object({ text: z.string(), source_ids: z.array(z.number().int().min(0)).default([]), kind: z.enum(['fact', 'assumption', 'opinion', 'community']).default('fact') })).default([]),
   captions: z.record(z.string()).default({}),
   thumbnail: z.object({ seg: z.string(), offset: z.number().default(1.5), title: z.string().optional() }).optional(),
+  cover: z.object({ who: z.string().max(20), name: z.string().min(1).max(20), line: z.string().max(40).optional() }).optional(),
   budget: z.object({ max_credits: z.number().int().positive() }).optional(),
 });
 type Pkg = z.infer<typeof Package>;

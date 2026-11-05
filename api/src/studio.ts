@@ -354,6 +354,18 @@ Give each character a look that fits who they are; make characters in the same e
 Fields: {"name" (as spoken/shown, e.g. "แบงค์"), "hairstyle": ${HAIRSTYLES.join('|')}, "hair_color": ${HAIR_COLORS.join('|')},
 "skin": ${SKINS.join('|')}, "top": ${TOPS.join('|')}, "top_color", "bottom": ${BOTTOMS.join('|')}, "bottom_color" (colours: ${CLOTH.join('|')}),
 "glasses": round|square|none, "accessories": [${ACCESSORIES.join(', ')}], "accessory_color"}.
+## Cover + opening (the owner's standing rule for EVERY clip)
+Every clip has a main character: cast[0]. Its "name" is the name the clip is about. The cover image reads "คนนี้ชื่อ “<name>”" with that character, so cast[0].name must be a real, speakable Thai name or nickname (≤ 14 characters).
+If the owner's topic starts with "คนชื่อ X ในประเทศไทย มีกี่คน", then cast[0].name = X. If the topic gives no name, pick a common Thai name that fits the story. If the topic says "แล้วต่อด้วยเรื่อง: Y", Y is the story that follows the opener; if there is no Y, choose a fresh story angle yourself.
+If the owner picked saved characters (see below) they come first in cast: cast[0] is the first of them and its name is the one used in the opener and on the cover.
+The clip OPENS with that question, then the story follows:
+- segment 1 (beat "hook"): the question itself, e.g. "คนชื่อ X ในประเทศไทย มีกี่คน?" — it must contain the name and the word "ประเทศไทย".
+- segment 2: the answer — how many people in Thailand have that name (or rank/share if only that exists). This number is research: search with Firecrawl for the NEWEST data (official registry/DOPA statistics,
+  national name rankings, news, academic work), take the latest year available, and cite it in sources with its "published" year. Never invent a count. If no official count is published, say so honestly in the narration
+  ("ไม่มีสถิติทางการ แต่ข้อมูลล่าสุดบอกว่า…"), give only what the source supports (rank, share, a stated estimate), and record it as a claim of kind "assumption".
+- then continue into the story/topic with the usual formats, re-hooks and CTA. A claim in "claims" must mention the name and cover the count.
+Optional "cover": {"name": (default cast[0].name), "line": (≤ 28 chars, the bottom hook line on the cover; default = the title)}.
+
 ## Characters in EVERY frame, acting out the context (the owner's standing rule)
 The jelly cat narrator is on screen in every scene and any cast member appears in every scene too (the engine adds them even if you do not place them; "cat": false is not allowed).
 They must MOVE differently with what is being said. Give every scene's "cat" an "action": {"name", "at"} (and "person" one when it is placed; the person's action should differ from the cat's).
@@ -421,6 +433,7 @@ const TOOLS = [
           skin: { type: 'string' }, top: { type: 'string' }, top_color: { type: 'string' }, bottom: { type: 'string' }, bottom_color: { type: 'string' },
           glasses: { type: 'string' }, accessories: { type: 'array', items: { type: 'string' } }, accessory_color: { type: 'string' } }, required: ['name'] } },
         thumbnail: { type: 'object', properties: { seg: { type: 'string' }, title: { type: 'string' } } },
+        cover: { type: 'object', properties: { name: { type: 'string' }, line: { type: 'string' } } },
       },
     },
   },
@@ -449,6 +462,7 @@ const Draft = z.object({
     glasses: z.string().optional(), accessories: z.array(z.string()).optional(), accessory_color: Colour.optional(),
   })).max(4).default([]),
   thumbnail: z.object({ seg: z.string().optional(), title: z.string().optional() }).optional(),
+  cover: z.object({ name: z.string().max(20).optional(), line: z.string().max(40).optional() }).optional(),
 });
 export type DraftT = z.infer<typeof Draft>;
 
@@ -527,6 +541,14 @@ export function checkDraft(d: DraftT, seen: Map<string, Seen> | null, recent: Re
     if (c.glasses && !['round', 'square', 'none'].includes(c.glasses)) bad.push(`glasses "${c.glasses}"`);
     for (const a of c.accessories || []) if (!ACCESSORIES.includes(a)) bad.push(`accessory "${a}"`);
     if (bad.length) problems.push(`cast ${c.name}: unknown ${bad.join(', ')}`);
+  }
+  // ---- cover + opening (owner's rule): main character = cast[0]; the clip opens with "how many people are named X in Thailand"
+  if (!d.cast.length) problems.push('cast[0] is required: the main character whose name is on the cover ("คนนี้ชื่อ …")');
+  else {
+    const nm = d.cast[0].name;
+    const first = d.script[0]?.text || '';
+    if (!normText(first).includes(normText(nm)) || !first.includes('ไทย')) problems.push(`segment 1 must be the opening question "คนชื่อ ${nm} ในประเทศไทย มีกี่คน" (it needs the name "${nm}" and "ประเทศไทย")`);
+    if (!d.claims.some((c) => normText(c.text).includes(normText(nm)))) problems.push(`add a claim about how many people in Thailand are named "${nm}" (with its source, or kind "assumption" when no official count exists)`);
   }
   for (const sc of d.scenes as any[]) for (const k of ['person', 'person2']) {
     const who = sc[k]?.who;
@@ -632,6 +654,7 @@ export function buildPackage(topic: string, d: DraftT, research: Seen[]) {
     claims: d.claims,
     captions: d.captions,
     thumbnail: { seg: thumbSeg, offset: 1.5, title: d.thumbnail?.title || d.title_th.slice(0, 40) },
+    ...(d.cast.length ? { cover: { who: d.cast[0].name, name: (d.cover?.name || d.cast[0].name).slice(0, 20), line: (d.cover?.line || d.thumbnail?.title || d.title_th).slice(0, 40) } } : {}),
     budget: { max_credits: DRAFT_MAX_CREDITS },
   };
 }
