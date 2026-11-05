@@ -173,7 +173,9 @@ def do_mix(ctx, T, gains_scale=None):
 def stage_render(ctx):
     T = load_timeline(ctx)
     code = write_scene_code(ctx)
-    files, frames, misses = rendering.render_all(code, T['timeline'], T['end'], ctx.pkg.get('series_tag'), ctx.path('scenes'), config.RENDER_PROCS)
+    lo, hi = PROGRESS['BUILDING_TIMELINE'], PROGRESS['RENDERING']
+    files, frames, misses = rendering.render_all(code, T['timeline'], T['end'], ctx.pkg.get('series_tag'), ctx.path('scenes'), config.RENDER_PROCS,
+                                                 on_progress=lambda f: ctx.db.q('UPDATE jobs SET progress=%s, updated_at=now() WHERE id=%s', (round(lo + (hi - lo) * 0.9 * f, 3), ctx.job['id'])))
     silent = rendering.concat(files, ctx.path('video_silent.mp4'))
     mixwav, stems, cues, _ = do_mix(ctx, T)
     final = rendering.mux(silent, mixwav, ctx.path('final.mp4'))

@@ -13,7 +13,7 @@ def _render_one(args):
     return k, n, list(core.MISSING_WORDS)
 
 
-def render_all(scene_code_path, timeline, end, series_tag, outdir, procs, skip=()):
+def render_all(scene_code_path, timeline, end, series_tag, outdir, procs, skip=(), on_progress=None):
     global _MOD
     from engine import render, core
     _MOD = render.load_episode_module(scene_code_path, timeline, end, series_tag)
@@ -27,11 +27,17 @@ def render_all(scene_code_path, timeline, end, series_tag, outdir, procs, skip=(
         tasks.append((f1 - f0, k, out))
     tasks.sort(reverse=True)  # longest first for better packing
     results, misses = {}, []
+    total = sum(n for n, _, _ in tasks) or 1
     ctx = mp.get_context('fork')
     with ctx.Pool(processes=min(procs, max(1, len(tasks)))) as pool:
         for k, n, miss in pool.imap_unordered(_render_one, [(k, out) for _, k, out in tasks]):
             results[k] = n
             misses += miss
+            if on_progress:
+                try:
+                    on_progress(sum(results.values()) / total)
+                except Exception:
+                    pass
     files = [os.path.join(outdir, f'scene_{k:02d}.mp4') for k in range(len(core.ORDER))]
     return files, results, sorted(set(map(tuple, misses)))
 

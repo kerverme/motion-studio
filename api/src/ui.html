@@ -738,7 +738,7 @@ async function start(){
   }catch(x){ if (x.message!=='unauthorized') root.textContent=x.message; }
 }
 start();
-setInterval(()=>{ if (S.view==='working' && !document.querySelector('.drawer')) load(); }, 15000);
+setInterval(()=>{ if (S.view==='working' && !document.querySelector('.drawer') && !document.hidden) load(); }, 4000);
 setInterval(()=>{ if (S.view==='create' && S.studioBusy && !document.querySelector('.drawer') && !(document.activeElement && /TEXTAREA|INPUT/.test(document.activeElement.tagName))) load(); }, 5000);
 </script>
 </body>
