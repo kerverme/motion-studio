@@ -156,12 +156,18 @@ export function registerUi(app: Hono, pool: pg.Pool, deps: { API_TOKEN: string; 
   // ---- jobs in progress / failed
   app.get('/app/api/working', requireUi, async (c) => {
     const r = await pool.query(`SELECT j.id, j.status, j.stage, j.progress, j.error, j.attempts, j.max_attempts, j.created_at, j.updated_at, j.locked_until,
-        COALESCE(e.title_th, j.package->>'title_th') AS title
-      FROM jobs j LEFT JOIN episodes e ON e.id = j.episode_id
+        COALESCE(e.title_th, j.package->>'title_th') AS title,
+        d.id AS draft_id, d.model AS draft_model, d.reasoning AS draft_reasoning,
+        COALESCE((SELECT json_agg(x ORDER BY x.id) FROM (SELECT id, status, level, message, created_at FROM job_events WHERE job_id=j.id ORDER BY id DESC LIMIT 8) x), '[]'::json) AS events,
+        (SELECT max(created_at) FROM job_events WHERE job_id=j.id) AS last_event_at
+      FROM jobs j LEFT JOIN episodes e ON e.id = j.episode_id LEFT JOIN drafts d ON d.job_id = j.id
       WHERE j.kind='episode' AND j.status NOT IN ('READY_TO_POST','CANCELLED')
          OR (j.kind='episode' AND j.status='CANCELLED' AND j.updated_at > now() - interval '2 days')
       ORDER BY j.created_at DESC LIMIT 30`);
-    return c.json({ jobs: r.rows });
+    // drafts an LLM is writing right now (the only place an LLM runs)
+    const dr = await pool.query(`SELECT id, topic, status, model, reasoning, log, created_at, updated_at FROM drafts
+      WHERE status IN ('queued','researching','writing') ORDER BY created_at DESC LIMIT 5`);
+    return c.json({ jobs: r.rows, drafts: dr.rows.map((x: any) => ({ ...x, log: Array.isArray(x.log) ? x.log.slice(-6) : [] })), now: new Date().toISOString() });
   });
 
   app.post('/app/api/jobs/:id/retry', requireUi, async (c) => {

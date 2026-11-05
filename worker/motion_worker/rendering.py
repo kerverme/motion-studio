@@ -35,7 +35,7 @@ def render_all(scene_code_path, timeline, end, series_tag, outdir, procs, skip=(
             misses += miss
             if on_progress:
                 try:
-                    on_progress(sum(results.values()) / total)
+                    on_progress(sum(results.values()) / total, len(results), len(tasks))
                 except Exception:
                     pass
     files = [os.path.join(outdir, f'scene_{k:02d}.mp4') for k in range(len(core.ORDER))]
