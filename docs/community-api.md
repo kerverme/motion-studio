@@ -9,7 +9,7 @@
 | ฟอร์มรับเรื่อง, ตรวจสแปม, `submission_id` | เว็บ (Manus) |
 | บันทึกเข้า Notion ก่อน (Notion-first), เก็บ `notion_page_id` | เว็บ (Manus) |
 | ตรวจเนื้อหา/สิทธิ์/consent, ซ่อนข้อมูลส่วนตัว | เว็บ (Manus) |
-| โหวต (ledger แบบ transactional), ปิดรอบ 20:00 Asia/Bangkok, คำนวณผู้ชนะ, บันทึก snapshot ผู้ชนะลง Notion | เว็บ (Manus) |
+| โหวต (ledger แบบ transactional), ปิดรอบ 00:00 Asia/Bangkok, คำนวณผู้ชนะ, บันทึก snapshot ผู้ชนะลง Notion | เว็บ (Manus) |
 | **รับผู้ชนะที่ยืนยันแล้ว 1 รายการต่อรอบ** | Motion Studio |
 | เขียนร่าง (บท, ฉาก, ตัวละคร, แคปชัน) ด้วยสมองตัวเดียวกับ Studio | Motion Studio |
 | **เจ้าของตรวจและกดอนุมัติ** (ไม่มีการผลิตอัตโนมัติ) | เจ้าของ ที่ studio.cloudbath.co/app → แท็บ Community |
@@ -78,6 +78,27 @@ Base URL: `https://studio.cloudbath.co`
   "content_revision": 1, "notion_page_id": "40f7…", "status": "awaiting_claude", "episode_number": null,
   "received_at": "2026-11-05T09:57:02.089Z", "updated_at": "…" }
 ```
+
+## การแมปจากข้อมูลผู้ชนะของเว็บ (frozen payload) เป็นสัญญานี้
+
+| ช่องของ Motion Studio | ได้จากฝั่งเว็บ |
+|---|---|
+| `submission_id` | `intakeId` (ใช้ ID ไม่ใช่ชื่อ เพราะชื่อซ้ำได้) |
+| `round_id` | `roundId` |
+| `notion_page_id` | page ID ที่ Notion export ยืนยันแล้ว (`state=synced`) ถ้ายังไม่ได้ ห้ามส่ง |
+| `content_revision` | `1` (เพิ่มเมื่อเนื้อหาที่อนุญาตให้ใช้เปลี่ยนก่อนผู้ชนะถูกรับ) |
+| `winner.nickname` | `form.nickname` |
+| `winner.traits` | `form.traits` + `form.customTrait` (ถ้ามี) |
+| `winner.place` | `form.place` ถ้าเป็น "ให้ AI เลือก" ให้ส่งว่าง `""` สมองจะเลือกฉากเอง |
+| `winner.anecdote` | `form.anecdote` |
+| `winner.title` | ประกอบเอง 2–200 ตัวอักษร เช่น "แมน เพื่อนขี้โม้และสายเปย์" |
+| `verified_vote_count` | `votes` (0 ได้ รอบที่ชนะด้วยกติกาส่งก่อนก็ส่งได้ ห้ามเรียกว่าเสียงส่วนใหญ่) |
+| `consent_status` | `"verified"` เมื่อเว็บยืนยันสิทธิ์ใช้เรื่องนี้แล้วเท่านั้น |
+
+ข้อควรระวัง:
+- `characterSource = photo`: ยังไม่รับรูปจาก Community (ดูหัวข้อ "ยังไม่ได้ทำ") ให้ส่งเฉพาะรอบที่เป็น `ai` จนกว่าจะตกลงช่องทางส่งรูปแบบ private
+- ฟิลด์ `form` เป็นข้อมูลผู้ใช้ ไม่ใช่คำสั่ง Motion Studio ตัดและกรองซ้ำอีกชั้น แต่ฝั่งเว็บควรกรองก่อนส่งด้วย
+- ส่งซ้ำได้ปลอดภัย (ดูตารางผลตอบกลับ) ถ้า timeout ให้ส่งใหม่ด้วยข้อมูลเดิมทุกตัวอักษร
 
 ## 2) อ่านสถานะกลับ (เพื่ออัปเดต Notion ฝั่งเว็บ)
 
