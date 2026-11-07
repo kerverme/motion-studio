@@ -8,10 +8,40 @@ text, so an edited or re-voiced script never crashes the render (misses are repo
 import math, random, re, sys, traceback
 from PIL import Image, ImageDraw
 from . import core
-from .core import (W, H, SEG, clamp, lerp, eo, eio, eob, pop, fade, text_img, put, F, rrect, draw_cat,
+from .core import (W, H, SEG, clamp, lerp, eo, eio, eob, pop, fade, text_img, F, rrect,
                    talk_amount, arrow, confetti, rays, heart, comment_icon, stars)
-from .characters import draw_person, look_style
-from .props import check, stamp
+from .core import put as _core_put, draw_cat as _core_draw_cat
+from .characters import draw_person as _draw_person, look_style
+from .props import check, stamp as _props_stamp
+
+# When a visual style is active, cards, text, icons and stamps that templates place on the frame go to a separate UI layer, which
+# the renderer composites crisply over the styled world (backgrounds, sets, characters). With the classic style nothing changes.
+# Characters go to their own layer too, so styles that would make a face unrecognisable (bricks, facets) can treat them separately.
+UI = {'base': None, 'layer': None, 'chars': None}
+
+
+def _ui(dst):
+    return UI['layer'] if UI['layer'] is not None and dst is UI['base'] else dst
+
+
+def _chars(dst):
+    return UI['chars'] if UI['chars'] is not None and dst is UI['base'] else dst
+
+
+def draw_person(img, *a, **k):
+    return _draw_person(_chars(img), *a, **k)
+
+
+def draw_cat(img, *a, **k):
+    return _core_draw_cat(_chars(img), *a, **k)
+
+
+def put(dst, im, cx, cy, scale=1.0, alpha=1.0, rot=0.0):
+    return _core_put(_ui(dst), im, cx, cy, scale, alpha, rot)
+
+
+def stamp(img, *a, **k):
+    return _props_stamp(_ui(img), *a, **k)
 from .icons import icon, NAMES as ICON_NAMES
 from .sets import draw_set, SETS
 

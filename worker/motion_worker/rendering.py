@@ -13,10 +13,10 @@ def _render_one(args):
     return k, n, list(core.MISSING_WORDS)
 
 
-def render_all(scene_code_path, timeline, end, series_tag, outdir, procs, skip=(), on_progress=None):
+def render_all(scene_code_path, timeline, end, series_tag, outdir, procs, skip=(), on_progress=None, style='classic'):
     global _MOD
     from engine import render, core
-    _MOD = render.load_episode_module(scene_code_path, timeline, end, series_tag)
+    _MOD = render.load_episode_module(scene_code_path, timeline, end, series_tag, style)
     os.makedirs(outdir, exist_ok=True)
     tasks = []
     for k in range(len(core.ORDER)):
@@ -59,8 +59,8 @@ def mux(video, audio_wav, out):
     return out
 
 
-def still(scene_code_path, timeline, end, series_tag, t, out):
+def still(scene_code_path, timeline, end, series_tag, t, out, style='classic'):
     from engine import render
-    mod = render.load_episode_module(scene_code_path, timeline, end, series_tag)
+    mod = render.load_episode_module(scene_code_path, timeline, end, series_tag, style)
     render.frame(mod, t).save(out)
     return out

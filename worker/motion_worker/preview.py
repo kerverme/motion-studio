@@ -1,6 +1,6 @@
 """Local preview of a generated spec without ElevenLabs: synthetic word timings, contact sheet of frames per scene.
 
-python -m motion_worker.preview [spec.json] out.png   (no spec -> the built-in sample)"""
+python -m motion_worker.preview [spec.json] out.png [style]   (no spec -> the built-in sample)"""
 import json, os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from PIL import Image
@@ -26,6 +26,7 @@ def scene_code(spec):
 def main():
     from engine import render, core, templates
     args = sys.argv[1:]
+    pkg = {}
     if args and args[0].endswith('.json'):
         pkg = json.load(open(args.pop(0)))
         script, spec = pkg['script'], pkg['spec']
@@ -33,10 +34,11 @@ def main():
         from motion_worker import sample_spec
         script, spec = sample_spec.SCRIPT, sample_spec.spec()
     out = args[0] if args else 'preview.png'
+    style = args[1] if len(args) > 1 else pkg.get('style') or 'classic'
     tl = fake_timeline(script)
     path = os.path.join(os.path.dirname(os.path.abspath(out)), '_preview_scenes.py')
     open(path, 'w').write(scene_code(spec))
-    mod = render.load_episode_module(path, tl, None, 'จะเกิดอะไรขึ้นถ้า...?')
+    mod = render.load_episode_module(path, tl, None, 'จะเกิดอะไรขึ้นถ้า...?', style)
     fr = [0.12, 0.45, 0.75, 0.98]
     th = 480
     tw = int(th * 1080 / 1920)

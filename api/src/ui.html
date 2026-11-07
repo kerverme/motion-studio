@@ -194,6 +194,13 @@ details summary{cursor:pointer;color:var(--ink-2);font-size:14px;margin-top:10px
 .chars h3{font-size:14.5px;font-weight:600;margin:0}
 .chars .hint{font-size:13px;color:var(--ink-3);line-height:1.5}
 .charlist{display:flex;gap:10px;flex-wrap:wrap}
+.stylegrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(108px,1fr));gap:8px}
+.sty{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:var(--r-md);background:var(--raised);padding:0;overflow:hidden;cursor:pointer;text-align:left;color:var(--ink);font:inherit}
+.sty img,.sty .ph{display:block;width:100%;aspect-ratio:10/9;object-fit:cover;background:var(--line-2)}
+.sty .ph{display:grid;place-items:center;font-size:26px;color:var(--ink-3)}
+.sty span{display:block;padding:6px 8px 7px;font-size:12.5px;line-height:1.3}
+.sty.on{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent)}
+.sty:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
 .char{position:relative;display:flex;gap:10px;align-items:center;padding:8px 12px 8px 8px;border:1px solid var(--line);border-radius:var(--r-md);background:var(--raised);cursor:pointer;max-width:100%}
 .char.on{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent)}
 .char img,.char .ph{width:44px;height:44px;border-radius:10px;object-fit:cover;background:var(--line-2);flex:none}
@@ -583,6 +590,26 @@ function characterPanel(){
 }
 
 
+/* ---------- visual style picker (all styles are drawn by code in the worker; no image generation) ---------- */
+let STYLE_LIST = null;
+function selectedStyle(){ try{ return localStorage.getItem('ms.style')||'auto'; }catch{ return 'auto'; } }
+function stylePanel(){
+  const wrap = h('div',{class:'chars'});
+  function draw(){
+    const cur = selectedStyle();
+    const opts = [{id:'auto',label:'ให้ AI เลือก',about:'เลือกให้เข้ากับเรื่อง และไม่ซ้ำกับตอนก่อน'}, ...(STYLE_LIST||[])];
+    put(wrap, h('h3',{},'สไตล์ภาพ'),
+      h('div',{class:'hint'},'ทุกสไตล์วาดด้วยโค้ด ไม่ใช้ AI สร้างภาพ ตัวหนังสือและซับไตเติลยังคมชัดทุกสไตล์ · เปลี่ยนได้อีกตอนตรวจร่าง'),
+      STYLE_LIST===null ? h('div',{class:'sub'},'กำลังโหลด…') : h('div',{class:'stylegrid',role:'radiogroup','aria-label':'สไตล์ภาพ'}, opts.map(o=>
+        h('button',{class:'sty'+(o.id===cur?' on':''),role:'radio','aria-checked':String(o.id===cur),title:o.about||'',on:{click:()=>{ try{ localStorage.setItem('ms.style',o.id); }catch{} draw(); }}},
+          o.preview ? h('img',{src:o.preview,alt:''}) : h('div',{class:'ph','aria-hidden':'true'},'✦'), h('span',{},o.label)))));
+  }
+  if (STYLE_LIST===null) api('/app/api/studio/styles').then(r=>{ STYLE_LIST=r.styles||[]; draw(); }).catch(()=>{ STYLE_LIST=[]; draw(); });
+  draw();
+  return wrap;
+}
+
+
 /* ---------- community: winning viewer stories from the website ---------- */
 const CSTATE = {awaiting_claude:['wait','กำลังเขียนร่าง'], claude_draft_ready:['go','รออนุมัติ'], claude_failed:['bad','เขียนร่างไม่สำเร็จ'], draft_discarded:['','ทิ้งร่างแล้ว'],
   queued_for_production:['wait','อนุมัติแล้ว · กำลังผลิต'], production_failed:['bad','ผลิตไม่สำเร็จ'], produced:['ok','ผลิตเสร็จ'], published:['ok','โพสต์แล้ว'], rejected:['bad','ปฏิเสธแล้ว']};
@@ -639,7 +666,7 @@ function studio(st, drafts){
   const go = h('button',{class:'btn primary',disabled:!ready,on:{click:async()=>{
     err.textContent=''; const t=openerTopic(heroName.value.trim(), topic.value.trim()); if (t.length<4){ err.textContent='ใส่ชื่อตัวเอก หรือพิมพ์เรื่องที่จะเล่าอย่างน้อย 4 ตัวอักษร'; heroName.focus(); return; }
     go.disabled=true; go.textContent='กำลังส่ง…';
-    try{ const r=await api('/app/api/studio/drafts',{method:'POST',body:JSON.stringify({topic:t,note:note.value,auto_produce:auto.checked,model:modelSel.value,reasoning:effSel?effSel.value:undefined,characters:selectedChars()})});
+    try{ const r=await api('/app/api/studio/drafts',{method:'POST',body:JSON.stringify({topic:t,note:note.value,auto_produce:auto.checked,model:modelSel.value,reasoning:effSel?effSel.value:undefined,characters:selectedChars(),style:selectedStyle()})});
       try{ sessionStorage.removeItem('ms.topic'); sessionStorage.removeItem('ms.hero'); }catch{} toast('เริ่มค้นข้อมูลแล้ว'); await load(); openDraft(r.id); }
     catch(x){ err.textContent=x.message; go.disabled=false; go.textContent='เริ่มค้นและเขียน'; } }}},'เริ่มค้นและเขียน');
   const composer = h('div',{class:'composer'},
@@ -649,6 +676,7 @@ function studio(st, drafts){
     topic,
     h('div',{class:'ideas'}, h('span',{class:'sub'},'ลองหัวข้อ:'), IDEAS.map(i=>h('button',{on:{click:()=>{ topic.value=i; topic.focus(); }}},i))),
     h('details',{}, h('summary',{},'เพิ่มแนวทาง (ไม่บังคับ)'), h('div',{style:'margin-top:10px'},note)),
+    stylePanel(),
     characterPanel(),
     h('div',{class:'row',style:'justify-content:flex-start;gap:8px'}, h('span',{class:'sub'},'สมอง'), modelSel, effSel),
     h('label',{class:'check'}, auto, h('span',{},'ผลิตต่อทันทีเมื่อร่างผ่านการตรวจกฎ (ไม่ต้องรอฉันตรวจ)')),
@@ -728,7 +756,12 @@ function openDraft(id){
       const claims = h('ul',{class:'summary',style:'margin:0;padding-left:18px;font-size:14px'}, (dr.claims||[]).map(c=>h('li',{}, c.text, ' ', h('span',{class:'sub'}, c.kind==='fact'?'ข้อเท็จจริง ['+c.source_ids.join(', ')+']':c.kind==='assumption'?'สมมติ':c.kind==='community'?'เรื่องจากผู้ชม':'ความเห็น'))));
       const searches = (d.research||[]).map(r=>h('li',{}, r.kind==='search'?'ค้นหา “'+r.query+'”':'อ่าน '+(r.title||r.url)));
       const err = h('div',{class:'err',role:'alert'});
-      const collect = ()=>({title_th:title.value, script:(dr.script||[]).map(s=>({id:s.id,text:segAreas[s.id].value})), captions:Object.fromEntries(Object.entries(caps).map(([k,t])=>[k,t.value]))});
+      const styleSel = h('select',{class:'field',disabled:!editable,'aria-label':'สไตล์ภาพ',style:'width:auto;padding:6px 8px'},
+        (STYLE_LIST&&STYLE_LIST.length?STYLE_LIST:[{id:dr.style||'classic',label:dr.style||'classic'}]).map(o=>h('option',{value:o.id},o.label)));
+      styleSel.value = dr.style||'classic';
+      styleSel.addEventListener('change',()=>{ dirty=true; save.disabled=false; });
+      if (STYLE_LIST===null) api('/app/api/studio/styles').then(r=>{ STYLE_LIST=r.styles||[]; const v=styleSel.value; styleSel.replaceChildren(...STYLE_LIST.map(o=>h('option',{value:o.id},o.label))); styleSel.value=v; }).catch(()=>{});
+      const collect = ()=>({title_th:title.value, style:styleSel.value, script:(dr.script||[]).map(s=>({id:s.id,text:segAreas[s.id].value})), captions:Object.fromEntries(Object.entries(caps).map(([k,t])=>[k,t.value]))});
       const save = h('button',{class:'btn',disabled:true,on:{click:async()=>{ err.textContent=''; save.disabled=true;
         try{ const r=await api('/app/api/studio/drafts/'+id,{method:'PATCH',body:JSON.stringify(collect())}); dirty=false; toast('บันทึกแล้ว · ประมาณ '+fmtN(r.estimated_credits)+' เครดิต'); refresh(); }
         catch(x){ err.replaceChildren(x.message, x.body&&x.body.problems?h('ul',{class:'probl'},x.body.problems.map(p=>h('li',{},p))):''); save.disabled=false; } }}},'บันทึกการแก้ไข');
@@ -746,7 +779,8 @@ function openDraft(id){
         title, dr.angle?h('p',{class:'sub',style:'margin:0'}, dr.angle):'',
         h('dl',{class:'facts'}, h('dt',{},'ความยาว'), h('dd',{},charInfo), h('dt',{},'ค่าเสียงโดยประมาณ'), h('dd',{}, fmtN(d.estimated_credits)+' เครดิต ElevenLabs'),
           h('dt',{},'รูปแบบเรื่อง'), h('dd',{}, (S.formats&&S.formats[dr.format])||dr.format||'—'),
-          h('dt',{},'เพลง'), h('dd',{}, dr.music||'playful'),
+          h('dt',{},'สไตล์ภาพ'), h('dd',{}, styleSel),
+          h('dt',{},'เพลง'), h('dd',{}, [dr.music||'playful', dr.music_brief&&dr.music_brief.tempo_bpm?' · ~'+dr.music_brief.tempo_bpm+' BPM':'', dr.music_brief&&dr.music_brief.instruments?' · '+dr.music_brief.instruments:''].join('')),
           dr.cast&&dr.cast.length ? [h('dt',{},'ตัวละคร'), h('dd',{}, dr.cast.map(c=>c.name).join(', '))] : '', h('dt',{},'ข้อมูลอ้างอิง'), h('dd',{}, (dr.sources||[]).length+' แหล่ง (Firecrawl)')),
         d.status==='submitted' ? h('div',{class:'note'}, 'ส่งผลิตแล้ว: ', draftState(d)[1], d.job_error?h('div',{class:'err'},d.job_error):'', ' ', h('button',{class:'btn quiet',on:{click:()=>{ close(); go(d.job_status==='READY_TO_POST'?'ready':'working'); }}}, d.job_status==='READY_TO_POST'?'ดูคลิป':'ดูความคืบหน้า')) : '',
         dr.warnings&&dr.warnings.length ? h('details',{}, h('summary',{},'ข้อสังเกต '+dr.warnings.length+' ข้อ'), h('ul',{class:'warnl'}, dr.warnings.map(w=>h('li',{},w)))) : '',

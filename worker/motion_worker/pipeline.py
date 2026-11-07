@@ -180,7 +180,11 @@ def stage_render(ctx):
         ctx.db.q('UPDATE jobs SET progress=%s, updated_at=now() WHERE id=%s', (round(lo + (hi - lo) * 0.9 * f, 3), ctx.job['id']))
         ctx.db.event(ctx.job['id'], f'เรนเดอร์เสร็จ {done}/{n} ฉาก ({round(f * 100)}% ของเฟรม)', None, 'info', 'RENDERING')
     ctx.db.event(ctx.job['id'], 'เริ่มเรนเดอร์ภาพ (วาดด้วยโค้ด ไม่ใช้ LLM)', None, 'info', 'RENDERING')
-    files, frames, misses = rendering.render_all(code, T['timeline'], T['end'], ctx.pkg.get('series_tag'), ctx.path('scenes'), config.RENDER_PROCS, on_progress=_prog)
+    style = ctx.pkg.get('style') or 'classic'
+    if style != 'classic':
+        ctx.db.event(ctx.job['id'], f'สไตล์ภาพ: {style}', None, 'info', 'RENDERING')
+    files, frames, misses = rendering.render_all(code, T['timeline'], T['end'], ctx.pkg.get('series_tag'), ctx.path('scenes'), config.RENDER_PROCS,
+                                                 on_progress=_prog, style=style)
     silent = rendering.concat(files, ctx.path('video_silent.mp4'))
     mixwav, stems, cues, _ = do_mix(ctx, T)
     final = rendering.mux(silent, mixwav, ctx.path('final.mp4'))
@@ -268,6 +272,12 @@ def make_cover(ctx, number, out):
         ld.polygon([(cx, cy), (cx + 1500 * math.cos(a0), cy + 1500 * math.sin(a0)), (cx + 1500 * math.cos(a0 + 0.17), cy + 1500 * math.sin(a0 + 0.17))], fill=(255, 255, 255, 30))
     ld.ellipse((cx - 400, cy - 400, cx + 400, cy + 400), fill=(255, 255, 255, 45))
     img.alpha_composite(lay)
+    # the character on its own layer, then the clip's visual style on the picture (text stays crisp on top)
+    chars = Image.new('RGBA', img.size, (0, 0, 0, 0))
+    draw_person(chars, 540, 995, 335, 0.6, style=style, pose='stand', mood='happy', wave=1.0, talk=0.0)
+    from engine import styles
+    img = styles.apply(ctx.pkg.get('style') or 'classic', img, chars, 0.0)
+    d = ImageDraw.Draw(img, 'RGBA')
     core.series_tag(img, d)
     tag = core.text_img(f'EP{number:03d}', 56, 900, (30, 20, 60), 0)
     d.rounded_rectangle((40, 120, 80 + tag.width, 140 + tag.height + 20), 24, fill=(255, 225, 60, 255))
@@ -288,8 +298,6 @@ def make_cover(ctx, number, out):
     card.alpha_composite(t2, (20 + (w - t2.width) // 2 - 6, 20 + (h - t2.height) // 2))
     card = card.rotate(-3, resample=Image.BICUBIC, expand=True)
     core.comp(img, card, 540 - card.width / 2, 430)
-    # the character
-    draw_person(img, 540, 995, 335, 0.6, style=style, pose='stand', mood='happy', wave=1.0, talk=0.0)
     band = Image.new('RGBA', img.size, (0, 0, 0, 0))
     ImageDraw.Draw(band).rectangle((0, 1580, 1080, 1920), fill=(20, 12, 30, 235))
     img.alpha_composite(band)
@@ -322,7 +330,7 @@ def make_thumbnail(ctx, T, number, out):
         except Exception as e:   # a cover problem must never fail the clip: fall back to the scene-frame thumbnail
             print(f'[thumbnail] cover failed, using the scene frame: {e!r}', flush=True)
     code = write_scene_code(ctx)
-    mod = render.load_episode_module(code, T['timeline'], T['end'], ctx.pkg.get('series_tag'))
+    mod = render.load_episode_module(code, T['timeline'], T['end'], ctx.pkg.get('series_tag'), ctx.pkg.get('style') or 'classic')
     th = ctx.pkg.get('thumbnail') or {'seg': T['timeline'][0]['id'], 'offset': 2.0}
     seg = next(s for s in T['timeline'] if s['id'] == th['seg'])
     t = min(seg['e'], seg['s'] + th.get('offset', 2.0))

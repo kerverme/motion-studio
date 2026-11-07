@@ -129,6 +129,7 @@ const Package = z.object({
   captions: z.record(z.string()).default({}),
   thumbnail: z.object({ seg: z.string(), offset: z.number().default(1.5), title: z.string().optional() }).optional(),
   cover: z.object({ who: z.string().max(20), name: z.string().min(1).max(20), line: z.string().max(40).optional() }).optional(),
+  style: z.enum(['classic', 'pixel_art', 'ps2', 'comic', 'lego', 'claymation', 'paper_cutout', 'retro_anime', 'low_poly', 'risograph', 'diorama']).default('classic'),
   budget: z.object({ max_credits: z.number().int().positive() }).optional(),
 });
 type Pkg = z.infer<typeof Package>;

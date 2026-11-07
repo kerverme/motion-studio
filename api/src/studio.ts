@@ -80,29 +80,75 @@ const HAIR_COLORS = ['black', 'brown', 'blonde', 'grey', 'white', 'red', 'pink',
 const SKINS = ['light', 'medium', 'tan', 'brown', 'dark'];
 const CLOTH = ['navy', 'red', 'green', 'purple', 'orange', 'grey', 'white', 'black', 'yellow', 'pink', 'sky', 'brown', 'beige', 'denim', 'mint'];
 const BGS = ['night', 'grape', 'ocean', 'mint', 'sunset', 'sky', 'peach', 'forest', 'ink', 'gold', 'berry', 'teal'];
-// Fixed prompts: identical requests are served from the worker's audio cache, so recurring effects cost nothing after the first episode.
+// Library effects: fixed prompts, so identical requests are served from the worker's audio cache and cost nothing after the first episode.
+// Besides these, the brain may write up to MAX_CUSTOM_SFX story-specific effects of its own ("sfx": "custom" with a "prompt").
 const SFX: Record<string, { prompt: string; duration: number }> = {
   pop: { prompt: 'Short bright cartoon pop, bubbly and clean, no music', duration: 0.6 },
-  whoosh: { prompt: 'Quick soft whoosh transition swish, airy, no music', duration: 0.8 },
-  ding: { prompt: 'Bright correct-answer ding chime, single clean bell', duration: 1.0 },
-  counter: { prompt: 'Fast mechanical number counter rolling up with rapid clicks, ending in a soft bell', duration: 2.0 },
-  buzzer: { prompt: 'Short comedic cartoon wrong-answer buzzer, two quick low beeps', duration: 1.0 },
-  drumroll: { prompt: 'Short snare drum roll building suspense, ending with a light cymbal hit', duration: 2.5 },
+  whoosh: { prompt: 'Soft airy whoosh transition swish, no music', duration: 0.8 },
+  ding: { prompt: 'Correct-answer ding chime, single clean bell', duration: 1.0 },
+  counter: { prompt: 'Mechanical number counter rolling up with clicks, ending in a soft bell', duration: 2.0 },
+  buzzer: { prompt: 'Short comedic cartoon wrong-answer buzzer, two low beeps', duration: 1.0 },
+  drumroll: { prompt: 'Snare drum roll building suspense, ending with a light cymbal hit', duration: 2.5 },
   tada: { prompt: 'Cheerful cartoon ta-da fanfare, short brass and sparkle', duration: 1.5 },
   tick: { prompt: 'Clock ticking, three crisp ticks, dry', duration: 1.5 },
   boing: { prompt: 'Cartoon spring boing, funny and short', duration: 0.8 },
-  sparkle: { prompt: 'Cartoon magical sparkle glint ting, short and playful', duration: 1.2 },
-  stamp: { prompt: 'Rubber stamp thump on paper, punchy and short', duration: 0.6 },
+  sparkle: { prompt: 'Magical sparkle glint, gentle shimmer', duration: 1.2 },
+  stamp: { prompt: 'Rubber stamp thump on paper, short', duration: 0.6 },
+  footsteps: { prompt: 'Light footsteps walking on a hard floor, a few steps', duration: 2.0 },
+  door: { prompt: 'Wooden door opening with a soft creak', duration: 1.5 },
+  rain: { prompt: 'Gentle rain ambience with soft drops', duration: 4.0 },
+  wind: { prompt: 'Soft wind breeze ambience', duration: 3.0 },
+  birds: { prompt: 'Morning birds chirping outdoors, calm', duration: 3.0 },
+  crowd_laugh: { prompt: 'Small audience laughing warmly, short', duration: 2.0 },
+  crowd_wow: { prompt: 'Small crowd going "ooh" in amazement', duration: 1.5 },
+  gasp: { prompt: 'Cartoon surprised gasp, short, no words', duration: 0.8 },
+  heartbeat: { prompt: 'Slow heartbeat thumps, suspenseful', duration: 2.5 },
+  bell: { prompt: 'Small hand bell ringing twice', duration: 1.2 },
+  coins: { prompt: 'Coins dropping into a pile, jingling', duration: 1.2 },
+  phone: { prompt: 'Smartphone notification chime, soft', duration: 0.8 },
+  camera: { prompt: 'Camera shutter click', duration: 0.6 },
+  typing: { prompt: 'Fast keyboard typing, short burst', duration: 1.5 },
+  splash: { prompt: 'Water splash, playful', duration: 1.0 },
+  train: { prompt: 'Toy train whistle and soft chugging', duration: 2.5 },
+  car: { prompt: 'Car passing by on a street', duration: 2.0 },
+  sad_trombone: { prompt: 'Comedic sad trombone wah-wah, short', duration: 1.8 },
 };
-// Owner's rule: faster music with a catchy "mood hook" that stays engaging the whole time (no slow intro, no drop-outs, a loop-able motif).
-const MUSIC_BASE = 'catchy melodic hook that repeats and develops, constant forward momentum from the first second, no slow intro, no long pauses or breakdowns, rhythmic drive, builds a little every few seconds, steady and not too busy under narration, instrumental';
+const MAX_CUSTOM_SFX = 4;
+// Music follows each story (owner's rule, 2026-11-07): the brain picks the mood, tempo and instruments for THIS story.
+// No fixed fast tempo: calm stories get calm music, tense ones tense music.
+const MUSIC_BASE = 'instrumental background music under Thai narration, follows the emotion of the story, leaves room for the voice, no vocals, steady and loopable, no long silence';
 const MUSIC: Record<string, string> = {
-  playful: `Fast playful background music for a short fun-fact video: bouncy pizzicato, ukulele, bright marimba lead and handclaps, about 128 BPM, quirky quiz-show energy; ${MUSIC_BASE}`,
-  curious: `Fast curious investigative background music: plucked synth arpeggios, glockenspiel hook, punchy muted bass and light drums, about 124 BPM, inquisitive and driving; ${MUSIC_BASE}`,
-  upbeat: `Upbeat high-energy background music for a short explainer: funky bass, crisp drums, bright synth stabs and a singable lead, about 132 BPM, positive and punchy; ${MUSIC_BASE}`,
-  dramatic: `Driving dramatic background music for a surprising-facts video: pulsing strings, taiko and tight percussion, rising tension without being scary, about 120 BPM; ${MUSIC_BASE}`,
-  chill: `Light groovy lo-fi pop background music with a warm electric-piano hook, tight drums and a bouncy bass, about 110 BPM, easy but never slow or sleepy; ${MUSIC_BASE}`,
+  playful: 'playful, light and quirky', curious: 'curious and gently investigative', upbeat: 'upbeat and positive', dramatic: 'dramatic and suspenseful but not scary',
+  chill: 'relaxed and warm', warm: 'warm, heartfelt and cosy', mysterious: 'mysterious and intriguing', epic: 'epic and cinematic',
+  nostalgic: 'nostalgic and bittersweet', tender: 'tender, soft and emotional', spooky: 'spooky but fun, like a Halloween cartoon', funky: 'funky groove',
+  retro_game: '8-bit chiptune video-game', lofi: 'lo-fi hip-hop beat', heroic: 'heroic and adventurous', romantic: 'sweet and romantic', comedic: 'comedic, cartoon slapstick',
 };
+const oneLine = (x: unknown, n: number) => String(x ?? '').replace(/[\u0000-\u001f\u007f<>{}]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, n);
+function musicPrompt(d: { music: string; music_brief?: { tempo_bpm?: number; instruments?: string; feel?: string } }) {
+  const mood = MUSIC[d.music] ? d.music : 'playful';
+  const b = d.music_brief || {};
+  const parts = [`Background music for a short Thai animated story, ${MUSIC[mood]}`];
+  if (b.tempo_bpm) parts.push(`about ${Math.round(b.tempo_bpm)} BPM`);
+  if (b.instruments) parts.push(`instruments: ${oneLine(b.instruments, 140)}`);
+  if (b.feel) parts.push(oneLine(b.feel, 160));
+  parts.push(MUSIC_BASE);
+  return parts.join('; ').slice(0, 700);
+}
+// Visual styles (owner's request, 2026-11-07): all drawn by code in the worker (engine/styles.py), no image generation.
+export const STYLES: Record<string, { th: string; en: string }> = {
+  classic: { th: 'การ์ตูนเส้นเรียบ (เดิม)', en: 'the clean flat cartoon look of earlier episodes' },
+  pixel_art: { th: 'พิกเซลอาร์ต', en: 'chunky pixel art with a retro game palette' },
+  ps2: { th: 'เกม PS2', en: 'early-2000s console 3D: low resolution, dithering, hazy fog' },
+  comic: { th: 'การ์ตูนคอมิก', en: 'comic book: bold ink outlines, flat colours, halftone dots' },
+  lego: { th: 'ตัวต่อเลโก้', en: 'brick-built world with studs, glossy plastic toy characters' },
+  claymation: { th: 'ดินน้ำมัน', en: 'stop-motion plasticine: rounded clay shapes, thumbprints, 12 fps' },
+  paper_cutout: { th: 'กระดาษตัดแปะ', en: 'paper cut-out puppets with white borders and drop shadows, 10 fps' },
+  retro_anime: { th: 'อนิเมะยุค 90', en: '80s/90s cel anime with VHS grain, scanlines and colour fringing' },
+  low_poly: { th: 'โลว์โพลี 3D', en: 'faceted low-poly 3D look' },
+  risograph: { th: 'ริโซกราฟ', en: 'two-ink risograph print: pink and blue grain, misregistration' },
+  diorama: { th: 'โมเดลจิ๋ว', en: 'miniature diorama: tilt-shift blur, saturated toy colours' },
+};
+const STYLE_NAMES = Object.keys(STYLES);
 
 // ---------------------------------------------------------------- helpers
 const nowBkk = () => new Date(Date.now() + 7 * 3600_000);
@@ -365,6 +411,8 @@ The clip OPENS with that question, then the story follows:
   ("ไม่มีสถิติทางการ แต่ข้อมูลล่าสุดบอกว่า…"), give only what the source supports (rank, share, a stated estimate), and record it as a claim of kind "assumption".
 - then continue into the story/topic with the usual formats, re-hooks and CTA. A claim in "claims" must mention the name and cover the count.
 Optional "cover": {"name": (default cast[0].name), "line": (≤ 28 chars, the bottom hook line on the cover; default = the title)}.
+Show the main character BIG in the opening: segment 1's scene must be type "scenario" with "person": {"who": cast[0].name} and a "headline" (or "bubble") with the question,
+so viewers see clearly who "this person" is in the first seconds (like the cover).
 
 ## Characters in EVERY frame, acting out the context (the owner's standing rule)
 The jelly cat narrator is on screen in every scene and any cast member appears in every scene too (the engine adds them even if you do not place them; "cat": false is not allowed).
@@ -375,16 +423,28 @@ dance (celebration, outro), lean (pointing at the number/item on screen), peek (
 Match the action to the meaning of the words, change it between consecutive scenes, and use at least 4 different actions in an episode. Move the characters with "x": left|right|center in some scenes.
 
 ## Pace (the owner wants it faster)
-The voice runs fast (about ${CPS.toFixed(1)} characters per second) and the music is upbeat with a catchy hook. Write punchy, energetic narration: short phrases, active verbs, no filler or
-repetition, a fresh fact, number or twist every few seconds, and let the mood hook the viewer from the first word to the last. Choose the music mood "upbeat", "playful" or "curious" unless the story really needs "dramatic".
+The voice runs fast (about ${CPS.toFixed(1)} characters per second). Write punchy narration: short phrases, active verbs, no filler or
+repetition, a fresh fact, number or twist every few seconds.
+
+## Music follows the story (the owner's rule)
+Choose "music" (mood: ${Object.keys(MUSIC).join(', ')}) and "music_brief": {"tempo_bpm" 60–150, "instruments" (2–4, English), "feel" (one English line about
+this story's emotion and setting)}. Fit THIS story and the visual style (e.g. pixel_art → chiptune, retro_anime → 80s city pop, claymation → quirky stop-motion
+woodwinds, risograph → indie lo-fi, ps2 → early-2000s game soundtrack). Do not default to fast or hyped: calm or touching stories get slower, softer music,
+tense ones tense music, comedy gets comedic music. Vary the music from recent episodes.
 
 "ตั้ม" is the recurring guy from earlier episodes (hairstyle helmet, top blazer navy, glasses round, accessories [bag]); reuse exactly that look if he appears.
 A "scenario" scene can show two characters: "person" (left) and "person2" (right), with "bubble" and "bubble2" speech lines; name tags show automatically.
 Elsewhere "person" appears small in a corner. The cat is always the narrator.
 
 ## Sound
-sfx: up to 10 cues {"sfx": one of ${Object.keys(SFX).join('|')}, "seg", "at" (word from that segment), "gain" 0.3–0.7}. Use counter with number
-reveals, drumroll/tick before reveals, ding or tada on the answer, buzzer/stamp on myths, pop/whoosh sparingly. music: ${Object.keys(MUSIC).join('|')}.
+sfx: up to 10 cues {"sfx", "seg", "at" (word from that segment), "gain" 0.3–0.7}. "sfx" is a library sound (${Object.keys(SFX).join('|')})
+or "custom" with "prompt" (English, ≤ 100 chars, a sound that belongs to THIS story, e.g. "paper train whistle", "robot beeping happily") and "duration" 0.5–4 s
+(at most ${MAX_CUSTOM_SFX} custom). Pick sounds that match what is happening on screen and in the story; they do not all have to be fast or punchy —
+quiet moments can have soft sounds or none. Avoid the same set of sounds as every other episode.
+
+## Visual style
+Every episode is drawn in one visual style (all code-drawn): ${STYLE_NAMES.map((k) => `${k} (${STYLES[k].en})`).join('; ')}.
+Set "style". The user message says whether the owner fixed it; otherwise pick the one that suits the story best and differs from the last two episodes.
 
 ## Captions
 captions: facebook, instagram, tiktok, youtube (title-style, ≤ 90 chars), twitter (≤ 260 chars). Thai, hook + the quiz question or key fact,
@@ -427,8 +487,11 @@ const TOOLS = [
           kind: { type: 'string', enum: ['fact', 'assumption', 'opinion'] } }, required: ['text', 'source_ids', 'kind'] } },
         captions: { type: 'object', properties: { facebook: { type: 'string' }, instagram: { type: 'string' }, tiktok: { type: 'string' }, youtube: { type: 'string' }, twitter: { type: 'string' } },
           required: ['facebook', 'instagram', 'tiktok', 'youtube', 'twitter'] },
-        sfx: { type: 'array', items: { type: 'object', properties: { sfx: { type: 'string' }, seg: { type: 'string' }, at: { type: 'string' }, gain: { type: 'number' } }, required: ['sfx', 'seg', 'at'] } },
+        sfx: { type: 'array', items: { type: 'object', properties: { sfx: { type: 'string' }, seg: { type: 'string' }, at: { type: 'string' }, gain: { type: 'number' },
+          prompt: { type: 'string' }, duration: { type: 'number' } }, required: ['sfx', 'seg', 'at'] } },
         music: { type: 'string', enum: Object.keys(MUSIC) },
+        music_brief: { type: 'object', properties: { tempo_bpm: { type: 'integer' }, instruments: { type: 'string' }, feel: { type: 'string' } } },
+        style: { type: 'string', enum: STYLE_NAMES },
         cast: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, hairstyle: { type: 'string' }, hair_color: { type: 'string' },
           skin: { type: 'string' }, top: { type: 'string' }, top_color: { type: 'string' }, bottom: { type: 'string' }, bottom_color: { type: 'string' },
           glasses: { type: 'string' }, accessories: { type: 'array', items: { type: 'string' } }, accessory_color: { type: 'string' } }, required: ['name'] } },
@@ -454,8 +517,11 @@ const Draft = z.object({
   })).min(1).max(15),
   claims: z.array(z.object({ text: z.string(), source_ids: z.array(z.number().int().min(0)).default([]), kind: z.enum(['fact', 'assumption', 'opinion', 'community']).default('fact') })).min(1),
   captions: z.object({ facebook: z.string(), instagram: z.string(), tiktok: z.string(), youtube: z.string(), twitter: z.string() }),
-  sfx: z.array(z.object({ sfx: z.string(), seg: z.string(), at: z.string(), gain: z.number().min(0).max(1.2).default(0.5) })).max(14).default([]),
+  sfx: z.array(z.object({ sfx: z.string(), seg: z.string(), at: z.string(), gain: z.number().min(0).max(1.2).default(0.5),
+    prompt: z.string().max(140).optional(), duration: z.number().min(0.5).max(4).optional() })).max(14).default([]),
   music: z.string().default('playful'),
+  music_brief: z.object({ tempo_bpm: z.number().min(60).max(150).optional(), instruments: z.string().max(160).optional(), feel: z.string().max(200).optional() }).optional(),
+  style: z.string().optional(),
   cast: z.array(z.object({
     name: z.string().min(1).max(20), hairstyle: z.string().optional(), hair_color: Colour.optional(), skin: Colour.optional(),
     top: z.string().optional(), top_color: Colour.optional(), bottom: z.string().optional(), bottom_color: Colour.optional(),
@@ -490,10 +556,10 @@ function iconRefs(node: any, out: string[] = []) {
 // After the owner edits narration, a timing word that is gone only moves that animation to its approximate position.
 const SOFT = /timing word|sfx .*word/;
 // The owner's own edits are never blocked by storytelling rules; they are shown as warnings instead.
-const OWNER_SOFT = /timing word|sfx .*word|hook|re-hook|beat "cta"|both use|is used \d+ times|format|scene sequence|action/;
+const OWNER_SOFT = /timing word|sfx .*word|hook|re-hook|beat "cta"|both use|is used \d+ times|format|scene sequence|action|main character big|must be seen big|opening question|claim about how many/;
 
 // problems: must be fixed. warnings: shown to the owner, do not block.
-export type Recent = { format: string; types: string[]; title: string };
+export type Recent = { format: string; types: string[]; title: string; style?: string; music?: string };
 
 // Estimated start time of every segment (seconds), using the same speed as the credit estimate plus a short pause per segment.
 export function timing(script: { text: string }[]) {
@@ -501,7 +567,7 @@ export function timing(script: { text: string }[]) {
   return script.map((s) => { const start = t; const dur = s.text.replace(/\s+/g, '').length / CPS; t += dur + 0.35; return { start, dur, end: start + dur }; });
 }
 
-export function checkDraft(d: DraftT, seen: Map<string, Seen> | null, recent: Recent[] = []) {
+export function checkDraft(d: DraftT, seen: Map<string, Seen> | null, recent: Recent[] = [], opts: { requiredNames?: string[] } = {}) {
   const problems: string[] = [], warnings: string[] = [];
   const ids = d.script.map((s) => s.id);
   if (new Set(ids).size !== ids.length) problems.push('script ids must be unique');
@@ -523,11 +589,17 @@ export function checkDraft(d: DraftT, seen: Map<string, Seen> | null, recent: Re
     for (const ic of iconRefs(sc)) if (!ICONS.includes(ic)) problems.push(`scene ${sc.seg}: unknown icon "${ic}"`);
     if ((sc as any).bg && !BGS.includes((sc as any).bg)) warnings.push(`scene ${sc.seg}: unknown bg "${(sc as any).bg}" (a default is used)`);
   }
+  let custom = 0;
   for (const fx of d.sfx) {
-    if (!SFX[fx.sfx]) problems.push(`unknown sfx "${fx.sfx}"`);
+    if (fx.sfx === 'custom') {
+      custom++;
+      if (!oneLine(fx.prompt, 140)) problems.push(`custom sfx at "${fx.at}" needs a "prompt" describing the sound`);
+    } else if (!SFX[fx.sfx]) problems.push(`unknown sfx "${fx.sfx}" (use a library sound or "custom" with a prompt)`);
     if (!text.has(fx.seg)) problems.push(`sfx cue refers to unknown segment ${fx.seg}`);
     else if (!normText(text.get(fx.seg)!).includes(normText(fx.at))) problems.push(`sfx ${fx.sfx}: word "${fx.at}" is not in segment ${fx.seg}`);
   }
+  if (custom > MAX_CUSTOM_SFX) problems.push(`${custom} custom sound effects; at most ${MAX_CUSTOM_SFX}`);
+  if (d.style && !STYLES[d.style]) problems.push(`unknown style "${d.style}" (use ${STYLE_NAMES.join(', ')})`);
   const names = new Set(d.cast.map((c) => c.name));
   if (names.size !== d.cast.length) problems.push('cast names must be unique');
   for (const c of d.cast) {
@@ -549,6 +621,17 @@ export function checkDraft(d: DraftT, seen: Map<string, Seen> | null, recent: Re
     const first = d.script[0]?.text || '';
     if (!normText(first).includes(normText(nm)) || !first.includes('ไทย')) problems.push(`segment 1 must be the opening question "คนชื่อ ${nm} ในประเทศไทย มีกี่คน" (it needs the name "${nm}" and "ประเทศไทย")`);
     if (!d.claims.some((c) => normText(c.text).includes(normText(nm)))) problems.push(`add a claim about how many people in Thailand are named "${nm}" (with its source, or kind "assumption" when no official count exists)`);
+    // the main character big on screen in the opening (like the cover)
+    const sc0: any = d.scenes.find((x) => x.seg === d.script[0]?.id);
+    if (sc0 && (sc0.type !== 'scenario' || (sc0.person?.who && sc0.person.who !== nm)))
+      problems.push(`segment 1's scene must be type "scenario" showing the main character big: "person": {"who": "${nm}"} with the question as headline or bubble`);
+  }
+  // characters made from the owner's photos are shown big (scenario scenes), not only small in a corner
+  const req = (opts.requiredNames || []).filter((n) => names.has(n));
+  if (req.length) {
+    const big = (d.scenes as any[]).filter((sc) => sc.type === 'scenario' && (req.includes(sc.person?.who) || req.includes(sc.person2?.who))).length;
+    const need = Math.min(4, Math.ceil(d.scenes.length / 3));
+    if (big < need) problems.push(`the owner's photo characters (${req.join(', ')}) must be seen big: use at least ${need} "scenario" scenes with one of them as "person" (now ${big})`);
   }
   for (const sc of d.scenes as any[]) for (const k of ['person', 'person2']) {
     const who = sc[k]?.who;
@@ -597,7 +680,7 @@ export function checkDraft(d: DraftT, seen: Map<string, Seen> | null, recent: Re
   const types = d.script.map((s) => (d.scenes.find((x) => x.seg === s.id) as any)?.type).filter(Boolean) as string[];
   for (let i = 1; i < types.length; i++) if (types[i] === types[i - 1] && types[i] !== 'scenario') problems.push(`scenes ${d.script[i - 1].id} and ${d.script[i].id} both use "${types[i]}"; change one (avoid the same layout twice in a row)`);
   const counts = types.reduce((m: Record<string, number>, x) => ({ ...m, [x]: (m[x] || 0) + 1 }), {});
-  for (const [k, n] of Object.entries(counts)) if (n > (k === 'scenario' ? 4 : 2)) problems.push(`scene type "${k}" is used ${n} times; vary the layouts`);
+  for (const [k, n] of Object.entries(counts)) if (n > (k === 'scenario' ? 5 : 2)) problems.push(`scene type "${k}" is used ${n} times; vary the layouts`);
   if (d.format && !FORMATS[d.format]) problems.push(`unknown format "${d.format}"`);
   if (!d.format) problems.push('set "format" to one of: ' + Object.keys(FORMATS).join(', '));
   const clash = recent.slice(0, 2).filter((r) => r.format && r.format === d.format);
@@ -631,10 +714,21 @@ export function sceneCode(d: DraftT) {
 export function buildPackage(topic: string, d: DraftT, research: Seen[]) {
   const byUrl = new Map(research.map((r) => [normUrl(r.url), r]));
   const cues = new Map<string, any[]>();
+  const customSfx = new Map<string, { prompt: string; duration: number }>();
   for (const fx of d.sfx) {
-    if (!SFX[fx.sfx]) continue;
-    if (!cues.has(fx.sfx)) cues.set(fx.sfx, []);
-    cues.get(fx.sfx)!.push({ seg: fx.seg, word: fx.at, n: 0, offset: 0, gain: fx.gain ?? 0.5 });
+    let id = fx.sfx;
+    if (fx.sfx === 'custom') {
+      const prompt = oneLine(fx.prompt, 140);
+      if (!prompt) continue;
+      const full = `${prompt}, sound effect only, no music, no voice`;
+      id = [...customSfx.entries()].find(([, v]) => v.prompt === full)?.[0] ?? `custom${customSfx.size + 1}`;
+      if (!customSfx.has(id)) {
+        if (customSfx.size >= MAX_CUSTOM_SFX) continue;
+        customSfx.set(id, { prompt: full, duration: Math.min(4, Math.max(0.5, fx.duration ?? 1.5)) });
+      }
+    } else if (!SFX[id]) continue;
+    if (!cues.has(id)) cues.set(id, []);
+    cues.get(id)!.push({ seg: fx.seg, word: fx.at, n: 0, offset: 0, gain: fx.gain ?? 0.5 });
   }
   const firstLine = (sc: any) => sc.headline?.text || sc.lines?.[0]?.text || sc.question?.text || sc.statement?.text || sc.bubble?.text || '';
   const thumbSeg = d.thumbnail?.seg && d.script.some((s) => s.id === d.thumbnail!.seg) ? d.thumbnail.seg : d.script[0].id;
@@ -642,8 +736,9 @@ export function buildPackage(topic: string, d: DraftT, research: Seen[]) {
     topic, title_th: d.title_th.slice(0, 120), series_tag: SERIES_TAG,
     script: d.script,
     voice: { voice_id: VOICE_ID, model_id: 'eleven_v4', language_code: 'th', stability: 0.35, similarity_boost: 0.75, speed: VOICE_SPEED },
-    music: { prompt: MUSIC[d.music] || MUSIC.playful, model_id: 'music_v1', volume: 0.28 },
-    sfx: [...cues.entries()].map(([id, cs]) => ({ id, prompt: SFX[id].prompt, duration: SFX[id].duration, cues: cs })),
+    music: { prompt: musicPrompt(d), model_id: 'music_v1', volume: 0.28 },
+    sfx: [...cues.entries()].map(([id, cs]) => ({ id, prompt: customSfx.get(id)?.prompt ?? SFX[id].prompt, duration: customSfx.get(id)?.duration ?? SFX[id].duration, cues: cs })),
+    style: d.style && STYLES[d.style] ? d.style : 'classic',
     scene_code: sceneCode(d),
     storyboard: d.scenes.map((s: any) => ({ seg: s.seg, visual: `template:${s.type}`, onscreen: firstLine(s), bg: s.bg ?? null, transition: 'iris' })),
     sources: d.sources.map((s) => {
@@ -732,7 +827,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const r = await pool.query(`SELECT id, draft FROM drafts WHERE draft IS NOT NULL AND status IN ('ready','submitted') AND id <> $1
       ORDER BY created_at DESC LIMIT 6`, [excludeId || '00000000-0000-0000-0000-000000000000']);
     return r.rows.map((x: any) => ({
-      format: x.draft.format || '', title: x.draft.title_th || '',
+      format: x.draft.format || '', title: x.draft.title_th || '', style: x.draft.style || 'classic', music: x.draft.music || '',
       types: (x.draft.script || []).map((sg: any) => (x.draft.scenes || []).find((sc: any) => sc.seg === sg.id)?.type).filter(Boolean),
     }));
   }
@@ -786,11 +881,16 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     if (reqChars.length) {
       userText += `\n\nRequired characters (the owner uploaded photos of them; their look is applied automatically, do not change it): ${reqChars.map((c) => `"${c.name}"`).join(', ')}. ` +
         `Make them the main cast of this episode: put them in "cast" by exactly these names, write them into the story (what they do, say and feel) and refer to them in scenes with "person": {"who": name}. ` +
+        `Show them BIG so viewers recognise them: about a third of the scenes must be "scenario" scenes with one of them as "person". ` +
         `You may add at most ${Math.max(0, 4 - reqChars.length)} other characters.`;
     }
     const recent = await recentEpisodes(id);
+    const fixedStyle = row.style && STYLES[row.style] ? row.style : null;
+    userText += fixedStyle
+      ? `\n\nVisual style: the owner chose "${fixedStyle}" (${STYLES[fixedStyle].en}); set "style": "${fixedStyle}" and let the music fit it.`
+      : `\n\nVisual style: choose "style" yourself (suits the story, differs from the last two episodes).`;
     userText += recent.length
-      ? `\n\nRecent episodes, newest first — use a different format than the last two and do not repeat a scene sequence:\n${recent.map((r) => `- "${r.title}" | format: ${r.format || 'classic quiz'} | scenes: ${r.types.join(' > ')}`).join('\n')}`
+      ? `\n\nRecent episodes, newest first — use a different format than the last two and do not repeat a scene sequence:\n${recent.map((r) => `- "${r.title}" | format: ${r.format || 'classic quiz'} | style: ${r.style} | music: ${r.music || '-'} | scenes: ${r.types.join(' > ')}`).join('\n')}`
       : `\n\nEarlier episodes used the classic order hook > number > myth > quiz > reveal > close; choose a different format.`;
     const model = row.model && MODEL_RE.test(row.model) ? row.model : MODEL;
     const effort = REASONING_LEVELS.includes(row.reasoning) ? row.reasoning : REASONING;
@@ -850,8 +950,9 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
               results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: `Fix these and submit again:\n- ${issues.join('\n- ')}` });
               continue;
             }
-            const d = applyCast(parsed.data, reqChars);
-            const { problems, warnings } = checkDraft(d, seen, recent);
+            const d0 = applyCast(parsed.data, reqChars);
+            const d = fixedStyle ? { ...d0, style: fixedStyle } : d0;
+            const { problems, warnings } = checkDraft(d, seen, recent, { requiredNames: reqChars.map((c) => c.name) });
             let est: number | null = null;
             if (!problems.length) {
               const f = finalCheck(row.topic, d, [...seen.values()]);
@@ -1000,6 +1101,11 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
   });
 
   // ---- characters made from photos
+  // visual styles for the composer, with a small preview of each (rendered by the worker engine, see worker/engine/styles.py)
+  let previews: Record<string, string> = {};
+  try { previews = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'style-previews.json'), 'utf8')); } catch { /* previews are optional */ }
+  app.get('/app/api/studio/styles', g, (c) => c.json({ styles: STYLE_NAMES.map((id) => ({ id, label: STYLES[id].th, about: STYLES[id].en, preview: previews[id] || null })) }));
+
   app.get('/app/api/studio/characters', g, async (c) => {
     const r = await pool.query('SELECT id, name, look, thumb, created_at FROM characters ORDER BY created_at DESC LIMIT 60');
     return c.json({ characters: r.rows });
@@ -1058,8 +1164,9 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const reasoning = REASONING_LEVELS.includes(b.reasoning) ? b.reasoning : REASONING;
     const ids: string[] = (Array.isArray(b.characters) ? b.characters : []).map(String).filter(isId).slice(0, 3);
     const chars = ids.length ? (await pool.query('SELECT id, name, look FROM characters WHERE id = ANY($1::uuid[]) ORDER BY created_at', [ids])).rows : [];
-    const r = await pool.query('INSERT INTO drafts (topic, note, auto_produce, model, reasoning, characters) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id',
-      [topic, String(b.note || '').trim().slice(0, 1000) || null, !!b.auto_produce, model, PROVIDER === 'openai' ? reasoning : null, JSON.stringify(chars)]);
+    const style = typeof b.style === 'string' && STYLES[b.style] ? b.style : 'auto';
+    const r = await pool.query('INSERT INTO drafts (topic, note, auto_produce, model, reasoning, characters, style) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id',
+      [topic, String(b.note || '').trim().slice(0, 1000) || null, !!b.auto_produce, model, PROVIDER === 'openai' ? reasoning : null, JSON.stringify(chars), style]);
     await log(r.rows[0].id, 'รับหัวข้อแล้ว รอคิว');
     pump();
     return c.json({ id: r.rows[0].id }, 201);
@@ -1075,6 +1182,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const b = await c.req.json().catch(() => ({}));
     const d = { ...row.draft };
     if (typeof b.title_th === 'string' && b.title_th.trim()) d.title_th = b.title_th.trim().slice(0, 90);
+    if (typeof b.style === 'string' && STYLES[b.style]) d.style = b.style;   // only changes how the clip is drawn; the script stays checked
     if (Array.isArray(b.script)) {
       const map = new Map(b.script.map((s: any) => [String(s.id), String(s.text || '').trim()]));
       d.script = d.script.map((s: any) => (map.has(s.id) && map.get(s.id) ? { ...s, text: map.get(s.id) } : s));
