@@ -522,6 +522,7 @@ const Draft = z.object({
   music: z.string().default('playful'),
   music_brief: z.object({ tempo_bpm: z.number().min(60).max(150).optional(), instruments: z.string().max(160).optional(), feel: z.string().max(200).optional() }).optional(),
   style: z.string().optional(),
+  music_mode: z.enum(['default', 'ai']).optional(),
   cast: z.array(z.object({
     name: z.string().min(1).max(20), hairstyle: z.string().optional(), hair_color: Colour.optional(), skin: Colour.optional(),
     top: z.string().optional(), top_color: Colour.optional(), bottom: z.string().optional(), bottom_color: Colour.optional(),
@@ -736,7 +737,8 @@ export function buildPackage(topic: string, d: DraftT, research: Seen[]) {
     topic, title_th: d.title_th.slice(0, 120), series_tag: SERIES_TAG,
     script: d.script,
     voice: { voice_id: VOICE_ID, model_id: 'eleven_v4', language_code: 'th', stability: 0.35, similarity_boost: 0.75, speed: VOICE_SPEED },
-    music: { prompt: musicPrompt(d), model_id: 'music_v1', volume: 0.28 },
+    // 'default' reuses the channel's default track (no music generation); the prompt is the fallback if that track cannot be found
+    music: { source: d.music_mode === 'ai' ? 'generate' : 'default', prompt: musicPrompt(d), model_id: 'music_v1', volume: 0.28 },
     sfx: [...cues.entries()].map(([id, cs]) => ({ id, prompt: customSfx.get(id)?.prompt ?? SFX[id].prompt, duration: customSfx.get(id)?.duration ?? SFX[id].duration, cues: cs })),
     style: d.style && STYLES[d.style] ? d.style : 'classic',
     scene_code: sceneCode(d),
@@ -951,7 +953,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
               continue;
             }
             const d0 = applyCast(parsed.data, reqChars);
-            const d = fixedStyle ? { ...d0, style: fixedStyle } : d0;
+            const d = { ...d0, ...(fixedStyle ? { style: fixedStyle } : {}), music_mode: row.music_mode === 'ai' ? 'ai' as const : 'default' as const };
             const { problems, warnings } = checkDraft(d, seen, recent, { requiredNames: reqChars.map((c) => c.name) });
             let est: number | null = null;
             if (!problems.length) {
@@ -1104,6 +1106,26 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
   // visual styles for the composer, with a small preview of each (rendered by the worker engine, see worker/engine/styles.py)
   let previews: Record<string, string> = {};
   try { previews = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'style-previews.json'), 'utf8')); } catch { /* previews are optional */ }
+  // the channel's default music: the track of a finished episode (owner's choice: EP002, the "คนชื่อตั้ม" clip)
+  const musicCandidates = () => pool.query(`
+    SELECT DISTINCT ON (e.number) e.number, e.title_th, j.stage_results->'GENERATING_AUDIO'->>'music_key' AS music_key
+    FROM jobs j JOIN episodes e ON e.id = j.episode_id
+    WHERE e.number IS NOT NULL AND j.stage_results->'GENERATING_AUDIO'->>'music_key' IS NOT NULL
+    ORDER BY e.number DESC, j.finished_at DESC NULLS LAST LIMIT 40`);
+  app.get('/app/api/studio/music-default', g, async (c) => {
+    const [cur, cands] = await Promise.all([pool.query("SELECT data FROM integrations WHERE provider='default_music'"), musicCandidates()]);
+    const episode = Number(cur.rows[0]?.data?.episode) || null;
+    const list = cands.rows.map((r: any) => ({ number: r.number, title: r.title_th }));
+    return c.json({ episode, available: list.some((x) => x.number === episode), title: list.find((x) => x.number === episode)?.title || null, candidates: list });
+  });
+  app.post('/app/api/studio/music-default', g, async (c) => {
+    const b = await c.req.json().catch(() => ({}));
+    const n = Number(b.episode);
+    if (!Number.isInteger(n) || n < 1) return c.json({ error: 'episode number required' }, 422);
+    if (!(await musicCandidates()).rows.some((r: any) => r.number === n)) return c.json({ error: `EP${String(n).padStart(3, '0')} has no music track to reuse` }, 422);
+    await pool.query("INSERT INTO integrations (provider, data, updated_at) VALUES ('default_music', $1, now()) ON CONFLICT (provider) DO UPDATE SET data = EXCLUDED.data, updated_at = now()", [JSON.stringify({ episode: n })]);
+    return c.json({ ok: true, episode: n });
+  });
   app.get('/app/api/studio/styles', g, (c) => c.json({ styles: STYLE_NAMES.map((id) => ({ id, label: STYLES[id].th, about: STYLES[id].en, preview: previews[id] || null })) }));
 
   app.get('/app/api/studio/characters', g, async (c) => {
@@ -1165,8 +1187,9 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const ids: string[] = (Array.isArray(b.characters) ? b.characters : []).map(String).filter(isId).slice(0, 3);
     const chars = ids.length ? (await pool.query('SELECT id, name, look FROM characters WHERE id = ANY($1::uuid[]) ORDER BY created_at', [ids])).rows : [];
     const style = typeof b.style === 'string' && STYLES[b.style] ? b.style : 'auto';
-    const r = await pool.query('INSERT INTO drafts (topic, note, auto_produce, model, reasoning, characters, style) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id',
-      [topic, String(b.note || '').trim().slice(0, 1000) || null, !!b.auto_produce, model, PROVIDER === 'openai' ? reasoning : null, JSON.stringify(chars), style]);
+    const musicMode = b.music_mode === 'ai' ? 'ai' : 'default';
+    const r = await pool.query('INSERT INTO drafts (topic, note, auto_produce, model, reasoning, characters, style, music_mode) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id',
+      [topic, String(b.note || '').trim().slice(0, 1000) || null, !!b.auto_produce, model, PROVIDER === 'openai' ? reasoning : null, JSON.stringify(chars), style, musicMode]);
     await log(r.rows[0].id, 'รับหัวข้อแล้ว รอคิว');
     pump();
     return c.json({ id: r.rows[0].id }, 201);
@@ -1183,6 +1206,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const d = { ...row.draft };
     if (typeof b.title_th === 'string' && b.title_th.trim()) d.title_th = b.title_th.trim().slice(0, 90);
     if (typeof b.style === 'string' && STYLES[b.style]) d.style = b.style;   // only changes how the clip is drawn; the script stays checked
+    if (b.music_mode === 'default' || b.music_mode === 'ai') d.music_mode = b.music_mode;
     if (Array.isArray(b.script)) {
       const map = new Map(b.script.map((s: any) => [String(s.id), String(s.text || '').trim()]));
       d.script = d.script.map((s: any) => (map.has(s.id) && map.get(s.id) ? { ...s, text: map.get(s.id) } : s));
@@ -1218,10 +1242,13 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const b = await c.req.json().catch(() => ({}));
     const cf = configured();
     if (!cf.llm || !cf.firecrawl) return c.json({ error: 'ยังไม่ได้ตั้งค่า API key ใน Railway' }, 503);
-    const r = await pool.query('INSERT INTO drafts (topic, note, parent_id, auto_produce, model, reasoning, characters, source_type, community_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id',
+    // a rewrite keeps the owner's style and music choice (the review may have changed them on the draft itself)
+    const keepStyle = row.draft?.style && STYLES[row.draft.style] && row.style !== 'auto' ? row.draft.style : row.style || 'auto';
+    const keepMusic = row.draft?.music_mode || row.music_mode || 'default';
+    const r = await pool.query('INSERT INTO drafts (topic, note, parent_id, auto_produce, model, reasoning, characters, source_type, community_id, style, music_mode) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id',
       [row.topic, String(b.note ?? row.note ?? '').trim().slice(0, 1000) || null, row.draft ? row.id : null, row.source_type === 'community' ? false : !!b.auto_produce,
         typeof b.model === 'string' && MODEL_RE.test(b.model) ? b.model : row.model, REASONING_LEVELS.includes(b.reasoning) ? b.reasoning : row.reasoning,
-        JSON.stringify(row.characters ?? []), row.source_type || 'studio', row.community_id ?? null]);
+        JSON.stringify(row.characters ?? []), row.source_type || 'studio', row.community_id ?? null, keepStyle, keepMusic]);
     if (row.community_id) await pool.query('UPDATE community_winners SET draft_id=$2, updated_at=now() WHERE id=$1 AND draft_id=$3', [row.community_id, r.rows[0].id, id]);
     if (['ready', 'failed'].includes(row.status)) await pool.query("UPDATE drafts SET status='discarded', updated_at=now() WHERE id=$1", [id]);
     await log(r.rows[0].id, row.draft ? 'เขียนใหม่จากร่างเดิม รอคิว' : 'ลองใหม่ รอคิว');

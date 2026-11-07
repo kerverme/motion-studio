@@ -114,7 +114,7 @@ const Package = z.object({
     similarity_boost: z.number().min(0).max(1).default(0.75),
     speed: z.number().min(0.7).max(1.2).optional(),
   }),
-  music: z.object({ prompt: z.string().min(5), model_id: z.string().default('music_v1'), volume: z.number().min(0).max(1).default(0.3) }).nullable().optional(),
+  music: z.object({ source: z.enum(['generate', 'default']).default('generate'), prompt: z.string().min(5), model_id: z.string().default('music_v1'), volume: z.number().min(0).max(1).default(0.3) }).nullable().optional(),
   sfx: z.array(z.object({ id: z.string(), prompt: z.string().min(3), duration: z.number().min(0.5).max(30), cues: z.array(Cue).min(1) })).max(40).default([]),
   scene_code: z.string().min(50),
   storyboard: z.array(z.record(z.any())).default([]),
@@ -163,7 +163,7 @@ function researchFreshness(p: Pkg): string[] {
 function estimateCredits(p: Pkg) {
   const chars = p.script.reduce((n, s) => n + s.text.length + 1, 0);
   const speechSecs = chars / 12; // ~12 Thai chars per second of narration
-  const music = p.music ? Math.ceil((speechSecs + 3) * 15) : 0;
+  const music = p.music && p.music.source !== 'default' ? Math.ceil((speechSecs + 3) * 15) : 0;   // the default track is reused, not generated
   const sfx = p.sfx.reduce((n, s) => n + Math.ceil(s.duration * 3.4), 0);
   return Math.ceil(chars * 1.05) + music + sfx;
 }

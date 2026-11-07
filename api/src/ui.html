@@ -610,6 +610,36 @@ function stylePanel(){
 }
 
 
+/* ---------- music: the channel's default track or new AI music per clip ---------- */
+let MUSIC_DEF = null;
+const epTag = n => 'EP'+String(n).padStart(3,'0');
+function selectedMusic(){ try{ return localStorage.getItem('ms.music')==='ai' ? 'ai' : 'default'; }catch{ return 'default'; } }
+function musicPanel(){
+  const wrap = h('div',{class:'chars'});
+  function draw(){
+    const cur = selectedMusic(), md = MUSIC_DEF;
+    const defLabel = md && md.episode ? 'เพลงเริ่มต้นของช่อง ('+epTag(md.episode)+(md.title?' · '+md.title:'')+')' : 'เพลงเริ่มต้นของช่อง';
+    const opt = (id, label, about) => h('label',{class:'check'}, h('input',{type:'radio',name:'musicmode',checked:cur===id,on:{change:()=>{ try{ localStorage.setItem('ms.music',id); }catch{} draw(); }}}),
+      h('span',{}, h('b',{},label), h('span',{class:'sub',style:'display:block'},about)));
+    let picker = '';
+    if (md && md.candidates && md.candidates.length && cur==='default'){
+      const sel = h('select',{class:'field','aria-label':'เพลงเริ่มต้นของช่อง',style:'width:auto;padding:6px 8px'}, md.candidates.map(c=>h('option',{value:c.number}, epTag(c.number)+' · '+(c.title||''))));
+      if (md.episode) sel.value = md.episode;
+      sel.addEventListener('change', async()=>{ try{ await api('/app/api/studio/music-default',{method:'POST',body:JSON.stringify({episode:Number(sel.value)})}); MUSIC_DEF=await api('/app/api/studio/music-default'); toast('ตั้งเพลงเริ่มต้นเป็นเพลงจาก '+epTag(sel.value)+' แล้ว'); draw(); }catch(x){ toast(x.message); } });
+      picker = h('div',{class:'row',style:'justify-content:flex-start;gap:8px;margin-top:4px'}, h('span',{class:'sub'},'เปลี่ยนเพลงเริ่มต้นเป็นเพลงจากคลิป'), sel);
+    }
+    put(wrap, h('h3',{},'เพลงประกอบ'),
+      opt('default', defLabel, 'ใช้เพลงเดิมของช่องทุกคลิป ไม่เสียเครดิตทำเพลงใหม่ ถ้าคลิปยาวกว่าเพลงจะต่อเพลงแบบเฟดเนียน'),
+      opt('ai', 'AI แต่งเพลงใหม่ตามเรื่อง', 'ElevenLabs แต่งเพลงให้เข้ากับอารมณ์และสไตล์ของคลิปนี้ (ใช้เครดิตเพิ่ม)'),
+      md && md.episode && !md.available && cur==='default' ? h('div',{class:'note'},'ยังหาเพลงของ '+epTag(md.episode)+' ไม่เจอ ระบบจะให้ AI แต่งเพลงแทนจนกว่าจะเลือกคลิปอื่น') : '',
+      picker);
+  }
+  if (MUSIC_DEF===null) api('/app/api/studio/music-default').then(r=>{ MUSIC_DEF=r; draw(); }).catch(()=>{ MUSIC_DEF={}; draw(); });
+  draw();
+  return wrap;
+}
+
+
 /* ---------- community: winning viewer stories from the website ---------- */
 const CSTATE = {awaiting_claude:['wait','กำลังเขียนร่าง'], claude_draft_ready:['go','รออนุมัติ'], claude_failed:['bad','เขียนร่างไม่สำเร็จ'], draft_discarded:['','ทิ้งร่างแล้ว'],
   queued_for_production:['wait','อนุมัติแล้ว · กำลังผลิต'], production_failed:['bad','ผลิตไม่สำเร็จ'], produced:['ok','ผลิตเสร็จ'], published:['ok','โพสต์แล้ว'], rejected:['bad','ปฏิเสธแล้ว']};
@@ -666,7 +696,7 @@ function studio(st, drafts){
   const go = h('button',{class:'btn primary',disabled:!ready,on:{click:async()=>{
     err.textContent=''; const t=openerTopic(heroName.value.trim(), topic.value.trim()); if (t.length<4){ err.textContent='ใส่ชื่อตัวเอก หรือพิมพ์เรื่องที่จะเล่าอย่างน้อย 4 ตัวอักษร'; heroName.focus(); return; }
     go.disabled=true; go.textContent='กำลังส่ง…';
-    try{ const r=await api('/app/api/studio/drafts',{method:'POST',body:JSON.stringify({topic:t,note:note.value,auto_produce:auto.checked,model:modelSel.value,reasoning:effSel?effSel.value:undefined,characters:selectedChars(),style:selectedStyle()})});
+    try{ const r=await api('/app/api/studio/drafts',{method:'POST',body:JSON.stringify({topic:t,note:note.value,auto_produce:auto.checked,model:modelSel.value,reasoning:effSel?effSel.value:undefined,characters:selectedChars(),style:selectedStyle(),music_mode:selectedMusic()})});
       try{ sessionStorage.removeItem('ms.topic'); sessionStorage.removeItem('ms.hero'); }catch{} toast('เริ่มค้นข้อมูลแล้ว'); await load(); openDraft(r.id); }
     catch(x){ err.textContent=x.message; go.disabled=false; go.textContent='เริ่มค้นและเขียน'; } }}},'เริ่มค้นและเขียน');
   const composer = h('div',{class:'composer'},
@@ -677,6 +707,7 @@ function studio(st, drafts){
     h('div',{class:'ideas'}, h('span',{class:'sub'},'ลองหัวข้อ:'), IDEAS.map(i=>h('button',{on:{click:()=>{ topic.value=i; topic.focus(); }}},i))),
     h('details',{}, h('summary',{},'เพิ่มแนวทาง (ไม่บังคับ)'), h('div',{style:'margin-top:10px'},note)),
     stylePanel(),
+    musicPanel(),
     characterPanel(),
     h('div',{class:'row',style:'justify-content:flex-start;gap:8px'}, h('span',{class:'sub'},'สมอง'), modelSel, effSel),
     h('label',{class:'check'}, auto, h('span',{},'ผลิตต่อทันทีเมื่อร่างผ่านการตรวจกฎ (ไม่ต้องรอฉันตรวจ)')),
@@ -761,7 +792,11 @@ function openDraft(id){
       styleSel.value = dr.style||'classic';
       styleSel.addEventListener('change',()=>{ dirty=true; save.disabled=false; });
       if (STYLE_LIST===null) api('/app/api/studio/styles').then(r=>{ STYLE_LIST=r.styles||[]; const v=styleSel.value; styleSel.replaceChildren(...STYLE_LIST.map(o=>h('option',{value:o.id},o.label))); styleSel.value=v; }).catch(()=>{});
-      const collect = ()=>({title_th:title.value, style:styleSel.value, script:(dr.script||[]).map(s=>({id:s.id,text:segAreas[s.id].value})), captions:Object.fromEntries(Object.entries(caps).map(([k,t])=>[k,t.value]))});
+      const musicSel = h('select',{class:'field',disabled:!editable,'aria-label':'เพลงประกอบ',style:'width:auto;padding:6px 8px'},
+        h('option',{value:'default'},'เพลงเริ่มต้นของช่อง'), h('option',{value:'ai'},'AI แต่งเพลงใหม่ตามเรื่อง'));
+      musicSel.value = dr.music_mode==='ai' ? 'ai' : 'default';
+      musicSel.addEventListener('change',()=>{ dirty=true; save.disabled=false; });
+      const collect = ()=>({title_th:title.value, style:styleSel.value, music_mode:musicSel.value, script:(dr.script||[]).map(s=>({id:s.id,text:segAreas[s.id].value})), captions:Object.fromEntries(Object.entries(caps).map(([k,t])=>[k,t.value]))});
       const save = h('button',{class:'btn',disabled:true,on:{click:async()=>{ err.textContent=''; save.disabled=true;
         try{ const r=await api('/app/api/studio/drafts/'+id,{method:'PATCH',body:JSON.stringify(collect())}); dirty=false; toast('บันทึกแล้ว · ประมาณ '+fmtN(r.estimated_credits)+' เครดิต'); refresh(); }
         catch(x){ err.replaceChildren(x.message, x.body&&x.body.problems?h('ul',{class:'probl'},x.body.problems.map(p=>h('li',{},p))):''); save.disabled=false; } }}},'บันทึกการแก้ไข');
@@ -780,7 +815,7 @@ function openDraft(id){
         h('dl',{class:'facts'}, h('dt',{},'ความยาว'), h('dd',{},charInfo), h('dt',{},'ค่าเสียงโดยประมาณ'), h('dd',{}, fmtN(d.estimated_credits)+' เครดิต ElevenLabs'),
           h('dt',{},'รูปแบบเรื่อง'), h('dd',{}, (S.formats&&S.formats[dr.format])||dr.format||'—'),
           h('dt',{},'สไตล์ภาพ'), h('dd',{}, styleSel),
-          h('dt',{},'เพลง'), h('dd',{}, [dr.music||'playful', dr.music_brief&&dr.music_brief.tempo_bpm?' · ~'+dr.music_brief.tempo_bpm+' BPM':'', dr.music_brief&&dr.music_brief.instruments?' · '+dr.music_brief.instruments:''].join('')),
+          h('dt',{},'เพลง'), h('dd',{}, musicSel, h('div',{class:'sub',style:'margin-top:4px'}, (dr.music_mode==='ai'?'AI จะแต่ง: ':'ถ้าหาเพลงเริ่มต้นไม่เจอ AI จะแต่ง: ')+[dr.music||'playful', dr.music_brief&&dr.music_brief.tempo_bpm?' · ~'+dr.music_brief.tempo_bpm+' BPM':'', dr.music_brief&&dr.music_brief.instruments?' · '+dr.music_brief.instruments:''].join(''))),
           dr.cast&&dr.cast.length ? [h('dt',{},'ตัวละคร'), h('dd',{}, dr.cast.map(c=>c.name).join(', '))] : '', h('dt',{},'ข้อมูลอ้างอิง'), h('dd',{}, (dr.sources||[]).length+' แหล่ง (Firecrawl)')),
         d.status==='submitted' ? h('div',{class:'note'}, 'ส่งผลิตแล้ว: ', draftState(d)[1], d.job_error?h('div',{class:'err'},d.job_error):'', ' ', h('button',{class:'btn quiet',on:{click:()=>{ close(); go(d.job_status==='READY_TO_POST'?'ready':'working'); }}}, d.job_status==='READY_TO_POST'?'ดูคลิป':'ดูความคืบหน้า')) : '',
         dr.warnings&&dr.warnings.length ? h('details',{}, h('summary',{},'ข้อสังเกต '+dr.warnings.length+' ข้อ'), h('ul',{class:'warnl'}, dr.warnings.map(w=>h('li',{},w)))) : '',

@@ -67,9 +67,14 @@ def mix(vo_path, end_s, sfx_files, cues, music_path=None, music_volume=0.3, duck
     mus = np.zeros((N, 2), np.float32)
     if music_path:
         m = decode(music_path)
-        if len(m) < N:  # loop with a short crossfade if the track is short
-            reps = int(np.ceil(N / max(1, len(m)))) + 1
-            m = np.concatenate([m] * reps)
+        if len(m) < N:  # loop with a crossfade if the track is shorter than the clip (e.g. the reused default track)
+            xf = min(int(1.5 * SR), len(m) // 4)
+            out_m = m.copy()
+            while len(out_m) < N and xf > 0:
+                ramp = np.linspace(0, 1, xf, dtype=np.float32)[:, None]
+                tail = out_m[-xf:] * (1 - ramp) + m[:xf] * ramp
+                out_m = np.concatenate([out_m[:-xf], tail, m[xf:]])
+            m = out_m if xf > 0 else np.concatenate([m] * (int(np.ceil(N / max(1, len(m)))) + 1))
         m = m[:N] * music_volume
         env = envelope(vo, 0.08)
         speech = np.clip(env / 0.05, 0, 1) ** 0.7

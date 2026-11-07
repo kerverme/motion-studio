@@ -60,6 +60,25 @@ def cached_audio(ctx, kind, payload, est_credits, gen, ext='mp3'):
     return skey, meta, credits, False
 
 
+def default_music_key(ctx):
+    """The channel's default music (owner's choice, stored in integrations 'default_music': the track of a finished episode,
+    EP002 'คนชื่อตั้ม' unless changed in the studio). Reused as-is, so no music credits are spent. None if it cannot be found."""
+    try:
+        cfg = ctx.db.one("SELECT data FROM integrations WHERE provider='default_music'")
+        ep = int(((cfg or {}).get('data') or {}).get('episode') or 0)
+        row = ctx.db.one("""SELECT j.stage_results->'GENERATING_AUDIO'->>'music_key' AS k FROM jobs j JOIN episodes e ON e.id = j.episode_id
+                            WHERE e.number = %s AND j.stage_results->'GENERATING_AUDIO'->>'music_key' IS NOT NULL
+                            ORDER BY j.finished_at DESC NULLS LAST LIMIT 1""", (ep,)) if ep else None
+        key = row and row.get('k')
+        if key and ctx.store.exists(key):
+            ctx.db.event(ctx.job['id'], f'ใช้เพลงเริ่มต้นของช่อง (เพลงจาก EP{ep:03d})', {'music_key': key}, status='GENERATING_AUDIO')
+            return key
+        ctx.db.event(ctx.job['id'], f'หาเพลงเริ่มต้น (EP{ep:03d}) ไม่เจอ จึงให้ AI แต่งเพลงตามเรื่องแทน', None, 'warn', 'GENERATING_AUDIO')
+    except Exception as e:  # never fail a clip over the default track
+        ctx.db.event(ctx.job['id'], f'อ่านเพลงเริ่มต้นไม่ได้ ({e!r}) จึงให้ AI แต่งเพลงแทน', None, 'warn', 'GENERATING_AUDIO')
+    return None
+
+
 # ---------------------------------------------------------------- stages
 def stage_audio(ctx):
     p = ctx.pkg
@@ -119,7 +138,9 @@ def stage_audio(ctx):
                                            lambda fx=fx: eleven.sound_effect(fx['prompt'], fx['duration']))
         sfx[fx['id']] = skey
     music_key = None
-    if p.get('music'):
+    if p.get('music') and p['music'].get('source') == 'default':
+        music_key = default_music_key(ctx)
+    if p.get('music') and not music_key:
         length_ms = int((vo_dur + 2.5) * 1000)
         payload = {'prompt': p['music']['prompt'], 'length_ms': length_ms, 'model_id': p['music'].get('model_id', 'music_v1')}
         music_key, m, cr, reused = cached_audio(ctx, 'music', payload, (length_ms / 1000) * 15,
