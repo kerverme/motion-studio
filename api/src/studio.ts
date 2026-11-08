@@ -9,6 +9,7 @@ import { communityBlock } from './community.js';
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { openaiResponse, networkCode } from './openai-response.js';
 
 const env = process.env;
 const ANTHROPIC_URL = (env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/$/, '');
@@ -246,25 +247,9 @@ async function claude(body: any) {
   }
 }
 
-async function openai(body: any) {
+async function openai(body: any, onProgress?: (message: string) => Promise<void>) {
   if (!env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not set on motion-api');
-  for (let i = 0; ; i++) {
-    const r = await fetch(`${OPENAI_URL}/v1/responses`, {
-      method: 'POST',
-      headers: { authorization: `Bearer ${env.OPENAI_API_KEY}`, 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(600_000),
-    });
-    const j: any = await r.json().catch(() => ({}));
-    if ((r.status === 429 || r.status >= 500) && i < 4) {
-      const wait = Number(r.headers.get('retry-after') || 0) * 1000 || 5000 * (i + 1);
-      await new Promise((res) => setTimeout(res, Math.min(wait, 60_000)));
-      continue;
-    }
-    if (!r.ok) throw new Error(`OpenAI ${r.status}: ${String(j.error?.message || '').slice(0, 300)}`);
-    if (j.status === 'failed' || j.error) throw new Error(`OpenAI: ${String(j.error?.message || 'response failed').slice(0, 300)}`);
-    return j;
-  }
+  return openaiResponse(body, { apiKey: env.OPENAI_API_KEY, baseUrl: OPENAI_URL, onProgress });
 }
 
 type ToolUse = { id: string; name: string; input: any };
@@ -313,7 +298,7 @@ function anthropicConversation(system: string, first: string, model: string, act
 }
 
 // OpenAI Responses API (tool calling for current GPT models goes through it). Output items are fed back as input.
-function openaiConversation(system: string, first: string, model: string, effort: string, active: Active): Conversation {
+function openaiConversation(system: string, first: string, model: string, effort: string, active: Active, onProgress?: (message: string) => Promise<void>): Conversation {
   const input: any[] = [{ role: 'user', content: first }];
   const fnTools = (a: Active) => activeTools(a).map((t) => ({ type: 'function', name: t.name, description: t.description, parameters: t.input_schema }));
   return {
@@ -323,7 +308,7 @@ function openaiConversation(system: string, first: string, model: string, effort
       if (active.ws) tools.push({ type: 'web_search', search_context_size: WEB_SEARCH_CONTEXT, user_location: { type: 'approximate', country: 'TH', city: 'Bangkok', region: 'Bangkok', timezone: 'Asia/Bangkok' } });
       const resp = await openai({ model, instructions: system, input, tools, reasoning: { effort }, ...(active.ws ? { include: ['web_search_call.action.sources'] } : {}),
         max_output_tokens: effort === 'high' ? 48000 : effort === 'medium' ? 32000 : 20000,
-        tool_choice: force ? { type: 'function', name: 'submit_episode' } : 'auto' });
+        tool_choice: force ? { type: 'function', name: 'submit_episode' } : 'auto' }, onProgress);
       const out: any[] = resp.output || [];
       input.push(...out);
       const uses: ToolUse[] = out.filter((o) => o.type === 'function_call').map((o) => {
@@ -1058,7 +1043,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       : `\n\nEarlier episodes used the classic order hook > number > myth > quiz > reveal > close; choose a different format.`;
     const model = row.model && MODEL_RE.test(row.model) ? row.model : MODEL;
     const effort = REASONING_LEVELS.includes(row.reasoning) ? row.reasoning : REASONING;
-    const conv = PROVIDER === 'openai' ? openaiConversation(systemPrompt(active), userText, model, effort, active) : anthropicConversation(systemPrompt(active), userText, model, active);
+    const conv = PROVIDER === 'openai' ? openaiConversation(systemPrompt(active), userText, model, effort, active, (message) => log(id, message)) : anthropicConversation(systemPrompt(active), userText, model, active);
     let submits = 0;
     let artLooks = 0;
     let pendingImages: { text: string; images: string[] } | null = null;
@@ -1067,6 +1052,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       usage.turns = turn + 1;
       const totalIn = usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens;
       const mustSubmit = turn >= MAX_TURNS - 2 || totalIn > MAX_INPUT_TOKENS * 0.8;
+      await log(id, `รอบที่ ${turn + 1}: กำลังรอ ${model} ค้นข้อมูล/เขียนร่าง`);
       const { uses, usage: u, web } = await conv.turn(mustSubmit);
       if (web) {
         usage.web_searches += web.searches;
@@ -1168,7 +1154,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
             results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: `unknown tool ${u.name}` });
           }
         } catch (e) {
-          const msg = e instanceof Error ? e.message : String(e);
+          const msg = e instanceof Error ? `${e.message}${e.cause ? ` (${networkCode(e)})` : ''}` : String(e);
           if ((e as any)?.fcDown) {   // Firecrawl is out of credits: carry on with OpenAI web search alone
             active.fc = false;
             await log(id, active.ws ? 'Firecrawl ใช้ไม่ได้ (เครดิตหมด) ใช้ web search ของ OpenAI ต่อ' : 'Firecrawl ใช้ไม่ได้ (เครดิตหมด) และไม่มี web search สำรอง');
