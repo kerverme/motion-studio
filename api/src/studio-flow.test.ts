@@ -73,6 +73,7 @@ for (const repair of [false,true]) test(repair ? 'missing source repair delivers
     assert.ok(body.max_tool_calls <= 3);
     assert.equal(body.max_output_tokens, calls <= 2 ? 24000 : 16000);
     assert.equal(body.reasoning.effort, calls <= 2 ? 'high' : 'medium');
+    if (calls >= 3) { const submit = body.tools.find((t:any)=>t.name==='submit_episode'); for (const key of ['script','cast','scenes','art']) assert.equal(key in submit.parameters.properties,false); }
     let output: any[];
     if (calls === 1) output = [tool('submit_episode', submitted, 'too-early')];
     else if (calls === 2) {
@@ -82,7 +83,7 @@ for (const repair of [false,true]) test(repair ? 'missing source repair delivers
     else if (calls === 4) output = [tool('save_art', {art:submitted.art}, 'helpers')];
     else if (calls >= 5 && calls <= 10) output = [tool('draw_scene', {scene:submitted.scenes[calls-5]}, 'scene-'+calls)];
     else if (calls === 11) {
-      const {art,cast,scenes,...metadata}=submitted;
+      const {art,cast,scenes,script:lockedScript,...metadata}=submitted;
       assert.equal(checkpoints.at(-1).scenes.length,6);
       output = [tool('submit_episode',metadata,'draw-a'),tool('submit_episode',metadata,'draw-b')];
     } else if (calls === 12) {
@@ -90,7 +91,7 @@ for (const repair of [false,true]) test(repair ? 'missing source repair delivers
       const shown = body.input.filter((i: any) => i.role === 'user' && Array.isArray(i.content) && i.content[0]?.text.startsWith('Preview frames'));
       assert.equal(shown.length, 1);
       assert.equal(shown[0].content.filter((c: any) => c.type === 'input_image').length, script.length * 2);
-      const {art,cast,scenes,...metadata}=submitted;
+      const {art,cast,scenes,script:lockedScript,...metadata}=submitted;
       assert.equal(body.input.filter((i:any)=>i.type==='function_call_output').some((i:any)=>i.output.includes('was not retrieved')),false,'completed open_page is accepted research evidence');
       if(repair){
         const revised={...metadata,sources:[{...metadata.sources[0],url:'https://official.example/new-data'}]};
@@ -101,7 +102,7 @@ for (const repair of [false,true]) test(repair ? 'missing source repair delivers
       assert.equal(verificationCalls,1);
       assert.ok(body.input.some((i:any)=>i.type==='function_call_output'&&i.call_id==='source-a'&&i.output.includes('SOURCE CHECK')));
       assert.ok(body.input.some((i:any)=>i.type==='function_call_output'&&i.call_id==='source-b'&&i.output.includes('SOURCE REVIEW')));
-      const {art,cast,scenes,...metadata}=submitted;
+      const {art,cast,scenes,script:lockedScript,...metadata}=submitted;
       output=[tool('submit_episode',{...metadata,sources:[{...metadata.sources[0],url:'https://official.example/new-data'}],captions:{...metadata.captions,facebook:'ตรวจแล้วไม่มีสถิติทางการของชื่อเบล'}},'source-reviewed')];
     } else throw new Error('Unexpected model turn ' + calls);
     return new Response(JSON.stringify({ id: `resp_${calls}`, status: 'completed', output, usage: { input_tokens: 100, output_tokens: 100 } }), { status: 200 });

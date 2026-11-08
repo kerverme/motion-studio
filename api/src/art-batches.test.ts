@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { artworkComplete, emptyArtwork, mergeArtwork, updateArtwork } from './art-batches.js';
+import { artworkComplete, emptyArtwork, mergeArtwork, reconcileArtwork, updateArtwork } from './art-batches.js';
 import type { StoryboardT } from './storyboard.js';
 
 const plan: StoryboardT = {
@@ -83,4 +83,47 @@ test('empty shared-art replacement is deliberate and per-piece bounds limit resp
   for (const name of ['a', 'b', 'c', 'd']) four = updateArtwork(four, 'draw_character', { character: { ...character(), name } }, fivePeople);
   assert.throws(() => updateArtwork(four, 'draw_character', { character: { ...character(), name: 'e' } }, fivePeople));
   assert.equal(four.cast.length, 4);
+});
+
+function finishedArtwork() {
+  let state = updateArtwork(emptyArtwork(), 'draw_character', { character: character() }, plan);
+  state = updateArtwork(state, 'save_art', { art: 'def floor(c):\n    c.rect(0,1400,1080,520,"tan")' }, plan);
+  for (const shot of plan.shots) state = updateArtwork(state, 'draw_scene', { scene: scene(shot.seg) }, plan);
+  return state;
+}
+
+test('notes-only replanning preserves every saved drawing and helper without aliasing', () => {
+  const state = finishedArtwork();
+  const next = reconcileArtwork(plan, { ...plan, character_notes: 'More detailed facial reference notes' }, state);
+  assert.deepEqual(next, state);
+  next.cast[0].portrait_description = 'edited';
+  next.scenes[0].headline = { text: 'edited' };
+  assert.equal(state.cast[0].portrait_description, 'Long face and dark hair');
+  assert.deepEqual(state.scenes[0].headline, { text: 'เบลมาแล้ว' });
+});
+
+test('a revised shot or narration drops only the affected scene, retaining portraits and helpers', () => {
+  const state = finishedArtwork();
+  const visualPlan = { ...plan, shots: plan.shots.map(shot => shot.seg === 's2' ? { ...shot, camera: 'close up' } : shot) };
+  const visual = reconcileArtwork(plan, visualPlan, state);
+  assert.deepEqual(visual.scenes.map(shot => shot.seg), ['s1', 's3', 's4']);
+  assert.deepEqual(visual.cast, state.cast);
+  assert.equal(visual.art, state.art);
+  assert.equal(visual.art_saved, true);
+  const narrationPlan = { ...plan, script: plan.script.map(line => line.id === 's3' ? { ...line, text: 'บทเล่าที่เปลี่ยนใหม่' } : line) };
+  assert.deepEqual(reconcileArtwork(plan, narrationPlan, state).scenes.map(shot => shot.seg), ['s1', 's2', 's4']);
+  const beatPlan = { ...plan, script: plan.script.map(line => line.id === 's4' ? { ...line, beat: 'cta' as const } : line) };
+  assert.deepEqual(reconcileArtwork(plan, beatPlan, state).scenes.map(shot => shot.seg), ['s1', 's2', 's3']);
+});
+
+test('a changed cast removes obsolete portraits and dependent scenes, while a new plan retains reusable helpers', () => {
+  const state = finishedArtwork();
+  const renamed = { ...plan, shots: plan.shots.map(shot => ({ ...shot, characters: ['นิก'] })) };
+  const next = reconcileArtwork(plan, renamed, state);
+  assert.deepEqual(next.cast, []);
+  assert.deepEqual(next.scenes, []);
+  assert.equal(next.art, state.art);
+  const unknownPlan = reconcileArtwork(null, plan, state);
+  assert.deepEqual(unknownPlan.scenes, []);
+  assert.deepEqual(unknownPlan.cast, state.cast);
 });

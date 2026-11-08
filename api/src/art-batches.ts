@@ -88,6 +88,29 @@ export function artworkComplete(state: ArtworkState, plan: StoryboardT): boolean
   } catch { return false; }
 }
 
+/** Replanning invalidates only assets whose actual shot or narration changed. */
+export function reconcileArtwork(oldPlan: StoryboardT | null, newPlan: StoryboardT, state: ArtworkState): ArtworkState {
+  const previous = Artwork.parse(state);
+  const names = new Set(newPlan.shots.flatMap(shot => shot.characters));
+  const unchangedShot = (seg: string) => {
+    const oldShot = oldPlan?.shots.find(shot => shot.seg === seg);
+    const newShot = newPlan.shots.find(shot => shot.seg === seg);
+    const oldLine = oldPlan?.script.find(line => line.id === seg);
+    const newLine = newPlan.script.find(line => line.id === seg);
+    return !!oldShot && !!newShot && !!oldLine && !!newLine &&
+      oldShot.visual === newShot.visual && oldShot.action === newShot.action && oldShot.camera === newShot.camera &&
+      oldShot.characters.length === newShot.characters.length && oldShot.characters.every((name, i) => name === newShot.characters[i]) &&
+      oldLine.text === newLine.text && oldLine.beat === newLine.beat;
+  };
+  const next = {
+    ...previous,
+    cast: previous.cast.filter(character => names.has(character.name)),
+    scenes: previous.scenes.filter(scene => unchangedShot(scene.seg) && personCalls(scene.code).every(name => names.has(name))),
+  };
+  assertPlanReferences(next, newPlan);
+  return structuredClone(next);
+}
+
 /** Staged drawings always win; full episode submissions remain compatible for unsaved pieces. */
 export function mergeArtwork(metadata: Record<string, any>, state: ArtworkState): Record<string, any> {
   const checked = Artwork.parse(state);

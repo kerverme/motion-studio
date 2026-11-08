@@ -10,7 +10,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openaiResponse, networkCode } from './openai-response.js';
-import { Artwork, emptyArtwork, updateArtwork, mergeArtwork, artworkComplete, ARTWORK_TOOLS, type ArtworkState } from './art-batches.js';
+import { Artwork, emptyArtwork, reconcileArtwork, updateArtwork, mergeArtwork, artworkComplete, ARTWORK_TOOLS, type ArtworkState } from './art-batches.js';
 import { extractWebEvidence, verifySources, sourceKey } from './source-evidence.js';
 import { Storyboard, validateStoryboardDraft, personCalls, type StoryboardT } from './storyboard.js';
 
@@ -252,7 +252,12 @@ type Usage = { input_tokens: number; output_tokens: number; cache_read_input_tok
 type WebFound = { searches: number; queries: string[]; sources: { url: string; title: string }[] };
 // which research tools are usable right now (changes during a draft when Firecrawl runs out of credits or the web search budget is spent)
 type Active = { fc: boolean; ws: boolean; drawing?: boolean; searches?: number };
-const activeTools = (a: Active) => TOOLS.filter(t => ['submit_episode','plan_story',...ARTWORK_TOOLS.map(x=>x.name)].includes(t.name) || !a.drawing && (t.name === 'read_page' ? PROVIDER === 'openai' || a.fc : a.fc));
+const activeTools = (a: Active) => TOOLS.filter(t => ['submit_episode','plan_story',...ARTWORK_TOOLS.map(x=>x.name)].includes(t.name) || !a.drawing && (t.name === 'read_page' ? PROVIDER === 'openai' || a.fc : a.fc)).map(t => {
+  if (t.name !== 'submit_episode' || !a.drawing) return t;
+  const schema:any = t.input_schema;
+  const omit = new Set(['script','scenes','cast','art']);
+  return {...t,input_schema:{...schema,required:schema.required.filter((key:string)=>!omit.has(key)),properties:Object.fromEntries(Object.entries(schema.properties).filter(([key])=>!omit.has(key)))}};
+});
 interface Conversation {
   turn(force: boolean): Promise<{ uses: ToolUse[]; usage: Usage; web?: WebFound }>;
   results(rs: ToolResult[], note?: string): void;
@@ -471,7 +476,7 @@ one short "อ้างอิง:" line naming the main sources and years, 5–8
 1. Plan, then research (several queries, Thai + English, newest year first) and confirm the key figures on the actual pages.
 2. Write the complete narration and shot plan FIRST. Call plan_story with script, shots and character_notes. Each shot describes what is seen, action, camera and cast names.
 3. After plan_story succeeds, draw ONE small asset per turn. Call draw_character once per cast member, save_art once for shared helpers, then draw_scene once per shot. Never write the whole episode's artwork in one response. Work is checkpointed after each asset; reuse saved assets and only change the broken one.
-4. Call submit_episode with narration and metadata (sources,claims,captions,music etc), OMIT cast/scenes/art because saved artwork is assembled by the server. Keep narration equal to plan_story. If a correction needs different narration, call plan_story again and recheck the affected shots.
+4. Call submit_episode with narration and metadata (sources,claims,captions,music etc), OMIT script/cast/scenes/art because saved narration and artwork are assembled by the server. If a correction needs different narration, call plan_story again and recheck the affected shots.
 Do not continue broad web research after planning. When a source fails provenance, read_page opens the exact URL via the available provider; do not invent a replacement URL.
 5. Inspect the preview frames sent after submission and repair individual assets with draw_character/draw_scene/save_art. Resubmit metadata without reprinting all drawings. The worker renders all scenes; inspect its preview images against the original references and narration. Correct likeness, composition and action before resubmitting. Only inspected, successfully rendered art can become ready.
 Reply only through tools.`;
@@ -500,7 +505,7 @@ const TOOLS = [
     description: 'Submit the finished episode. Returns problems to fix, or ok.',
     input_schema: {
       type: 'object',
-      required: ['title_th', 'angle', 'script', 'scenes', 'sources', 'claims', 'captions', 'music'],
+      required: ['title_th', 'angle', 'sources', 'claims', 'captions', 'music'],
       properties: {
         title_th: { type: 'string', description: 'clip title, ≤ 60 chars' },
         format: { type: 'string', enum: Object.keys(FORMATS) },
@@ -1131,7 +1136,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
           } else if (u.name === 'plan_story') {
             const plan = Storyboard.safeParse(u.input);
             if (!plan.success) { results.push({type:'tool_result',tool_use_id:u.id,is_error:true,content:plan.error.message}); continue; }
-            if (JSON.stringify(storyboard) !== JSON.stringify(plan.data)) artwork = emptyArtwork();
+            artwork = reconcileArtwork(storyboard, plan.data, artwork);
             storyboard = plan.data;
             active.drawing = true;
             await persistArtwork();
@@ -1150,9 +1155,11 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
               results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: 'The arguments were not valid JSON. Submit again with valid JSON.' });
               continue;
             }
-            const parsed = Draft.safeParse({ ...mergeArtwork(u.input, artwork), storyboard });
+            const parsed = Draft.safeParse({ ...mergeArtwork({script:storyboard.script,...u.input}, artwork), storyboard });
             if (!parsed.success) {
               const issues = parsed.error.issues.slice(0, 15).map((i) => `${i.path.join('.')}: ${i.message}`);
+              await pool.query('UPDATE drafts SET problems=$2 WHERE id=$1', [id,JSON.stringify(issues)]);
+              await log(id, 'รูปแบบร่างต้องแก้: '+issues.slice(0,3).join(' · ').slice(0,300));
               results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: `Fix these and submit again:\n- ${issues.join('\n- ')}` });
               continue;
             }
@@ -1443,6 +1450,29 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     if (dr) { delete dr.research_seen; if (Array.isArray(dr.cast)) dr.cast = dr.cast.map((x: any) => { const { backdrop, ...rest } = x; return { ...rest, has_backdrop: !!backdrop }; }); }
     return c.json({ ...summary(r), log: r.log, draft: dr, problems: r.problems, usage: r.usage, model: r.model, reasoning: r.reasoning, job_error: r.job_error ?? null,
       research: r.research });
+  });
+
+  // Owner-only diagnostics for responses already associated with this draft. Never returns keys or reference images.
+  app.get('/app/api/studio/drafts/:id/diagnostics', g, async (c) => {
+    const id = c.req.param('id');
+    if (!isId(id)) return c.json({error:'not found'},404);
+    const row = (await pool.query('SELECT log,storyboard,artwork,problems FROM drafts WHERE id=$1',[id])).rows[0];
+    if (!row) return c.json({error:'not found'},404);
+    const responseId = String(c.req.query('response_id') || '');
+    const allowed = (row.log || []).flatMap((x:any)=>String(x.msg || '').match(/resp_[a-zA-Z0-9_-]+/g) || []);
+    const state = {storyboard:row.storyboard, artwork:row.artwork, problems:row.problems};
+    if (!responseId) return c.json({...state,response_ids:allowed});
+    if (!allowed.includes(responseId)) return c.json({error:'response does not belong to this draft'},404);
+    if (PROVIDER !== 'openai' || !env.OPENAI_API_KEY) return c.json({error:'provider unavailable'},503);
+    const response = await fetch(OPENAI_URL+'/v1/responses/'+responseId,{headers:{authorization:'Bearer '+env.OPENAI_API_KEY},signal:AbortSignal.timeout(60_000)});
+    if (!response.ok) return c.json({error:'provider response unavailable',status:response.status},502);
+    const data:any = await response.json();
+    const calls = (data.output || []).filter((x:any)=>x.type==='function_call').map((x:any)=>{
+      let input:any; try {input=JSON.parse(x.arguments || '{}');} catch {return {name:x.name,error:'invalid JSON'};}
+      const parsed = x.name === 'submit_episode' ? Draft.safeParse({...mergeArtwork({script:row.storyboard?.script,...input},row.artwork || emptyArtwork()),storyboard:row.storyboard}) : null;
+      return {name:x.name,fields:Object.keys(input),input,issues:parsed && !parsed.success ? parsed.error.issues : []};
+    });
+    return c.json({status:data.status,incomplete_details:data.incomplete_details,output_types:(data.output || []).map((x:any)=>x.type),calls,text:(data.output || []).filter((x:any)=>x.type==='message').flatMap((x:any)=>x.content || []).map((x:any)=>String(x.text || '')).join('\n').slice(0,6000)});
   });
 
   app.post('/app/api/studio/drafts', g, async (c) => {
