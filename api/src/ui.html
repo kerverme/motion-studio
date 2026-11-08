@@ -717,7 +717,7 @@ function community(cm){
 function studio(st, drafts){
   S.studioBusy = drafts.some(inProgress);
   const head = h('div',{class:'head'}, h('div',{}, h('h1',{},'สร้างคลิปใหม่'), h('p',{},'ใส่ชื่อตัวเอกและเรื่องที่จะเล่า ระบบจะค้นข้อมูลล่าสุดด้วย Firecrawl เขียนสคริปต์และวางฉากให้ตรวจก่อนผลิต')));
-  const ready = st.llm && st.firecrawl;
+  const ready = st.llm && (st.firecrawl || st.web_search);
   const heroName = h('input',{class:'field',maxlength:14,'aria-label':'ชื่อตัวเอก',placeholder:'เช่น แบงค์ (ว่างไว้ให้ AI เลือกชื่อ)',style:'max-width:260px'});
   try{ heroName.value = sessionStorage.getItem('ms.hero')||''; }catch{}
   heroName.addEventListener('input',()=>{ try{ sessionStorage.setItem('ms.hero',heroName.value); }catch{} });
@@ -742,7 +742,7 @@ function studio(st, drafts){
       try{ sessionStorage.removeItem('ms.topic'); sessionStorage.removeItem('ms.hero'); }catch{} toast('เริ่มค้นข้อมูลแล้ว'); await load(); openDraft(r.id); }
     catch(x){ err.textContent=x.message; go.disabled=false; go.textContent='เริ่มค้นและเขียน'; } }}},'เริ่มค้นและเขียน');
   const composer = h('div',{class:'composer'},
-    !ready ? h('div',{class:'note'},'ยังเขียนอัตโนมัติไม่ได้: ตั้งค่า ', [!st.llm&&('ANTHROPIC_API_KEY หรือ OPENAI_API_KEY'), !st.firecrawl&&'FIRECRAWL_API_KEY'].filter(Boolean).join(' และ '), ' ใน Railway → motion-api → Variables แล้วกด Deploy') : '',
+    !ready ? h('div',{class:'note'},'ยังเขียนอัตโนมัติไม่ได้: ตั้งค่า ', [!st.llm&&('ANTHROPIC_API_KEY หรือ OPENAI_API_KEY'), (!st.firecrawl&&!st.web_search)&&'FIRECRAWL_API_KEY'].filter(Boolean).join(' และ '), ' ใน Railway → motion-api → Variables แล้วกด Deploy') : '',
     h('div',{class:'sub'},'ทุกคลิปเริ่มด้วย “คนชื่อ … ในประเทศไทย มีกี่คน” (ตัวเลขล่าสุดจาก Firecrawl) แล้วค่อยเข้าเนื้อเรื่อง · ปกคลิปเป็น “คนนี้ชื่อ …” พร้อมตัวเอก'),
     h('label',{class:'sub'},'ชื่อตัวเอก ',heroName),
     topic,
@@ -780,7 +780,7 @@ function openDraft(id){
     }
     function logList(d){ return h('ol',{class:'logl'}, (d.log||[]).slice(-14).map(l=>h('li',{}, h('time',{},hhmm(l.at)), h('span',{},l.msg)))); }
     function usage(d){ const u=d.usage||{}; if(!u.turns) return ''; const tin=(u.input_tokens||0)+(u.cache_read_input_tokens||0)+(u.cache_creation_input_tokens||0);
-      return h('div',{class:'sub'}, d.model+(d.reasoning?' (reasoning '+d.reasoning+')':'')+' · '+u.turns+' รอบ · Firecrawl '+(u.firecrawl_calls||0)+' ครั้ง · โทเค็นเข้า '+fmtN(tin)+' (แคช '+fmtN(u.cache_read_input_tokens||0)+') ออก '+fmtN(u.output_tokens||0)); }
+      return h('div',{class:'sub'}, d.model+(d.reasoning?' (reasoning '+d.reasoning+')':'')+' · '+u.turns+' รอบ · Firecrawl '+(u.firecrawl_calls||0)+' ครั้ง'+(u.web_searches?' · web search '+u.web_searches+' ครั้ง':'')+' · โทเค็นเข้า '+fmtN(tin)+' (แคช '+fmtN(u.cache_read_input_tokens||0)+') ออก '+fmtN(u.output_tokens||0)); }
     function render(d){
       const dr = d.draft;
       const head = [h('p',{class:'sub',style:'margin:0'},'หัวข้อ: '+d.topic+(d.note?' · แนวทาง: '+d.note:''))];
@@ -827,7 +827,7 @@ function openDraft(id){
         h('div',{}, s.claim), h('a',{href:s.url,target:'_blank',rel:'noopener noreferrer'}, s.url),
         h('div',{class:'meta'}, 'ความน่าเชื่อถือ '+({high:'สูง',medium:'กลาง',low:'ต่ำ'}[s.confidence]||s.confidence)+(s.freshness_note?' · '+s.freshness_note:'')+(s.limitations?' · ข้อจำกัด: '+s.limitations:'')))));
       const claims = h('ul',{class:'summary',style:'margin:0;padding-left:18px;font-size:14px'}, (dr.claims||[]).map(c=>h('li',{}, c.text, ' ', h('span',{class:'sub'}, c.kind==='fact'?'ข้อเท็จจริง ['+c.source_ids.join(', ')+']':c.kind==='assumption'?'สมมติ':c.kind==='community'?'เรื่องจากผู้ชม':'ความเห็น'))));
-      const searches = (d.research||[]).map(r=>h('li',{}, r.kind==='search'?'ค้นหา “'+r.query+'”':'อ่าน '+(r.title||r.url)));
+      const searches = (d.research||[]).map(r=>h('li',{}, r.kind==='search'?'ค้นหา “'+r.query+'”':r.kind==='web'?'web search “'+((r.queries||[]).join(' · ')||'…')+'” ('+(r.results||[]).length+' แหล่ง)':'อ่าน '+(r.title||r.url)));
       const err = h('div',{class:'err',role:'alert'});
       const styleSel = h('select',{class:'field',disabled:!editable,'aria-label':'สไตล์ภาพ',style:'width:auto;padding:6px 8px'},
         (STYLE_LIST&&STYLE_LIST.length?STYLE_LIST:[{id:dr.style||'classic',label:dr.style||'classic'}]).map(o=>h('option',{value:o.id},o.label)));
@@ -881,7 +881,7 @@ function openDraft(id){
 const STAGE = {GENERATING_AUDIO:'สร้างเสียง', BUILDING_TIMELINE:'จัดไทม์ไลน์', RENDERING:'เรนเดอร์ภาพ', QUALITY_CHECK:'ตรวจคุณภาพ', UPLOADING_DRIVE:'อัปโหลด', NEW:'รอคิว', FAILED:'ล้มเหลว', CANCELLED:'ยกเลิก'};
 const CEIL = {NEW:.05, GENERATING_AUDIO:.25, BUILDING_TIMELINE:.30, RENDERING:.75, QUALITY_CHECK:.85, UPLOADING_DRIVE:.98};
 const WHO = {NEW:'รอ worker รับงาน', GENERATING_AUDIO:'ElevenLabs กำลังสร้างเสียงพากย์ (เสียงเท่านั้น ไม่ใช่ LLM)', BUILDING_TIMELINE:'โค้ดกำลังจัดจังหวะเสียงกับภาพ (ไม่ใช้ LLM)', RENDERING:'โค้ดกำลังวาดภาพทีละเฟรม ด้วย Pillow + FFmpeg (ไม่ใช้ LLM / ไม่ใช้ AI สร้างภาพ)', QUALITY_CHECK:'โค้ดกำลังตรวจคุณภาพภาพและเสียง (ไม่ใช้ LLM)', UPLOADING_DRIVE:'กำลังอัปโหลดขึ้น Cloudflare R2'};
-const DSTAT = {queued:'รอคิว', researching:'กำลังค้นข้อมูลด้วย Firecrawl', writing:'กำลังเขียนสคริปต์และฉาก'};
+const DSTAT = {queued:'รอคิว', researching:'กำลังค้นข้อมูล (Firecrawl + web search)', writing:'กำลังเขียนสคริปต์และฉาก'};
 const DFLOOR = {queued:.04, researching:.3, writing:.65};
 function whoWrote(m, r){
   if (!m) return 'ไม่ระบุ';

@@ -38,6 +38,10 @@ const MODEL_RE = /^[a-z0-9][a-z0-9.\-]{2,60}$/;
 const MAX_TURNS = Number(env.MOTION_LLM_MAX_TURNS || 18);
 const MAX_INPUT_TOKENS = Number(env.MOTION_LLM_MAX_INPUT_TOKENS || 1_200_000); // incl. cache reads, per draft
 const MAX_FIRECRAWL = Number(env.MOTION_FIRECRAWL_MAX_CALLS || 16);
+// OpenAI's hosted web search (Responses API tool) runs beside Firecrawl; when Firecrawl is out of credits (or not set) it carries the research alone.
+const WEB_SEARCH = PROVIDER === 'openai' && (env.MOTION_OPENAI_WEB_SEARCH || 'true') !== 'false';
+const MAX_WEB_SEARCH = Number(env.MOTION_WEB_SEARCH_MAX_CALLS || 10);
+const WEB_SEARCH_CONTEXT = ['low', 'medium', 'high'].includes(String(env.MOTION_WEB_SEARCH_CONTEXT)) ? String(env.MOTION_WEB_SEARCH_CONTEXT) : 'medium';
 const DAILY_LIMIT = Number(env.MOTION_MAX_DRAFTS_PER_DAY || 20);
 const VOICE_ID = env.MOTION_DEFAULT_VOICE_ID || 'bcdIY58WBBzAMmef52NW';
 const DRAFT_MAX_CREDITS = Number(env.MOTION_DRAFT_MAX_CREDITS || 4500);
@@ -46,7 +50,9 @@ const SERIES_TAG = env.MOTION_SERIES_TAG || 'จะเกิดอะไรข�
 
 const llmKey = () => (PROVIDER === 'openai' ? !!env.OPENAI_API_KEY : !!env.ANTHROPIC_API_KEY);
 export const configured = () => ({ llm: llmKey(), provider: PROVIDER, key_name: PROVIDER === 'openai' ? 'OPENAI_API_KEY' : 'ANTHROPIC_API_KEY',
-  anthropic: llmKey(), firecrawl: !!env.FIRECRAWL_API_KEY });
+  anthropic: llmKey(), firecrawl: !!env.FIRECRAWL_API_KEY, web_search: WEB_SEARCH && llmKey() });
+const researchReady = (cf: ReturnType<typeof configured>) => cf.llm && (cf.firecrawl || cf.web_search);
+const researchMissing = (cf: ReturnType<typeof configured>) => [!cf.llm && cf.key_name, !cf.firecrawl && !cf.web_search && 'FIRECRAWL_API_KEY'].filter(Boolean).join(' และ ');
 
 // ---------------------------------------------------------------- engine vocabulary (must match worker/engine)
 export const TEMPLATES = ['hook', 'number', 'compare', 'bars', 'list', 'quiz', 'reveal', 'dots', 'timeline', 'truth', 'scenario', 'icons', 'outro', 'chat', 'versus', 'scale'] as const;
@@ -171,7 +177,7 @@ const yearOf = (s?: string | null) => {
 };
 const host = (u: string) => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return u; } };
 
-type Seen = { url: string; title?: string; published_hint?: string | null; collected: string; via: 'search' | 'read' };
+type Seen = { url: string; title?: string; published_hint?: string | null; collected: string; via: 'search' | 'read' | 'web' };
 
 // ---------------------------------------------------------------- Firecrawl (research rule: every fact comes from here)
 async function firecrawl(path: string, body: unknown, timeoutMs = 90_000) {
@@ -188,7 +194,13 @@ async function firecrawl(path: string, body: unknown, timeoutMs = 90_000) {
       await new Promise((res) => setTimeout(res, 3000 * (i + 1)));
       continue;
     }
-    if (!r.ok || j.success === false) throw new Error(`Firecrawl ${r.status}: ${String(j.error || j.message || '').slice(0, 200)}`);
+    if (!r.ok || j.success === false) {
+      const msg = String(j.error || j.message || '');
+      const err: any = new Error(`Firecrawl ${r.status}: ${msg.slice(0, 200)}`);
+      // out of credits / plan limit / still rate-limited after retries: Firecrawl is not usable for the rest of this draft
+      if (r.status === 402 || r.status === 429 || /credit|insufficient|quota|payment|limit exceeded/i.test(msg)) err.fcDown = true;
+      throw err;
+    }
     return j;
   }
 }
@@ -258,14 +270,18 @@ async function openai(body: any) {
 type ToolUse = { id: string; name: string; input: any };
 type ToolResult = { id: string; content: string; is_error?: boolean };
 type Usage = { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number };
+type WebFound = { searches: number; queries: string[]; sources: { url: string; title: string }[] };
+// which research tools are usable right now (changes during a draft when Firecrawl runs out of credits or the web search budget is spent)
+type Active = { fc: boolean; ws: boolean };
+const activeTools = (a: Active) => TOOLS.filter((t) => t.name === 'submit_episode' || a.fc);
 interface Conversation {
-  turn(force: boolean): Promise<{ uses: ToolUse[]; usage: Usage }>;
+  turn(force: boolean): Promise<{ uses: ToolUse[]; usage: Usage; web?: WebFound }>;
   results(rs: ToolResult[], note?: string): void;
   say(text: string): void;
 }
 
 // Anthropic Messages API; the conversation is cached so each turn re-reads it at the cache price.
-function anthropicConversation(system: string, first: string, model: string): Conversation {
+function anthropicConversation(system: string, first: string, model: string, active: Active): Conversation {
   const messages: any[] = [{ role: 'user', content: first }];
   const sys = [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }];
   return {
@@ -274,7 +290,7 @@ function anthropicConversation(system: string, first: string, model: string): Co
       const last = msgs[msgs.length - 1];
       if (typeof last.content === 'string') last.content = [{ type: 'text', text: last.content }];
       last.content[last.content.length - 1].cache_control = { type: 'ephemeral' };
-      const resp = await claude({ model, max_tokens: 16000, system: sys, tools: TOOLS, messages: msgs,
+      const resp = await claude({ model, max_tokens: 16000, system: sys, tools: activeTools(active), messages: msgs,
         ...(force ? { tool_choice: { type: 'tool', name: 'submit_episode' } } : {}) });
       messages.push({ role: 'assistant', content: resp.content });
       const u = resp.usage || {};
@@ -293,13 +309,15 @@ function anthropicConversation(system: string, first: string, model: string): Co
 }
 
 // OpenAI Responses API (tool calling for current GPT models goes through it). Output items are fed back as input.
-function openaiConversation(system: string, first: string, model: string, effort: string): Conversation {
+function openaiConversation(system: string, first: string, model: string, effort: string, active: Active): Conversation {
   const input: any[] = [{ role: 'user', content: first }];
-  const tools = TOOLS.map((t) => ({ type: 'function', name: t.name, description: t.description, parameters: t.input_schema }));
+  const fnTools = (a: Active) => activeTools(a).map((t) => ({ type: 'function', name: t.name, description: t.description, parameters: t.input_schema }));
   return {
     async turn(force) {
       // reasoning tokens count against max_output_tokens, so leave room for high effort
-      const resp = await openai({ model, instructions: system, input, tools, reasoning: { effort },
+      const tools: any[] = fnTools(active);
+      if (active.ws) tools.push({ type: 'web_search', search_context_size: WEB_SEARCH_CONTEXT, user_location: { type: 'approximate', country: 'TH', city: 'Bangkok', region: 'Bangkok', timezone: 'Asia/Bangkok' } });
+      const resp = await openai({ model, instructions: system, input, tools, reasoning: { effort }, ...(active.ws ? { include: ['web_search_call.action.sources'] } : {}),
         max_output_tokens: effort === 'high' ? 48000 : effort === 'medium' ? 32000 : 20000,
         tool_choice: force ? { type: 'function', name: 'submit_episode' } : 'auto' });
       const out: any[] = resp.output || [];
@@ -314,7 +332,18 @@ function openaiConversation(system: string, first: string, model: string, effort
       }
       const u = resp.usage || {};
       const cached = Number(u.input_tokens_details?.cached_tokens || 0);
-      return { uses, usage: { input_tokens: Math.max(0, Number(u.input_tokens || 0) - cached), output_tokens: Number(u.output_tokens || 0), cache_read_input_tokens: cached, cache_creation_input_tokens: 0 } };
+      // what the hosted web search looked at: every source it consulted plus the inline citations of the answer
+      const web: WebFound = { searches: 0, queries: [], sources: [] };
+      for (const o of out) {
+        if (o.type === 'web_search_call') {
+          const a = o.action || {};
+          if (a.type === 'search') { web.searches++; web.queries.push(...[a.query, ...(Array.isArray(a.queries) ? a.queries : [])].filter((x: any) => typeof x === 'string' && x).slice(0, 3)); }
+          for (const src of Array.isArray(a.sources) ? a.sources : []) if (src?.url && /^https?:\/\//.test(src.url)) web.sources.push({ url: String(src.url), title: String(src.title || '') });
+        } else if (o.type === 'message') {
+          for (const c of o.content || []) for (const an of c.annotations || []) if (an?.type === 'url_citation' && an.url) web.sources.push({ url: String(an.url), title: String(an.title || '') });
+        }
+      }
+      return { uses, web: web.searches || web.sources.length ? web : undefined, usage: { input_tokens: Math.max(0, Number(u.input_tokens || 0) - cached), output_tokens: Number(u.output_tokens || 0), cache_read_input_tokens: cached, cache_creation_input_tokens: 0 } };
     },
     results(rs, note) {
       for (const r of rs) input.push({ type: 'function_call_output', call_id: r.id, output: (r.is_error ? 'ERROR: ' : '') + r.content });
@@ -324,7 +353,7 @@ function openaiConversation(system: string, first: string, model: string, effort
   };
 }
 
-function systemPrompt() {
+function systemPrompt(a: Active) {
   const d = nowBkk();
   const ce = d.getUTCFullYear(), be = ce + 543;
   return `You are the head writer and researcher of a Thai short-video channel. Series tag: "${SERIES_TAG}".
@@ -333,10 +362,10 @@ with 100% code-drawn motion graphics: a mint "jelly cat" mascot narrates, and an
 The visuals come only from the template engine described below (no images, no AI art, no stock footage).
 
 ## Research rule (the owner's standing instruction — non-negotiable)
-- Every fact, number and story condition must come from pages you retrieve in THIS session with web_search or read_page (Firecrawl).
+- Every fact, number and story condition must come from pages you retrieve in THIS session. ${a.fc && a.ws ? 'Use BOTH tools: firecrawl_search / read_page (Firecrawl, exact page text) and the built-in web_search (OpenAI, broad and fresh lookups, can open pages). Cross-check key numbers between them when you can.' : a.ws ? 'Firecrawl is not available now: research only with the built-in web_search tool (it can search and open pages; open the page to confirm exact figures and its publication date).' : 'Use firecrawl_search and read_page (Firecrawl).'}
 - Always look for the MOST RECENT data that exists. Put the year in queries (${ce} / ${be}, or ${ce - 1} / ${be - 1}) and search in Thai and English.
   Prefer primary/official sources (สำนักงานสถิติแห่งชาติ, ministries, Bank of Thailand, WHO, World Bank, UN, OECD, DataReportal, peer-reviewed papers,
-  reputable news citing them). Use read_page on the key pages to confirm exact figures before you use them.
+  reputable news citing them). Confirm exact figures on the key pages before you use them.
 - Record when each source was published. If the newest available figure is older than ${MAX_YEARS} years (e.g. a census done every 10 years),
   you must say so in that source's freshness_note (why nothing newer exists), and say the year on screen or in narration.
 - Never invent numbers. If something cannot be found, build the story from what you did find, or present it explicitly as an assumption
@@ -452,14 +481,14 @@ captions: facebook, instagram, tiktok, youtube (title-style, ≤ 90 chars), twit
 one short "อ้างอิง:" line naming the main sources and years, 5–8 hashtags including #จะเกิดอะไรขึ้นถ้า #รู้หรือไม่ (instagram/tiktok may have more).
 
 ## Process
-1. Plan, then research with web_search (several queries, Thai + English, newest year first) and read_page on the most important pages.
+1. Plan, then research (several queries, Thai + English, newest year first) and confirm the key figures on the actual pages.
 2. Write everything, then call submit_episode once with the complete episode. If it returns problems, fix them and call submit_episode again.
 Reply only through tools.`;
 }
 
 const TOOLS = [
   {
-    name: 'web_search',
+    name: 'firecrawl_search',
     description: 'Search the web with Firecrawl. Returns up to 5 results with title, URL, publication hint and the start of each page as markdown. Put the year in the query to get the newest data.',
     input_schema: { type: 'object', properties: { query: { type: 'string' }, recent_only: { type: 'boolean', description: 'only pages from the past 12 months' } }, required: ['query'] },
   },
@@ -695,7 +724,7 @@ export function checkDraft(d: DraftT, seen: Map<string, Seen> | null, recent: Re
   if (!MUSIC[d.music]) warnings.push(`unknown music mood "${d.music}" (playful is used)`);
   const thisYear = nowBkk().getUTCFullYear();
   d.sources.forEach((s, i) => {
-    if (seen && !seen.has(normUrl(s.url))) problems.push(`source ${i} (${s.url}) was not retrieved with web_search/read_page in this session — research rule: only use pages you fetched`);
+    if (seen && !seen.has(normUrl(s.url))) problems.push(`source ${i} (${s.url}) was not retrieved with a search or page read in this session — research rule: only use pages you fetched`);
     const y = yearOf(s.published);
     if (!y) problems.push(`source ${i}: "published" needs the date or year of the data`);
     else if (thisYear - y > MAX_YEARS && !(s.freshness_note && s.freshness_note.trim().length >= 10)) {
@@ -749,7 +778,7 @@ export function buildPackage(topic: string, d: DraftT, research: Seen[]) {
     sources: d.sources.map((s) => {
       const r = byUrl.get(normUrl(s.url));
       return { url: s.url, publisher: s.publisher, title: s.title || r?.title, published: s.published, collected: r?.collected || todayIso(), methodology: s.methodology,
-        confidence: s.confidence, limitations: s.limitations, claim: s.claim, retrieved_via: 'firecrawl', ...(s.freshness_note ? { freshness_note: s.freshness_note } : {}) };
+        confidence: s.confidence, limitations: s.limitations, claim: s.claim, retrieved_via: r?.via === 'web' ? 'openai_web_search' : 'firecrawl', ...(s.freshness_note ? { freshness_note: s.freshness_note } : {}) };
     }),
     claims: d.claims,
     captions: d.captions,
@@ -916,12 +945,15 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
         if (r.url && r.collected && Date.now() - new Date(r.collected).getTime() < 25 * 86400_000) seen.set(normUrl(r.url), r);
       }
     }
-    const usage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, firecrawl_calls: 0, turns: 0 };
+    const usage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, firecrawl_calls: 0, web_searches: 0, turns: 0 };
+    const cfg0 = configured();
+    const active: Active = { fc: cfg0.firecrawl, ws: cfg0.web_search };
+    if (!active.fc && !active.ws) { await pool.query("UPDATE drafts SET status='failed', error=$2, updated_at=now() WHERE id=$1", [id, 'ยังไม่ได้ตั้งค่า FIRECRAWL_API_KEY และไม่ได้เปิด web search ของ OpenAI']); return; }
     const saveUsage = () => pool.query('UPDATE drafts SET usage=$2, research=$3, updated_at=now() WHERE id=$1', [id, JSON.stringify(usage), JSON.stringify(research)]);
     const useModel = row.model && MODEL_RE.test(row.model) ? row.model : MODEL;
     const useEffort = PROVIDER === 'openai' ? (REASONING_LEVELS.includes(row.reasoning) ? row.reasoning : REASONING) : null;
     await pool.query("UPDATE drafts SET status='researching', model=$2, reasoning=$3, updated_at=now() WHERE id=$1", [id, useModel, useEffort]);
-    await log(id, `เริ่มค้นข้อมูลด้วย Firecrawl (${useModel}${useEffort ? ' · reasoning ' + useEffort : ''})`);
+    await log(id, `เริ่มค้นข้อมูลด้วย ${[active.fc && 'Firecrawl', active.ws && 'OpenAI web search'].filter(Boolean).join(' + ')} (${useModel}${useEffort ? ' · reasoning ' + useEffort : ''})`);
 
     let userText = `Topic from the owner: ${row.topic}`;
     if (row.note) userText += `\nOwner's direction: ${row.note}`;
@@ -953,14 +985,22 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       : `\n\nEarlier episodes used the classic order hook > number > myth > quiz > reveal > close; choose a different format.`;
     const model = row.model && MODEL_RE.test(row.model) ? row.model : MODEL;
     const effort = REASONING_LEVELS.includes(row.reasoning) ? row.reasoning : REASONING;
-    const conv = PROVIDER === 'openai' ? openaiConversation(systemPrompt(), userText, model, effort) : anthropicConversation(systemPrompt(), userText, model);
+    const conv = PROVIDER === 'openai' ? openaiConversation(systemPrompt(active), userText, model, effort, active) : anthropicConversation(systemPrompt(active), userText, model, active);
     let submits = 0;
 
     for (let turn = 0; turn < MAX_TURNS; turn++) {
       usage.turns = turn + 1;
       const totalIn = usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens;
       const mustSubmit = turn >= MAX_TURNS - 2 || totalIn > MAX_INPUT_TOKENS * 0.8;
-      const { uses, usage: u } = await conv.turn(mustSubmit);
+      const { uses, usage: u, web } = await conv.turn(mustSubmit);
+      if (web) {
+        usage.web_searches += web.searches;
+        const fresh = web.sources.filter((x, i, arr) => arr.findIndex((y) => normUrl(y.url) === normUrl(x.url)) === i);
+        for (const x of fresh) if (!seen.has(normUrl(x.url))) seen.set(normUrl(x.url), { url: x.url, title: x.title, published_hint: null, collected: todayIso(), via: 'web' });
+        if (web.queries.length) await log(id, `web search: ${web.queries.slice(0, 2).join(' | ').slice(0, 150)}`);
+        research.push({ kind: 'web', queries: web.queries, at: new Date().toISOString(), results: fresh.slice(0, 25).map((x) => ({ url: x.url, title: x.title, published: null })) });
+        if (usage.web_searches >= MAX_WEB_SEARCH && active.ws) { active.ws = false; await log(id, 'ครบโควตา web search ของร่างนี้แล้ว'); }
+      }
       for (const k of ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'] as const) usage[k] += u[k];
       if (!uses.length) {
         conv.say('Continue: research with the tools if needed, then call submit_episode.');
@@ -969,13 +1009,17 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       const results: any[] = [];
       for (const u of uses) {
         try {
-          if (u.name === 'web_search' || u.name === 'read_page') {
+          if (u.name === 'firecrawl_search' || u.name === 'read_page') {
+            if (!active.fc) {
+              results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: active.ws ? 'Firecrawl is not available (out of credits). Use the built-in web_search tool instead.' : 'Firecrawl is not available. Write with what you have and call submit_episode.' });
+              continue;
+            }
             if (usage.firecrawl_calls >= MAX_FIRECRAWL) {
               results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: 'Research budget for this clip is used up. Write the episode with what you have and call submit_episode.' });
               continue;
             }
             usage.firecrawl_calls++;
-            if (u.name === 'web_search') {
+            if (u.name === 'firecrawl_search') {
               const q = String(u.input?.query || '').slice(0, 300);
               await log(id, `ค้นหา: ${q}`);
               const res = await fcSearch(q, !!u.input?.recent_only);
@@ -1037,13 +1081,20 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
           }
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
+          if ((e as any)?.fcDown) {   // Firecrawl is out of credits: carry on with OpenAI web search alone
+            active.fc = false;
+            await log(id, active.ws ? 'Firecrawl ใช้ไม่ได้ (เครดิตหมด) ใช้ web search ของ OpenAI ต่อ' : 'Firecrawl ใช้ไม่ได้ (เครดิตหมด) และไม่มี web search สำรอง');
+            if (!active.ws && !seen.size) throw new Error('FIRECRAWL_API_KEY: เครดิต Firecrawl หมดและไม่มี web search สำรอง');
+            results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: active.ws ? 'Firecrawl is out of credits. From now on use ONLY the built-in web_search tool (search and open pages).' : 'Firecrawl is out of credits. Write with the sources you already have and call submit_episode.' });
+            continue;
+          }
           if (/ANTHROPIC_API_KEY|OPENAI_API_KEY|FIRECRAWL_API_KEY/.test(msg)) throw e;
           await log(id, `เครื่องมือขัดข้อง: ${msg.slice(0, 120)}`);
           results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: `Tool failed: ${msg.slice(0, 300)}` });
         }
       }
       conv.results(results.map((r: any) => ({ id: r.tool_use_id, content: r.content, is_error: r.is_error })),
-        !mustSubmit && usage.firecrawl_calls >= MAX_FIRECRAWL ? 'Research budget reached: write and submit now.' : undefined);
+        !mustSubmit && !active.ws && (usage.firecrawl_calls >= MAX_FIRECRAWL || !active.fc) ? 'Research budget reached: write and submit now.' : undefined);
       await saveUsage();
     }
     await pool.query("UPDATE drafts SET status='failed', error=$2, usage=$3, research=$4, updated_at=now() WHERE id=$1",
@@ -1247,7 +1298,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const topic = String(b.topic || '').trim().slice(0, 400);
     if (topic.length < 4) return c.json({ error: 'พิมพ์หัวข้ออย่างน้อย 4 ตัวอักษร' }, 422);
     const cf = configured();
-    if (!cf.llm || !cf.firecrawl) return c.json({ error: `ยังไม่ได้ตั้งค่า ${[!cf.llm && cf.key_name, !cf.firecrawl && 'FIRECRAWL_API_KEY'].filter(Boolean).join(' และ ')} ใน Railway (motion-api)` }, 503);
+    if (!researchReady(cf)) return c.json({ error: `ยังไม่ได้ตั้งค่า ${researchMissing(cf)} ใน Railway (motion-api)` }, 503);
     const n = (await pool.query("SELECT count(*)::int AS n FROM drafts WHERE created_at > now() - interval '1 day'")).rows[0].n;
     if (n >= DAILY_LIMIT) return c.json({ error: `ครบโควตา ${DAILY_LIMIT} ร่างต่อวันแล้ว` }, 429);
     const model = typeof b.model === 'string' && MODEL_RE.test(b.model) ? b.model : MODEL;
@@ -1309,7 +1360,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     if (!row) return c.json({ error: 'not found' }, 404);
     const b = await c.req.json().catch(() => ({}));
     const cf = configured();
-    if (!cf.llm || !cf.firecrawl) return c.json({ error: 'ยังไม่ได้ตั้งค่า API key ใน Railway' }, 503);
+    if (!researchReady(cf)) return c.json({ error: 'ยังไม่ได้ตั้งค่า API key ใน Railway' }, 503);
     // a rewrite keeps the owner's style and music choice (the review may have changed them on the draft itself)
     const keepStyle = row.draft?.style && STYLES[row.draft.style] && row.style !== 'auto' ? row.draft.style : row.style || 'auto';
     const keepMusic = row.draft?.music_mode || row.music_mode || 'default';

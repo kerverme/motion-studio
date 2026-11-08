@@ -122,7 +122,7 @@ const Package = z.object({
     url: z.string().url(), publisher: z.string().optional(), title: z.string().optional(), published: z.string().optional(),
     collected: z.string().optional(), methodology: z.string().optional(), confidence: z.enum(['high', 'medium', 'low']).optional(),
     limitations: z.string().optional(), claim: z.string().optional(),
-    retrieved_via: z.string().optional(),   // 'firecrawl' (search or scrape)
+    retrieved_via: z.string().optional(),   // 'firecrawl' (search or scrape) or 'openai_web_search' (OpenAI's hosted web search, used when Firecrawl is out of credits)
     freshness_note: z.string().optional(),  // why an older figure is still the latest available (e.g. a 10-yearly census)
   })).default([]),
   claims: z.array(z.object({ text: z.string(), source_ids: z.array(z.number().int().min(0)).default([]), kind: z.enum(['fact', 'assumption', 'opinion', 'community']).default('fact') })).default([]),
@@ -146,7 +146,7 @@ function researchFreshness(p: Pkg): string[] {
   if (!p.sources.length) out.push('no sources listed');
   p.sources.forEach((s, i) => {
     const tag = `source ${i} (${s.url})`;
-    if ((s.retrieved_via || '').toLowerCase() !== 'firecrawl') out.push(`${tag}: retrieved_via must be "firecrawl"`);
+    if (!['firecrawl', 'openai_web_search'].includes((s.retrieved_via || '').toLowerCase())) out.push(`${tag}: retrieved_via must be "firecrawl" or "openai_web_search"`);
     const col = s.collected ? new Date(s.collected) : null;
     if (!col || isNaN(col.getTime())) out.push(`${tag}: collected date missing or not a date`);
     else if (Date.now() - col.getTime() > maxAge * 86400_000) out.push(`${tag}: collected more than ${maxAge} days ago, search again`);
