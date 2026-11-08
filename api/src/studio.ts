@@ -20,6 +20,7 @@ const MODEL = env.MOTION_LLM_MODEL || (PROVIDER === 'openai' ? 'gpt-6.1-sol' : '
 // Models offered in the UI (the env default is always included). Reasoning effort applies to OpenAI reasoning models.
 const MODEL_CHOICES: Record<string, { id: string; label: string }[]> = {
   openai: [
+    { id: 'gpt-6-astra', label: 'GPT-6 Astra — รุ่นใหม่ล่าสุด แรงสุด (แพงกว่า)' },
     { id: 'gpt-6.1-sol', label: 'GPT-6.1 Sol — งานซับซ้อน เครื่องมือเยอะ' },
     { id: 'gpt-6.1-terra', label: 'GPT-6.1 Terra — เร็ว เขียนเป็นธรรมชาติ' },
     { id: 'gpt-6-sol', label: 'GPT-6 Sol' },
