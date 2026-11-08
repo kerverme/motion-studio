@@ -16,7 +16,7 @@ def check(payload):
     from engine import render, templates, artkit
     script = [{'id': s['id'], 'text': s['text']} for s in payload['script']]
     scenes = [s for s in payload.get('scenes', []) if s.get('type') == 'custom']
-    spec = {'scenes': scenes, 'text': {s['id']: s['text'] for s in script}, 'cast': payload.get('cast') or [], 'art': payload.get('art') or ''}
+    spec = {'strict_art': payload.get('strict_art', False), 'scenes': scenes, 'text': {s['id']: s['text'] for s in script}, 'cast': payload.get('cast') or [], 'art': payload.get('art') or ''}
     out = {'scenes': []}
     tl = fake_timeline(script)
     segs = {s['id']: s for s in tl}

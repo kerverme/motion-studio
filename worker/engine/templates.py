@@ -1078,7 +1078,7 @@ def build_scenes(spec):
         cast = {str(c.get('name')): c for c in cast if isinstance(c, dict) and c.get('name')}
     CAST.clear()
     CAST.update({k: v for k, v in cast.items() if isinstance(v, dict)})
-    strict_art = any(bool(member.get('portrait_code')) for member in CAST.values())
+    strict_art = bool(spec.get('strict_art')) or any(bool(member.get('portrait_code')) for member in CAST.values())
     BACKDROP.clear()
     for k, v in CAST.items():
         if v.get('backdrop'):

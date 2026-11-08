@@ -5,6 +5,7 @@ const Name = z.string().trim().min(1).max(20);
 
 /** The story is agreed before artwork is generated. Legacy drafts have no plan. */
 export const Storyboard = z.object({
+  story_mode: z.enum(['name_story','general']).optional(),
   script: z.array(z.object({
     id: Id, text: z.string().min(3).max(500),
     beat: z.enum(['hook', 'rehook', 'info', 'payoff', 'cta']),
@@ -14,7 +15,7 @@ export const Storyboard = z.object({
     visual: z.string().trim().min(10).max(1200),
     action: z.string().trim().min(3).max(600),
     camera: z.string().trim().min(3).max(300),
-    characters: z.array(Name).min(1).max(4),
+    characters: z.array(Name).max(4),
   }).strict()).min(4).max(14),
   character_notes: z.string().trim().min(10).max(3000),
 }).strict().superRefine((plan, ctx) => {
@@ -26,6 +27,7 @@ export const Storyboard = z.object({
     ctx.addIssue({ code: 'custom', path: ['shots'], message: 'one shot per narration segment, in narration order' });
   }
   plan.shots.forEach((shot, i) => {
+    if (plan.story_mode !== 'general' && !shot.characters.length) ctx.addIssue({code:'custom',path:['shots',i,'characters'],message:'name stories require a character in every shot'});
     if (new Set(shot.characters).size !== shot.characters.length) {
       ctx.addIssue({ code: 'custom', path: ['shots', i, 'characters'], message: 'character names must be unique within a shot' });
     }

@@ -714,8 +714,17 @@ function community(cm){
 
 function studio(st, drafts){
   S.studioBusy = drafts.some(inProgress);
-  const head = h('div',{class:'head'}, h('div',{}, h('h1',{},'สร้างคลิปใหม่'), h('p',{},'ใส่ชื่อตัวเอกและเรื่องที่จะเล่า ระบบจะค้นข้อมูลล่าสุดด้วย Firecrawl เขียนสคริปต์และวางฉากให้ตรวจก่อนผลิต')));
+  const head = h('div',{class:'head'}, h('div',{}, h('h1',{},'สร้างคลิปใหม่'), h('p',{},'เลือกโหมด ใส่เรื่องหรือแหล่งข้อมูล แล้วให้ AI ตรวจข้อมูล เขียนบท และวาดฉากตามเนื้อหาก่อนผลิต')));
   const ready = st.llm && (st.firecrawl || st.web_search);
+  const modeSel=h('select',{class:'field','aria-label':'โหมดการเล่าเรื่อง'}, h('option',{value:'general'},'เล่าเรื่องทั่วไป'), h('option',{value:'name_story'},'ซีรีส์คนชื่อ…'));
+  try{modeSel.value=sessionStorage.getItem('ms.story_mode')||'general';}catch{}
+  const sourceText=h('textarea',{class:'field',rows:5,maxlength:20000,'aria-label':'เนื้อหาหรือลิงก์อ้างอิง',placeholder:'วางข้อความ บทความ หรือลิงก์ต้นทาง (ไม่บังคับ) · AI จะตรวจข้อมูลก่อนนำไปใช้'});
+  try{sourceText.value=sessionStorage.getItem('ms.source_text')||'';}catch{}
+  sourceText.addEventListener('input',()=>{try{sessionStorage.setItem('ms.source_text',sourceText.value);}catch{}});
+  const sourcePanel=h('label',{class:'sub'},'เนื้อหาหรือลิงก์อ้างอิง (ไม่บังคับ)',sourceText);
+  const useChars=h('input',{type:'checkbox','aria-label':'ใช้ตัวละครจากรูปในเรื่องทั่วไป'});
+  const charChoice=h('label',{class:'check'},useChars,h('span',{},'ใช้ตัวละครจากรูป (ไม่บังคับ)'));
+  const charsPanel=characterPanel();
   const heroName = h('input',{class:'field',maxlength:14,'aria-label':'ชื่อตัวเอก',placeholder:'เช่น แบงค์ (ว่างไว้ให้ AI เลือกชื่อ)',style:'max-width:260px'});
   try{ heroName.value = sessionStorage.getItem('ms.hero')||''; }catch{}
   heroName.addEventListener('input',()=>{ try{ sessionStorage.setItem('ms.hero',heroName.value); }catch{} });
@@ -734,21 +743,23 @@ function studio(st, drafts){
   modelSel.addEventListener('change',remember); if (effSel) effSel.addEventListener('change',remember);
   const err = h('div',{class:'err',role:'alert'});
   const go = h('button',{class:'btn primary',disabled:!ready,on:{click:async()=>{
-    err.textContent=''; const t=openerTopic(heroName.value.trim(), topic.value.trim()); if (t.length<4){ err.textContent='ใส่ชื่อตัวเอก หรือพิมพ์เรื่องที่จะเล่าอย่างน้อย 4 ตัวอักษร'; heroName.focus(); return; }
+    err.textContent=''; const general=modeSel.value==='general'; const t=general?(topic.value.trim()||sourceText.value.trim().slice(0,120)):openerTopic(heroName.value.trim(), topic.value.trim()); if (t.length<4){ err.textContent=general?'พิมพ์หัวข้อหรือเนื้อหาอย่างน้อย 4 ตัวอักษร':'ใส่ชื่อตัวเอก หรือพิมพ์เรื่องที่จะเล่าอย่างน้อย 4 ตัวอักษร'; topic.focus(); return; }
     go.disabled=true; go.textContent='กำลังส่ง…';
-    try{ const r=await api('/app/api/studio/drafts',{method:'POST',body:JSON.stringify({topic:t,note:note.value,auto_produce:auto.checked,model:modelSel.value,reasoning:effSel?effSel.value:undefined,characters:selectedChars(),style:selectedStyle(),music_mode:selectedMusic()})});
-      try{ sessionStorage.removeItem('ms.topic'); sessionStorage.removeItem('ms.hero'); }catch{} toast('เริ่มค้นข้อมูลแล้ว'); await load(); openDraft(r.id); }
+    try{ const r=await api('/app/api/studio/drafts',{method:'POST',body:JSON.stringify({topic:t,story_mode:modeSel.value,source_text:general?sourceText.value:'',note:note.value,auto_produce:auto.checked,model:modelSel.value,reasoning:effSel?effSel.value:undefined,characters:general&&!useChars.checked?[]:selectedChars(),style:selectedStyle(),music_mode:selectedMusic()})});
+      try{ sessionStorage.removeItem('ms.topic'); sessionStorage.removeItem('ms.hero'); sessionStorage.removeItem('ms.source_text'); }catch{} toast('เริ่มค้นข้อมูลแล้ว'); await load(); openDraft(r.id); }
     catch(x){ err.textContent=x.message; go.disabled=false; go.textContent='เริ่มค้นและเขียน'; } }}},'เริ่มค้นและเขียน');
+  const heroGroup=h('label',{class:'sub'},'ชื่อตัวเอก ',heroName);
+  const modeHint=h('div',{class:'sub'});
+  const changeMode=()=>{const general=modeSel.value==='general';heroGroup.hidden=general;sourcePanel.hidden=!general;charChoice.hidden=!general;charsPanel.hidden=general&&!useChars.checked;topic.setAttribute('aria-label',general?'หัวข้อเรื่อง':'เรื่องที่จะเล่าต่อ');topic.placeholder=general?'หัวข้อหรือสิ่งที่อยากเล่า เช่น มอร์นิ่งรูทีนช่วยให้ตื่นสดชื่นอย่างไร':'เรื่องที่จะเล่าต่อจากคำถามชื่อ';modeHint.textContent=general?'เปิดเรื่องตามหัวข้อ วาดฉาก สิ่งของ หรือภาพอธิบายตามบท ไม่บังคับชื่อและตัวละคร':'เปิดด้วย “คนชื่อ … ในประเทศไทย มีกี่คน” และใช้ตัวเอกบนปก';try{sessionStorage.setItem('ms.story_mode',modeSel.value);}catch{}};
+  modeSel.addEventListener('change',changeMode);useChars.addEventListener('change',changeMode);changeMode();
   const composer = h('div',{class:'composer'},
     !ready ? h('div',{class:'note'},'ยังเขียนอัตโนมัติไม่ได้: ตั้งค่า ', [!st.llm&&('ANTHROPIC_API_KEY หรือ OPENAI_API_KEY'), (!st.firecrawl&&!st.web_search)&&'FIRECRAWL_API_KEY'].filter(Boolean).join(' และ '), ' ใน Railway → motion-api → Variables แล้วกด Deploy') : '',
-    h('div',{class:'sub'},'ทุกคลิปเริ่มด้วย “คนชื่อ … ในประเทศไทย มีกี่คน” (ตัวเลขล่าสุดจาก Firecrawl) แล้วค่อยเข้าเนื้อเรื่อง · ปกคลิปเป็น “คนนี้ชื่อ …” พร้อมตัวเอก'),
-    h('label',{class:'sub'},'ชื่อตัวเอก ',heroName),
-    topic,
+    h('label',{class:'sub'},'โหมดการเล่าเรื่อง',modeSel), modeHint, heroGroup, topic, sourcePanel,
     h('div',{class:'ideas'}, h('span',{class:'sub'},'ลองหัวข้อ:'), IDEAS.map(i=>h('button',{on:{click:()=>{ topic.value=i; topic.focus(); }}},i))),
     h('details',{}, h('summary',{},'เพิ่มแนวทาง (ไม่บังคับ)'), h('div',{style:'margin-top:10px'},note)),
     stylePanel(),
     musicPanel(),
-    characterPanel(),
+    charChoice, charsPanel,
     h('div',{class:'row',style:'justify-content:flex-start;gap:8px'}, h('span',{class:'sub'},'สมอง'), modelSel, effSel),
     h('label',{class:'check'}, auto, h('span',{},'ผลิตต่อทันทีเมื่อร่างผ่านการตรวจกฎ (ไม่ต้องรอฉันตรวจ)')),
     h('div',{class:'row'}, h('span',{class:'sub'}, 'วันนี้ใช้ไป '+st.drafts_today+' จาก '+st.daily_limit+' ร่าง · ค่าเสียงไม่เกิน '+fmtN(st.max_credits)+' เครดิต/คลิป'), go),

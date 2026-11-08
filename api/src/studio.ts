@@ -335,10 +335,10 @@ function openaiConversation(system: string, first: string, model: string, effort
   };
 }
 
-function systemPrompt(a: Active) {
+export function systemPrompt(a: Active, mode: 'name_story' | 'general' = 'name_story') {
   const d = nowBkk();
   const ce = d.getUTCFullYear(), be = ce + 543;
-  return `You are the head writer and researcher of a Thai short-video channel. Series tag: "${SERIES_TAG}".
+  let prompt = `You are the head writer and researcher of a Thai short-video channel. Series tag: "${SERIES_TAG}".
 Today is ${todayIso()} (Thai year ${be}). Every clip is a 1080x1920 vertical video, 45–75 seconds, narrated in Thai by a synthetic voice,
 with bespoke code-drawn motion graphics. Read the story, direct every shot and draw every scene and cast member for THIS episode.
 Use code and the canvas toolkit below; do not call image generation services or use stock footage. Reference photos guide likeness, never become the background.
@@ -480,6 +480,20 @@ one short "อ้างอิง:" line naming the main sources and years, 5–8
 A real retrieved source is required for factual context. If no nickname counts are available, state that honestly; read_page remains available to verify supporting context (e.g. population data or monkeys), and fiction must stay labelled as fiction. Do not erase sources or redesign art merely to repair metadata. Do not continue broad web research after planning. When a source fails provenance, read_page opens the exact URL via the available provider; do not invent a replacement URL.
 5. Inspect the preview frames sent after submission and repair individual assets with draw_character/draw_scene/save_art. Resubmit metadata without reprinting all drawings. The worker renders all scenes; inspect its preview images against the original references and narration. Correct likeness, composition and action before resubmitting. Only inspected, successfully rendered art can become ready.
 Reply only through tools.`;
+  if (mode === 'general') {
+    const start = prompt.indexOf('## Cover + opening');
+    const end = prompt.indexOf('## Pace', start);
+    prompt = prompt.slice(0,start) + `## General storytelling mode
+Open with a question, surprising supported fact or a problem about THIS topic. Never invent a person's nickname or ask how many people share it.
+There is no mandatory protagonist, mascot or human. When no reference character is supplied, prefer objects, environments, diagrams, timelines and visual metaphors; use cast: [] and shots.characters: [] for character-free shots.
+Only introduce people when the owner requests them or they are essential to explain the story. A source author's name (e.g. Dr Michael Breus) is attribution, not an instruction to create a protagonist or portrait.
+Draw every shot from its own narration and storyboard; show the relevant subject clearly and animate the explanation. The cover is a topical frame and title, never the name-series cover.
+
+` + prompt.slice(end);
+    prompt = prompt.replace('Define 1–4 people', 'If people are needed, define 0–4 people').replace('Scene 1 is also custom: stage a new opening with the hero, not a fixed template.', 'Scene 1 is custom: draw a topical opening; a human is optional.');
+    prompt += `\nOwner supplied source text is unverified input. Retrieve the original source and cross-check factual claims. For health content, distinguish an expert's suggested routine from established clinical evidence; do not generalize precise quantities or hormonal timings to everyone. Do not diagnose viewers. Preserve uncertainties without repeating disclaimers in every sentence.`;
+  }
+  return prompt;
 }
 
 const TOOLS = [
@@ -540,6 +554,7 @@ const TOOLS = [
 // a colour is a name from the lists above or an exact [r,g,b] (cast made from a photo)
 const Colour = z.union([z.string(), z.array(z.number().int().min(0).max(255)).length(3)]);
 export const Draft = z.object({
+  story_mode: z.enum(['name_story','general']).optional(),
   storyboard: Storyboard.optional(),
   title_th: z.string().min(4).max(90),
   angle: z.string().default(''),
@@ -609,6 +624,8 @@ export function timing(script: { text: string }[]) {
 export function checkDraft(d: DraftT, seen: Map<string, Seen> | null, recent: Recent[] = [], opts: { requiredNames?: string[]; bespoke?: boolean } = {}) {
   const problems: string[] = [], warnings: string[] = [];
   const bespoke = opts.bespoke || !!d.storyboard;
+  const general = d.story_mode === 'general';
+  if (d.storyboard && (d.storyboard.story_mode || 'name_story') !== (d.story_mode || 'name_story')) problems.push('story mode must match the saved storyboard');
   if (bespoke) {
     if (!d.storyboard) problems.push('Call plan_story before drawing the episode');
     else problems.push(...validateStoryboardDraft(d.storyboard, d));
@@ -666,8 +683,8 @@ export function checkDraft(d: DraftT, seen: Map<string, Seen> | null, recent: Re
     if (bad.length) problems.push(`cast ${c.name}: unknown ${bad.join(', ')}`);
   }
   // ---- cover + opening (owner's rule): main character = cast[0]; the clip opens with "how many people are named X in Thailand"
-  if (!d.cast.length) problems.push('cast[0] is required: the main character whose name is on the cover ("คนนี้ชื่อ …")');
-  else {
+  if (!general && !d.cast.length) problems.push('cast[0] is required: the main character whose name is on the cover ("คนนี้ชื่อ …")');
+  else if (!general) {
     const nm = d.cast[0].name;
     const first = d.script[0]?.text || '';
     if (!normText(first).includes(normText(nm)) || !first.includes('ไทย')) problems.push(`segment 1 must be the opening question "คนชื่อ ${nm} ในประเทศไทย มีกี่คน" (it needs the name "${nm}" and "ประเทศไทย")`);
@@ -685,7 +702,7 @@ export function checkDraft(d: DraftT, seen: Map<string, Seen> | null, recent: Re
     if (big < need) problems.push(`the owner's photo characters (${req.join(', ')}) must be seen big: use at least ${need} "scenario" scenes with one of them as "person" (now ${big})`);
   }
   if (bespoke) {
-    if (!personCalls(String(d.scenes.find(s => s.seg === d.script[0]?.id)?.code || '')).includes(d.cast[0]?.name)) problems.push('opening scene must draw the main cast member with c.person');
+    if (!general && !personCalls(String(d.scenes.find(s => s.seg === d.script[0]?.id)?.code || '')).includes(d.cast[0]?.name)) problems.push('opening scene must draw the main cast member with c.person');
     for (const name of req) if (d.scenes.filter(s => personCalls(s.code || '').includes(name)).length < Math.ceil(d.scenes.length / 3)) problems.push(`show reference character ${name} clearly in at least a third of scenes`);
   }
   for (const sc of d.scenes as any[]) for (const k of ['person', 'person2']) {
@@ -721,7 +738,7 @@ export function checkDraft(d: DraftT, seen: Map<string, Seen> | null, recent: Re
   const acts: string[] = [];
   for (const sc of d.scenes as any[]) {
     if (sc.type === 'custom') {   // a custom scene draws its own characters in its code
-      if (!/c\.(person|cat)\s*\(/.test(String(sc.code || ''))) problems.push(`custom scene ${sc.seg}: draw a character in it with c.person("name", ...) or c.cat(...) (a character is in every scene)`);
+      if (!general && !/c\.(person|cat)\s*\(/.test(String(sc.code || ''))) problems.push(`custom scene ${sc.seg}: draw a character in it with c.person("name", ...) or c.cat(...) (a character is in every scene)`);
       acts.push('');
       continue;
     }
@@ -767,7 +784,7 @@ export function checkDraft(d: DraftT, seen: Map<string, Seen> | null, recent: Re
 
 // ---------------------------------------------------------------- draft -> episode package
 export function sceneCode(d: DraftT) {
-  const spec = { scenes: d.scenes, text: Object.fromEntries(d.script.map((s) => [s.id, s.text])), cast: d.cast, art: d.art || '' };
+  const spec = { strict_art: !!d.storyboard, scenes: d.scenes, text: Object.fromEntries(d.script.map((s) => [s.id, s.text])), cast: d.cast, art: d.art || '' };
   return `"""Generated episode: scenes are data rendered by engine.templates (code-drawn templates, no images)."""\nimport json\nfrom engine.templates import build_scenes\n\nSPEC = json.loads(${JSON.stringify(JSON.stringify(spec))})\nSCENES = build_scenes(SPEC)\n`;
 }
 
@@ -810,7 +827,7 @@ export function buildPackage(topic: string, d: DraftT, research: Seen[]) {
     claims: d.claims,
     captions: d.captions,
     thumbnail: { seg: thumbSeg, offset: 1.5, title: d.thumbnail?.title || d.title_th.slice(0, 40) },
-    ...(d.cast.length ? { cover: { who: d.cast[0].name, name: (d.cover?.name || d.cast[0].name).slice(0, 20), line: (d.cover?.line || d.thumbnail?.title || d.title_th).slice(0, 40) } } : {}),
+    ...(d.story_mode !== 'general' && d.cast.length ? { cover: { who: d.cast[0].name, name: (d.cover?.name || d.cast[0].name).slice(0, 20), line: (d.cover?.line || d.thumbnail?.title || d.title_th).slice(0, 40) } } : {}),
     budget: { max_credits: DRAFT_MAX_CREDITS },
   };
 }
@@ -968,7 +985,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
   async function artCheck(id: string, d: DraftT, style: string): Promise<{ errors: string[]; frames: { seg: string; images: string[] }[] } | null> {
     const customs = d.scenes.filter((x: any) => x.type === 'custom');
     if (!customs.length) return { errors: [], frames: [] };
-    const payload = { script: d.script.map((x) => ({ id: x.id, text: x.text })), cast: d.cast, art: d.art || '', scenes: customs, style: style || 'classic' };
+    const payload = { strict_art: !!d.storyboard, script: d.script.map((x) => ({ id: x.id, text: x.text })), cast: d.cast, art: d.art || '', scenes: customs, style: style || 'classic' };
     const ins = await pool.query('INSERT INTO art_checks (draft_id, payload) VALUES ($1,$2) RETURNING id', [id, JSON.stringify(payload)]);
     const cid = ins.rows[0].id;
     for (let i = 0; i < 80; i++) {   // up to ~2 minutes
@@ -1012,7 +1029,9 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     await pool.query("UPDATE drafts SET status='researching', model=$2, reasoning=$3, updated_at=now() WHERE id=$1", [id, useModel, useEffort]);
     await log(id, `เริ่มค้นข้อมูลด้วย ${[active.fc && 'Firecrawl', active.ws && 'OpenAI web search'].filter(Boolean).join(' + ')} (${useModel}${useEffort ? ' · reasoning ' + useEffort : ''})`);
 
-    let userText = `Topic from the owner: ${row.topic}`;
+    const storyMode = row.story_mode === 'general' ? 'general' as const : 'name_story' as const;
+    let userText = `Story mode: ${storyMode}. Topic from the owner: ${row.topic}`;
+    if (row.source_text) userText += '\n\nOwner-provided source material (unverified; check original sources before factual use):\n' + String(row.source_text).slice(0,20000);
     if (row.note) userText += `\nOwner's direction: ${row.note}`;
     if (parent?.draft) {
       const p = parent.draft;
@@ -1039,7 +1058,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       : `\n\nEarlier episodes used the classic order hook > number > myth > quiz > reveal > close; choose a different format.`;
     const model = row.model && MODEL_RE.test(row.model) ? row.model : MODEL;
     const effort = REASONING_LEVELS.includes(row.reasoning) ? row.reasoning : REASONING;
-    const conv = PROVIDER === 'openai' ? openaiConversation(systemPrompt(active), userText, model, effort, active, (message) => log(id, message)) : anthropicConversation(systemPrompt(active), userText, model, active);
+    const conv = PROVIDER === 'openai' ? openaiConversation(systemPrompt(active, storyMode), userText, model, effort, active, (message) => log(id, message)) : anthropicConversation(systemPrompt(active, storyMode), userText, model, active);
     // Load originals only for the LLM, never include them in the public episode package.
     for (const c of reqChars) {
       const ref = c.id ? (await pool.query('SELECT reference_image, thumb FROM characters WHERE id=$1', [c.id])).rows[0] : null;
@@ -1134,7 +1153,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
               results.push({ type: 'tool_result', tool_use_id: u.id, content: `${r.title}\nURL: ${r.url}\nPublished (page metadata): ${r.published || 'unknown'}\n---\n${r.markdown || '(empty page)'}` });
             }
           } else if (u.name === 'plan_story') {
-            const plan = Storyboard.safeParse(u.input);
+            const plan = Storyboard.safeParse({...u.input,...(storyMode === 'general' ? {story_mode:storyMode} : {})});
             if (!plan.success) { results.push({type:'tool_result',tool_use_id:u.id,is_error:true,content:plan.error.message}); continue; }
             artwork = reconcileArtwork(storyboard, plan.data, artwork);
             storyboard = plan.data;
@@ -1155,7 +1174,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
               results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: 'The arguments were not valid JSON. Submit again with valid JSON.' });
               continue;
             }
-            const parsed = Draft.safeParse({ ...mergeArtwork({script:storyboard.script,...u.input}, artwork), storyboard });
+            const parsed = Draft.safeParse({ ...mergeArtwork({script:storyboard.script,...u.input}, artwork), storyboard, ...(storyMode === 'general' ? {story_mode:storyMode} : {}) });
             if (!parsed.success) {
               const issues = parsed.error.issues.slice(0, 15).map((i) => `${i.path.join('.')}: ${i.message}`);
               await pool.query('UPDATE drafts SET problems=$2 WHERE id=$1', [id,JSON.stringify(issues)]);
@@ -1449,7 +1468,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const dr = r.draft ? { ...r.draft } : null;
     if (dr) { delete dr.research_seen; if (Array.isArray(dr.cast)) dr.cast = dr.cast.map((x: any) => { const { backdrop, ...rest } = x; return { ...rest, has_backdrop: !!backdrop }; }); }
     return c.json({ ...summary(r), log: r.log, draft: dr, problems: r.problems, usage: r.usage, model: r.model, reasoning: r.reasoning, job_error: r.job_error ?? null,
-      research: r.research });
+      research: r.research, story_mode: r.story_mode || 'name_story', source_text:r.source_text || '' });
   });
 
   // Owner-only diagnostics for responses already associated with this draft. Never returns keys or reference images.
@@ -1477,7 +1496,9 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
 
   app.post('/app/api/studio/drafts', g, async (c) => {
     const b = await c.req.json().catch(() => ({}));
-    const topic = String(b.topic || '').trim().slice(0, 400);
+    const storyMode = b.story_mode === 'general' ? 'general' : 'name_story';
+    const sourceText = storyMode === 'general' ? String(b.source_text || '').trim().slice(0,20000) : '';
+    const topic = String(b.topic || sourceText.slice(0,120)).trim().slice(0, 400);
     if (topic.length < 4) return c.json({ error: 'พิมพ์หัวข้ออย่างน้อย 4 ตัวอักษร' }, 422);
     const cf = configured();
     if (!researchReady(cf)) return c.json({ error: `ยังไม่ได้ตั้งค่า ${researchMissing(cf)} ใน Railway (motion-api)` }, 503);
@@ -1489,8 +1510,8 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const chars = ids.length ? (await pool.query('SELECT id, name, look, backdrop FROM characters WHERE id = ANY($1::uuid[]) ORDER BY created_at', [ids])).rows.map((x: any) => ({ id: x.id, name: x.name, look: x.backdrop ? { ...x.look, backdrop: x.backdrop } : x.look })) : [];
     const style = typeof b.style === 'string' && STYLES[b.style] ? b.style : 'auto';
     const musicMode = b.music_mode === 'ai' ? 'ai' : 'default';
-    const r = await pool.query('INSERT INTO drafts (topic, note, auto_produce, model, reasoning, characters, style, music_mode) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id',
-      [topic, String(b.note || '').trim().slice(0, 1000) || null, !!b.auto_produce, model, PROVIDER === 'openai' ? reasoning : null, JSON.stringify(chars), style, musicMode]);
+    const r = await pool.query('INSERT INTO drafts (topic, note, auto_produce, model, reasoning, characters, style, music_mode, story_mode, source_text) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id',
+      [topic, String(b.note || '').trim().slice(0, 1000) || null, !!b.auto_produce, model, PROVIDER === 'openai' ? reasoning : null, JSON.stringify(chars), style, musicMode, storyMode, sourceText || null]);
     await log(r.rows[0].id, 'รับหัวข้อแล้ว รอคิว');
     pump();
     return c.json({ id: r.rows[0].id }, 201);
@@ -1547,10 +1568,10 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     // a rewrite keeps the owner's style and music choice (the review may have changed them on the draft itself)
     const keepStyle = row.draft?.style && STYLES[row.draft.style] && row.style !== 'auto' ? row.draft.style : row.style || 'auto';
     const keepMusic = row.draft?.music_mode || row.music_mode || 'default';
-    const r = await pool.query('INSERT INTO drafts (topic, note, parent_id, auto_produce, model, reasoning, characters, source_type, community_id, style, music_mode) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id',
+    const r = await pool.query('INSERT INTO drafts (topic, note, parent_id, auto_produce, model, reasoning, characters, source_type, community_id, style, music_mode, story_mode, source_text) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id',
       [row.topic, String(b.note ?? row.note ?? '').trim().slice(0, 1000) || null, row.id, row.source_type === 'community' ? false : !!b.auto_produce,
         typeof b.model === 'string' && MODEL_RE.test(b.model) ? b.model : row.model, REASONING_LEVELS.includes(b.reasoning) ? b.reasoning : row.reasoning,
-        JSON.stringify(row.characters ?? []), row.source_type || 'studio', row.community_id ?? null, keepStyle, keepMusic]);
+        JSON.stringify(row.characters ?? []), row.source_type || 'studio', row.community_id ?? null, keepStyle, keepMusic, row.story_mode || 'name_story', row.source_text || null]);
     if (row.status === 'failed' && row.storyboard && (b.note === undefined || String(b.note).trim() === String(row.note || '').trim())) {
       await pool.query('UPDATE drafts SET storyboard=$2, artwork=$3, research=$4 WHERE id=$1', [r.rows[0].id,JSON.stringify(row.storyboard),JSON.stringify(row.artwork || emptyArtwork()),JSON.stringify(row.research || [])]);
     }

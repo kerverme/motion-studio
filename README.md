@@ -161,3 +161,9 @@ The composer saves one character or shot per model response (`draw_character`, `
 Hosted research records completed search sources, exact `open_page`/`find_in_page` URLs and citation annotations. Source comparison preserves URL path case and ignores tracking parameters. If a proposed source is missing, a separate small OpenAI lookup opens it and returns evidence for review; requested URLs are never accepted merely because the model supplied them. Exact-page reads stay available after Firecrawl depletion.
 
 Broad hosted search is bounded to at most 3 tool calls per response and disabled during artwork generation. High reasoning is retained for research/planning; drawing individual assets uses medium reasoning and a 16000 token output ceiling. The existing model choice stays the same. Provider waits are configurable with `MOTION_OPENAI_TIMEOUT_MS` (default 30 minutes, range 5–45); per-asset checkpoints preserve completed work if a provider still times out. No ambiguous create request is retried automatically.
+
+### General storytelling mode
+
+The composer now offers **เล่าเรื่องทั่วไป** (default in the new UI) and **ซีรีส์คนชื่อ…**. General mode accepts a topic and optional source text/URLs up to 20,000 characters. Reference characters are opt-in; old selected characters are not silently attached. GPT-6.1 Sol and the existing model selector work for both modes.
+
+General stories use a topical hook and custom object/diagram/environment scenes; cast and shot character lists may be empty. Covers use the topical frame/title. Name-series defaults remain enforced for old records and clients. Mode and source material persist through rewrites and retries. All new art, including character-free scenes, must render and receive visual review; drawing failures cannot substitute a generic mascot. User-provided factual or health material remains unverified input until sources are retrieved.
