@@ -520,7 +520,7 @@ async function publish(ep, body, close){
 
 /* ---------- studio: topic -> research -> draft -> produce ---------- */
 const DSTATE = {queued:['wait','รอคิว'], researching:['wait','กำลังค้นข้อมูล'], writing:['wait','กำลังเขียน'], ready:['go','รอตรวจ'], failed:['bad','ไม่สำเร็จ'], submitted:['ok','ส่งผลิตแล้ว'], discarded:['','ทิ้งแล้ว']};
-const TPL = {chat:'แชทมือถือ', versus:'ปะทะ VS', scale:'เทียบขนาด', hook:'เปิดเรื่อง', number:'ตัวเลขนับขึ้น', compare:'เทียบแท่ง', bars:'จัดอันดับ', list:'รายการ', quiz:'ทายก่อน', reveal:'เฉลย', dots:'x ใน N', timeline:'ไทม์ไลน์', truth:'จริงหรือไม่', scenario:'ฉากสมมติ', icons:'ไอคอน', outro:'ปิดท้าย'};
+const TPL = {custom:'ภาพที่โค้ดวาดเฉพาะเรื่อง', chat:'แชทมือถือ', versus:'ปะทะ VS', scale:'เทียบขนาด', hook:'เปิดเรื่อง', number:'ตัวเลขนับขึ้น', compare:'เทียบแท่ง', bars:'จัดอันดับ', list:'รายการ', quiz:'ทายก่อน', reveal:'เฉลย', dots:'x ใน N', timeline:'ไทม์ไลน์', truth:'จริงหรือไม่', scenario:'ฉากสมมติ', icons:'ไอคอน', outro:'ปิดท้าย'};
 const IDEAS = ['ถ้าคนไทยทุกคนเลิกดื่มชานมไข่มุก 1 ปี จะเกิดอะไรขึ้น?','ถ้ากรุงเทพฯ ไม่มีรถติดเลย 1 วัน เราจะได้เวลาคืนกี่ชั่วโมง?','ถ้าคนไทยนอนครบ 8 ชั่วโมงทุกคน จะเกิดอะไรขึ้น?'];
 // every clip opens with "คนชื่อ X ในประเทศไทย มีกี่คน" and then follows the story (owner's default)
 const openerTopic = (name, story) => name ? ('คนชื่อ '+name+' ในประเทศไทย มีกี่คน'+(story ? ' แล้วต่อด้วยเรื่อง: '+story : '')) : story;

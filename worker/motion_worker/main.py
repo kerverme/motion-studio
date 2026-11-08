@@ -1,5 +1,5 @@
 """motion-worker: claims jobs from Postgres (SKIP LOCKED), runs the resumable pipeline, survives restarts."""
-import json, os, signal, subprocess, sys, time, traceback
+import json, os, signal, subprocess, sys, threading, time, traceback
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from motion_worker import config, eleven, pipeline, testpkg, audio, drive as drive_mod
@@ -83,6 +83,8 @@ def main():
     db = DB()
     store = get_storage()
     print('db + storage ready', flush=True)
+    from motion_worker import artcheck
+    threading.Thread(target=artcheck.poll_loop, args=(lambda: STOP,), daemon=True, name='art-checks').start()
     while not STOP:
         job = None
         try:

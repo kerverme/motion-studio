@@ -13,6 +13,7 @@ from .core import (W, H, SEG, clamp, lerp, eo, eio, eob, pop, fade, text_img, F,
 from .core import put as _core_put, draw_cat as _core_draw_cat
 from .characters import draw_person as _draw_person, look_style
 from .props import check, stamp as _props_stamp
+from . import artkit
 
 # When a visual style is active, cards, text, icons and stamps that templates place on the frame go to a separate UI layer, which
 # the renderer composites crisply over the styled world (backgrounds, sets, characters). With the classic style nothing changes.
@@ -987,13 +988,38 @@ def T_scale(img, d, t, seg, sp):
             put(img, tblock(lab.get('text'), 70, 940, 900, WHITE, 9, INK, 2), 540, min(1220, y0 + sz * rows - sz / 2 + 70), pop(t, tl))
 
 
+ART = {'fns': {}}   # seg -> compiled draw(c, t, p) of an LLM-written scene (engine/artkit.py)
+
+
+def T_custom(img, d, t, seg, sp):
+    """A scene whose art was written by the model for this story, drawn with the artkit shapes. A scene that fails to compile or
+    to draw is reported to QA and replaced by the plain scenario layout with the cast, so a bad drawing never kills the render."""
+    fn = ART['fns'].get(seg)
+    S = core.SEG[seg]
+    if fn is not None:
+        hooks = {
+            'put': put, 'text_img': text_img,
+            'person': lambda im, who, x, y, size, mood, talk: draw_person(im, x, y, size, t, style=person_style({'who': who}), pose='stand', mood=mood if mood in ('normal', 'happy', 'shock', 'think', 'sad') else 'normal', talk=talk),
+            'cat': lambda im, x, y, size, mood, talk: draw_cat(im, x, y, size, t, mood=mood if mood in ('normal', 'happy', 'shock', 'worried') else 'normal', talk=talk),
+            'cue': lambda w: at(seg, str(w)[:40], 0.0) - S['s'],
+        }
+        try:
+            artkit.run(fn, img, t - S['s'], clamp((t - S['s']) / max(0.1, S['e'] - S['s'])), hooks)
+            return
+        except artkit.ArtError as e:
+            if not any(x[0] == seg for x in ERRORS):
+                ERRORS.append((seg, 'custom art: ' + str(e)[:300]))
+    T_scenario(img, d, t, seg, dict(sp, type='scenario'))
+
+
 TEMPLATES = {
+    'custom': T_custom,
     'hook': T_hook, 'number': T_number, 'compare': T_compare, 'bars': T_bars, 'list': T_list, 'quiz': T_quiz, 'reveal': T_reveal,
     'dots': T_dots, 'timeline': T_timeline, 'truth': T_truth, 'scenario': T_scenario, 'icons': T_icons, 'outro': T_outro, 'chat': T_chat, 'versus': T_versus, 'scale': T_scale,
 }
 # templates that place their own big title / characters
 OWN_TITLE = {'hook', 'outro'}
-OWN_CAST = {'scenario'}
+OWN_CAST = {'scenario', 'custom'}
 
 
 def _scene(seg, sp, seed):
@@ -1013,7 +1039,7 @@ def _scene(seg, sp, seed):
             has_set = True
         else:
             has_set = bool(sp.get('set')) and draw_set(sp.get('set'), img, d, t)
-        if not has_set:
+        if not has_set and kind != 'custom':
             decor(d, t, seed)
         try:
             fn(img, d, t, seg, sp)
@@ -1046,6 +1072,13 @@ def build_scenes(spec):
             bd = photo_backdrop(v['backdrop'])
             if bd is not None:
                 BACKDROP[k] = bd
+    ART['fns'].clear()
+    for sp in spec.get('scenes') or []:   # LLM-written scene art: compile once, report what does not compile
+        if sp.get('type') == 'custom' and sp.get('seg'):
+            try:
+                ART['fns'][sp['seg']] = artkit.compile_art(spec.get('art') or '', sp.get('code') or '', 'scene ' + str(sp['seg']))
+            except artkit.ArtError as e:
+                ERRORS.append((sp['seg'], 'custom art: ' + str(e)[:300]))
     out = {}
     for i, sp in enumerate(spec.get('scenes') or []):
         seg = sp.get('seg')

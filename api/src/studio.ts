@@ -55,7 +55,7 @@ const researchReady = (cf: ReturnType<typeof configured>) => cf.llm && (cf.firec
 const researchMissing = (cf: ReturnType<typeof configured>) => [!cf.llm && cf.key_name, !cf.firecrawl && !cf.web_search && 'FIRECRAWL_API_KEY'].filter(Boolean).join(' และ ');
 
 // ---------------------------------------------------------------- engine vocabulary (must match worker/engine)
-export const TEMPLATES = ['hook', 'number', 'compare', 'bars', 'list', 'quiz', 'reveal', 'dots', 'timeline', 'truth', 'scenario', 'icons', 'outro', 'chat', 'versus', 'scale'] as const;
+export const TEMPLATES = ['hook', 'number', 'compare', 'bars', 'list', 'quiz', 'reveal', 'dots', 'timeline', 'truth', 'scenario', 'icons', 'outro', 'chat', 'versus', 'scale', 'custom'] as const;
 const SETS = ['city', 'room', 'classroom', 'park', 'beach', 'office', 'night', 'brick', 'kitchen'];
 // Story formats: the owner does not want the same pattern every time. Labels are shown in the UI.
 export const FORMATS: Record<string, { th: string; how: string }> = {
@@ -278,6 +278,7 @@ interface Conversation {
   turn(force: boolean): Promise<{ uses: ToolUse[]; usage: Usage; web?: WebFound }>;
   results(rs: ToolResult[], note?: string): void;
   say(text: string): void;
+  show(text: string, images: string[]): void;   // a user message with JPEG previews (base64) of the model's own drawings
 }
 
 // Anthropic Messages API; the conversation is cached so each turn re-reads it at the cache price.
@@ -305,6 +306,9 @@ function anthropicConversation(system: string, first: string, model: string, act
       messages.push({ role: 'user', content });
     },
     say(text) { messages.push({ role: 'user', content: text }); },
+    show(text, images) {
+      messages.push({ role: 'user', content: [{ type: 'text', text }, ...images.map((data) => ({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data } }))] });
+    },
   };
 }
 
@@ -350,6 +354,9 @@ function openaiConversation(system: string, first: string, model: string, effort
       if (note) input.push({ role: 'user', content: note });
     },
     say(text) { input.push({ role: 'user', content: text }); },
+    show(text, images) {
+      input.push({ role: 'user', content: [{ type: 'input_text', text }, ...images.map((data) => ({ type: 'input_image', image_url: `data:image/jpeg;base64,${data}` }))] });
+    },
   };
 }
 
@@ -472,6 +479,38 @@ or "custom" with "prompt" (English, ≤ 100 chars, a sound that belongs to THIS 
 (at most ${MAX_CUSTOM_SFX} custom). Pick sounds that match what is happening on screen and in the story; they do not all have to be fast or punchy —
 quiet moments can have soft sounds or none. Avoid the same set of sounds as every other episode.
 
+## Custom scene art — draw THIS story's own pictures with code (type "custom")
+The templates above cover data and talking scenes. Anything the story is actually ABOUT that they cannot show (a monkey stealing glasses, a temple,
+a jeep, a market stall, a flood, a giant coin) you draw yourself, new for this story, with a tiny shape toolkit. Nothing is pre-drawn: if the story
+has a monkey you build the monkey. This is still code only (no images, no AI art); the visual style (claymation, lego, ...) is applied on top.
+Use at least 2 "custom" scenes (more when the story is visual). Put the shared drawing functions of the story in top-level "art" (≤ 9000 chars,
+defined ONCE and reused by every custom scene so the monkey looks the same in each scene), and per scene {"seg", "type": "custom", "code": "def draw(c, t, p): ..."}
+(≤ 6000 chars; it may call the functions from "art"). A custom scene still accepts headline / sub / stamp / note / confetti and the "at" cues like the others.
+Scene 1 stays the "scenario" opener with the hero.
+draw(c, t, p): c = the canvas, t = seconds since the scene started, p = 0..1 progress through the scene. Frame is 1080 x 1920 px, origin top-left;
+keep the subject inside y 330–1380 (the headline sits above, the subtitles below). Redraw everything every frame: paint the background FIRST
+(c.grad sky/wall, ground, far things), then mid things, then the subject, then details.
+Canvas methods (colours: (r,g,b) tuples, "#ff8800", or white black red orange yellow green teal blue purple pink brown tan gray sky cream; alpha 0..1):
+- c.grad(top, bottom, y0=0, y1=1920) vertical gradient band; c.rect(x, y, w, h, color, r=0, alpha=1, outline=None, ow=6) (r = corner radius)
+- c.circle(x, y, r, color, alpha, outline, ow); c.ellipse(x, y, rx, ry, color, rot=0, alpha, outline, ow); c.poly([(x,y),...], color, alpha, outline, ow)
+- c.blob(x, y, rx, ry, color, seed=0, bump=0.14, alpha, outline, ow) soft irregular shape (bushes, clouds, fur, rocks)
+- c.line(x0, y0, x1, y1, color, w=8); c.path([(x,y),...], color, w=8, alpha=1, smooth=False, closed=False) (smooth=True rounds the corners: tails, limbs, vines);
+  c.arc(x, y, r, a0, a1, color, w=8) angles in degrees (0 = right, 90 = down)
+- c.push() / c.pop() save/restore the transform; c.move(x, y), c.rotate(deg), c.scale(s) or c.scale(sx, sy) apply to everything drawn after (build a figure around (0,0), then move/scale/rotate it)
+- c.text(x, y, "short text", size=64, color="white", stroke=6) (≤ 60 chars, Thai ok, for signs and labels)
+- c.person("name", x, y, size=240, mood="normal", talk=0) draws a cast member with their uploaded look: (x, y) is the head centre and the body extends about 1.85 x size below it;
+  moods normal|happy|shock|think. c.cat(x, y, size=160, mood="normal") draws the channel's mint cat mascot (moods normal|happy|shock|worried)
+- c.cue("word") = seconds from the scene start until that word is spoken in the narration: time reveals to it, e.g. k = ease_out((t - c.cue("ลิง")) * 2.5)
+Helpers: sin(deg) cos(deg) tan(deg) atan2(y,x) sqrt hypot pi floor ceil lerp(a,b,x) clamp(x,a,b) ease(x) ease_out(x) osc(t, period, amp) pingpong(t, period)
+rnd(i) (0..1, repeatable) noise(x) mix(c1,c2,x) shade(color, k) (k>0 lighter, k<0 darker) rgb(r,g,b) range len min max abs round int float sum enumerate zip list sorted.
+The code is checked and a sandbox runs it. Allowed: def, if/else, for (at most 2 loops nested; range up to 300), assignments, arithmetic, f-strings, lists/tuples/dicts, lambda.
+NOT allowed (the check rejects them): import, while, class, try, with, global, print, open, anything starting with "_", "**" except small integer powers, string .format.
+Make it good: build each figure from many shapes (≥ 20 for the main subject), outline main shapes (outline=shade(color,-0.4)), shade with a lighter belly/highlight and a darker
+side, give creatures eyes, ears and a mouth, keep the main subject big (≥ 350 px) and give everything a little life with osc()/pingpong() (bobbing, blinking, tail, arms).
+Stay under ~600 shapes per frame. Example of the pattern (shorten, do not copy):
+art: def monkey(c, x, y, s, t, mood):\n  fur = rgb(150,98,60)\n  c.push(); c.move(x, y + osc(t, 0.8, 6*s)); c.scale(s)\n  c.path([(60,120),(140,90),(170,20),(130,-30)], fur, 22, 1, True)\n  c.ellipse(0, 90, 70, 90, fur); c.circle(0, -30, 70, fur); c.ellipse(0, -14, 50, 44, rgb(236,196,156))\n  c.ellipse(-22,-38,7,8,"black"); c.ellipse(22,-38,7,8,"black")\n  c.pop()
+scene code: def draw(c, t, p):\n  c.grad(rgb(255,196,120), rgb(255,236,190))\n  k = ease_out((t - c.cue("ลิง")) * 2.2)\n  monkey(c, lerp(1250, 640, k), 1120, 2.1, t, "happy")\n  c.person("ตั้ม", 250, 780, 250)
+
 ## Visual style
 Every episode is drawn in one visual style (all code-drawn): ${STYLE_NAMES.map((k) => `${k} (${STYLES[k].en})`).join('; ')}.
 Set "style". The user message says whether the owner fixed it; otherwise pick the one that suits the story best and differs from the last two episodes.
@@ -540,7 +579,8 @@ const Draft = z.object({
   angle: z.string().default(''),
   format: z.string().default(''),
   script: z.array(z.object({ id: z.string().regex(/^[a-z0-9_]{1,24}$/), text: z.string().min(3).max(500), beat: z.enum(BEATS).default('info') })).min(4).max(14),
-  scenes: z.array(z.object({ seg: z.string(), type: z.enum(TEMPLATES) }).passthrough()).min(1),
+  scenes: z.array(z.object({ seg: z.string(), type: z.enum(TEMPLATES), code: z.string().max(6000).optional() }).passthrough()).min(1),
+  art: z.string().max(9000).default(''),   // shared drawing helpers for this story's "custom" scenes (engine/artkit.py)
   sources: z.array(z.object({
     url: z.string().url(), title: z.string().optional(), publisher: z.string().default(''), published: z.string().default(''), claim: z.string().default(''),
     methodology: z.string().optional(), confidence: z.enum(['high', 'medium', 'low']).default('medium'), limitations: z.string().optional(), freshness_note: z.string().optional(),
@@ -604,6 +644,12 @@ export function checkDraft(d: DraftT, seen: Map<string, Seen> | null, recent: Re
   const problems: string[] = [], warnings: string[] = [];
   const ids = d.script.map((s) => s.id);
   if (new Set(ids).size !== ids.length) problems.push('script ids must be unique');
+  const customScenes = d.scenes.filter((x: any) => x.type === 'custom') as any[];
+  if (customScenes.length < 2) problems.push('use at least 2 "custom" scenes: draw what this story is about with code (see "Custom scene art")');
+  for (const cs of customScenes) {
+    if (typeof cs.code !== 'string' || cs.code.length < 30 || !/def\s+draw\s*\(\s*c\s*,\s*t\s*,\s*p\s*\)/.test(cs.code)) problems.push(`custom scene ${cs.seg}: "code" must define def draw(c, t, p):`);
+  }
+  if (customScenes.length && !(d.art || '').trim()) warnings.push('custom scenes without shared "art" helpers');
   const text = new Map(d.script.map((s) => [s.id, s.text]));
   for (const s of d.script) {
     if (/[0-9๐-๙%]/.test(s.text)) problems.push(`script ${s.id}: write numbers and % as Thai words (no digits or symbols): "${s.text.slice(0, 60)}"`);
@@ -698,6 +744,11 @@ export function checkDraft(d: DraftT, seen: Map<string, Seen> | null, recent: Re
   // ---- characters: one in every frame, moving with the context
   const acts: string[] = [];
   for (const sc of d.scenes as any[]) {
+    if (sc.type === 'custom') {   // a custom scene draws its own characters in its code
+      if (!/c\.(person|cat)\s*\(/.test(String(sc.code || ''))) problems.push(`custom scene ${sc.seg}: draw a character in it with c.person("name", ...) or c.cat(...) (a character is in every scene)`);
+      acts.push('');
+      continue;
+    }
     if (sc.cat === false) problems.push(`scene ${sc.seg}: "cat": false is not allowed; a character must be on screen in every scene`);
     const a = sc.cat && typeof sc.cat === 'object' ? sc.cat.action : undefined;
     const name = typeof a === 'string' ? a : a?.name;
@@ -708,10 +759,10 @@ export function checkDraft(d: DraftT, seen: Map<string, Seen> | null, recent: Re
     if (pn && !ACTIONS.includes(pn)) problems.push(`scene ${sc.seg}: unknown person action "${pn}"`);
   }
   for (let i = 1; i < acts.length; i++) if (acts[i] && acts[i] === acts[i - 1] && acts[i] !== 'idle') problems.push(`scenes ${d.scenes[i - 1].seg} and ${d.scenes[i].seg} give the character the same action "${acts[i]}"; vary the movement`);
-  if (new Set(acts.filter((x) => x && x !== 'idle')).size < Math.min(4, d.scenes.length)) problems.push('use at least 4 different character actions across the episode');
+  if (new Set(acts.filter((x) => x && x !== 'idle')).size < Math.min(4, d.scenes.filter((x: any) => x.type !== 'custom').length)) problems.push('use at least 4 different character actions across the episode');
   // ---- variety
   const types = d.script.map((s) => (d.scenes.find((x) => x.seg === s.id) as any)?.type).filter(Boolean) as string[];
-  for (let i = 1; i < types.length; i++) if (types[i] === types[i - 1] && types[i] !== 'scenario') problems.push(`scenes ${d.script[i - 1].id} and ${d.script[i].id} both use "${types[i]}"; change one (avoid the same layout twice in a row)`);
+  for (let i = 1; i < types.length; i++) if (types[i] === types[i - 1] && types[i] !== 'scenario' && types[i] !== 'custom') problems.push(`scenes ${d.script[i - 1].id} and ${d.script[i].id} both use "${types[i]}"; change one (avoid the same layout twice in a row)`);
   const counts = types.reduce((m: Record<string, number>, x) => ({ ...m, [x]: (m[x] || 0) + 1 }), {});
   for (const [k, n] of Object.entries(counts)) if (n > (k === 'scenario' ? 5 : 2)) problems.push(`scene type "${k}" is used ${n} times; vary the layouts`);
   if (d.format && !FORMATS[d.format]) problems.push(`unknown format "${d.format}"`);
@@ -740,7 +791,7 @@ export function checkDraft(d: DraftT, seen: Map<string, Seen> | null, recent: Re
 
 // ---------------------------------------------------------------- draft -> episode package
 export function sceneCode(d: DraftT) {
-  const spec = { scenes: d.scenes, text: Object.fromEntries(d.script.map((s) => [s.id, s.text])), cast: d.cast };
+  const spec = { scenes: d.scenes, text: Object.fromEntries(d.script.map((s) => [s.id, s.text])), cast: d.cast, art: d.art || '' };
   return `"""Generated episode: scenes are data rendered by engine.templates (code-drawn templates, no images)."""\nimport json\nfrom engine.templates import build_scenes\n\nSPEC = json.loads(${JSON.stringify(JSON.stringify(spec))})\nSCENES = build_scenes(SPEC)\n`;
 }
 
@@ -933,6 +984,28 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     return { pkg, errs, est };
   }
 
+  // The worker compiles the model's scene art and renders preview frames (engine/artkit.py). Returns null when the worker is not answering.
+  async function artCheck(id: string, d: DraftT, style: string): Promise<{ errors: string[]; frames: { seg: string; images: string[] }[] } | null> {
+    const customs = d.scenes.filter((x: any) => x.type === 'custom');
+    if (!customs.length) return { errors: [], frames: [] };
+    const payload = { script: d.script.map((x) => ({ id: x.id, text: x.text })), cast: d.cast, art: d.art || '', scenes: customs, style: style || 'classic' };
+    const ins = await pool.query('INSERT INTO art_checks (draft_id, payload) VALUES ($1,$2) RETURNING id', [id, JSON.stringify(payload)]);
+    const cid = ins.rows[0].id;
+    for (let i = 0; i < 80; i++) {   // up to ~2 minutes
+      await new Promise((r) => setTimeout(r, 1500));
+      const r = (await pool.query('SELECT status, result FROM art_checks WHERE id=$1', [cid])).rows[0];
+      if (r?.status === 'done' || r?.status === 'error') {
+        const res = r.result || {};
+        if (res.error) return { errors: [`the preview failed: ${String(res.error).slice(0, 300)}`], frames: [] };
+        const errors: string[] = [];
+        for (const sc of res.scenes || []) for (const e of sc.errors || []) errors.push(`custom scene ${sc.seg}: ${e}`);
+        return { errors, frames: (res.scenes || []).filter((sc: any) => sc.frames?.length).map((sc: any) => ({ seg: sc.seg, images: sc.frames })) };
+      }
+    }
+    await pool.query("UPDATE art_checks SET status='error' WHERE id=$1 AND status='pending'", [cid]);
+    return null;
+  }
+
   async function generate(id: string) {
     const row = (await pool.query('SELECT * FROM drafts WHERE id=$1', [id])).rows[0];
     if (!row || row.status !== 'queued') return;
@@ -987,6 +1060,8 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const effort = REASONING_LEVELS.includes(row.reasoning) ? row.reasoning : REASONING;
     const conv = PROVIDER === 'openai' ? openaiConversation(systemPrompt(active), userText, model, effort, active) : anthropicConversation(systemPrompt(active), userText, model, active);
     let submits = 0;
+    let artLooks = 0;
+    let pendingImages: { text: string; images: string[] } | null = null;
 
     for (let turn = 0; turn < MAX_TURNS; turn++) {
       usage.turns = turn + 1;
@@ -1057,12 +1132,25 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
             const d = { ...d0, ...(fixedStyle ? { style: fixedStyle } : {}), music_mode: row.music_mode === 'ai' ? 'ai' as const : 'default' as const };
             const { problems, warnings } = checkDraft(d, seen, recent, { requiredNames: reqChars.map((c) => c.name) });
             let est: number | null = null;
+            let showImages: { text: string; images: string[] } | null = null;
+            if (!problems.length && d.scenes.some((x: any) => x.type === 'custom')) {
+              await log(id, 'ส่งภาพที่โมเดลเขียนโค้ดให้ worker ลองวาด');
+              const ac = await artCheck(id, d, (d as any).style || 'classic');
+              if (!ac) { warnings.push('worker did not answer the art preview in time; the scene art was not test-rendered'); await log(id, 'worker ไม่ตอบ ข้ามการลองวาด'); }
+              else if (ac.errors.length) { problems.push(...ac.errors); await log(id, `ลองวาดแล้วพบ ${ac.errors.length} จุดต้องแก้`); }
+              else if (artLooks < 1 && submits < 6 && ac.frames.length) {
+                artLooks++;
+                problems.push('VISUAL REVIEW: the scene art compiled and rendered; its preview frames follow in the next message. Look at each one against its narration. If something is wrong (the subject is unrecognisable, tiny, overlapping the text, off-topic, cut off) fix the art and submit again; if all are good, submit the same episode again unchanged.');
+                showImages = { text: 'Preview frames of your custom scenes (each scene shown early and late). Scene ids in order: ' + ac.frames.map((f) => `${f.seg} (2 frames)`).join(', '), images: ac.frames.flatMap((f) => f.images) };
+              }
+              if (showImages) pendingImages = showImages;
+            }
             if (!problems.length) {
               const f = finalCheck(row.topic, d, [...seen.values()]);
               problems.push(...f.errs);
               est = f.est;
             }
-            if (problems.length && submits < 4) {
+            if (problems.length && submits < 7) {
               await pool.query('UPDATE drafts SET problems=$2 WHERE id=$1', [id, JSON.stringify(problems)]);
               await log(id, `ตรวจพบ ${problems.length} จุดต้องแก้`);
               results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: `Fix these and submit again:\n- ${problems.join('\n- ')}` });
@@ -1071,7 +1159,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
             const researchSeen = [...seen.values()];
             await pool.query(`UPDATE drafts SET draft=$2, problems=$3, estimated_credits=$4, status=$5, research=$6, usage=$7, error=$8, updated_at=now() WHERE id=$1`,
               [id, JSON.stringify({ ...d, warnings, research_seen: researchSeen }), JSON.stringify(problems), est, problems.length ? 'failed' : 'ready', JSON.stringify(research),
-                JSON.stringify(usage), problems.length ? 'ยังผ่านกฎไม่ครบหลังแก้ 4 รอบ ดูรายการด้านล่าง' : null]);
+                JSON.stringify(usage), problems.length ? 'ยังผ่านกฎไม่ครบหลังแก้หลายรอบ ดูรายการด้านล่าง' : null]);
             if (problems.length) { await log(id, 'ยังไม่ผ่านกฎ หยุดไว้ให้ตรวจ'); return; }
             await log(id, `ร่างพร้อมให้ตรวจ ✓ (ประมาณ ${est} เครดิตเสียง)`);
             if (row.auto_produce && row.source_type !== 'community') await produce(id).catch((e) => log(id, `ส่งผลิตอัตโนมัติไม่สำเร็จ: ${e instanceof Error ? e.message : e}`));
@@ -1095,6 +1183,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       }
       conv.results(results.map((r: any) => ({ id: r.tool_use_id, content: r.content, is_error: r.is_error })),
         !mustSubmit && !active.ws && (usage.firecrawl_calls >= MAX_FIRECRAWL || !active.fc) ? 'Research budget reached: write and submit now.' : undefined);
+      if (pendingImages) { conv.show(pendingImages.text, pendingImages.images); pendingImages = null; }
       await saveUsage();
     }
     await pool.query("UPDATE drafts SET status='failed', error=$2, usage=$3, research=$4, updated_at=now() WHERE id=$1",
