@@ -601,6 +601,7 @@ function characterPanel(){
           on:{click:()=>toggle(c.id),keydown:e=>{ if(e.key===' '||e.key==='Enter'){ e.preventDefault(); toggle(c.id); } }}},
         c.thumb ? h('img',{src:c.thumb,alt:''}) : h('div',{class:'ph'}),
         h('div',{}, h('b',{},c.name+(c.has_backdrop?' · มีฉากหลัง':'')), h('div',{class:'sw','aria-hidden':'true'}, [l.skin,l.hair_color,l.top_color,l.bottom_color].map(v=>h('i',{style:'background:'+rgbCss(v)})))),
+        h('button',{class:'btn quiet',on:{click:e=>{ e.stopPropagation(); const up=h('input',{type:'file',accept:'image/jpeg,image/png,image/webp',on:{change:async ev=>{ const f=ev.target.files[0]; if(!f)return; try{ pend.editId=c.id; pend.name=c.name; pend.image=await shrinkImage(f,1024,.85); pend.thumb=await shrinkImage(f,120,.8); pend.pixels=await pixelGrid(f); draw(); }catch(x){ toast(x.message); } }}}); up.click(); }}},'อัปเดตรูป'),
         h('button',{class:'x','aria-label':'ลบ '+c.name,on:{click:async e=>{ e.stopPropagation(); try{ await api('/app/api/studio/characters/'+c.id,{method:'DELETE'}); CHARS=CHARS.filter(x=>x.id!==c.id); setSelectedChars(selectedChars()); draw(); }catch(x){ toast(x.message); } }}},'ลบ'));
     })) : h('div',{class:'hint'},'ยังไม่มีตัวละคร อัปโหลดรูปคนที่ต้องการให้เป็นตัวละครในคลิป');
     const file = h('input',{type:'file',accept:'image/jpeg,image/png,image/webp',hidden:true,on:{change:async e=>{
@@ -610,20 +611,17 @@ function characterPanel(){
     let nm, mk;
     const form = pend.image ? h('div',{class:'charnew'},
       h('img',{src:pend.thumb,alt:'รูปที่เลือก'}),
-      nm = h('input',{type:'text',maxlength:20,placeholder:'ชื่อตัวละคร',value:pend.name||'','aria-label':'ชื่อตัวละคร',on:{input:e=>{ pend.name=e.target.value; }}}),
+      nm = h('input',{type:'text',maxlength:20,disabled:!!pend.editId,placeholder:'ชื่อตัวละคร',value:pend.name||'','aria-label':'ชื่อตัวละคร',on:{input:e=>{ pend.name=e.target.value; }}}),
       mk = h('button',{class:'btn primary',on:{click:async()=>{
         err.textContent=''; if(!(pend.name||'').trim()){ err.textContent='ตั้งชื่อตัวละครก่อน'; nm.focus(); return; }
         mk.disabled=true; mk.textContent='กำลังวิเคราะห์รูป…';
-        try{ const r=await api('/app/api/studio/characters',{method:'POST',body:JSON.stringify({name:pend.name,image:pend.image,thumb:pend.thumb,pixels:pend.pixels})});
-          mk.textContent='กำลังทำพื้นหลังจากรูป…';
-          try{ const bd = await photoBackdrop(pend.file, r.person_box); await api('/app/api/studio/characters/'+r.character.id+'/backdrop',{method:'PUT',body:JSON.stringify({backdrop:bd})}); r.character.has_backdrop = true; }
-          catch(e2){ toast('สร้างตัวละครแล้ว แต่ทำพื้นหลังจากรูปไม่สำเร็จ: '+e2.message); }
-          CHARS=[r.character,...CHARS]; setSelectedChars([...selectedChars(),r.character.id].slice(-3)); S.charNew={}; Object.keys(pend).forEach(k=>delete pend[k]); toast('สร้างตัวละคร '+r.character.name+' แล้ว'); draw(); }
-        catch(x){ err.textContent=x.message; mk.disabled=false; mk.textContent='สร้างตัวละคร'; } }}},'สร้างตัวละคร'),
+        try{ const r=await api('/app/api/studio/characters'+(pend.editId?'/'+pend.editId+'/reference':''),{method:pend.editId?'PUT':'POST',body:JSON.stringify({name:pend.name,image:pend.image,thumb:pend.thumb,pixels:pend.pixels})});
+          CHARS=[r.character,...CHARS.filter(x=>x.id!==r.character.id)]; setSelectedChars([...new Set([...selectedChars(),r.character.id])].slice(-3)); S.charNew={}; Object.keys(pend).forEach(k=>delete pend[k]); toast('บันทึกรูปอ้างอิง '+r.character.name+' แล้ว'); draw(); }
+        catch(x){ err.textContent=x.message; mk.disabled=false; mk.textContent='สร้างตัวละคร'; } }}},pend.editId?'อัปเดตรูปอ้างอิง':'สร้างตัวละคร'),
       h('button',{class:'btn quiet',on:{click:()=>{ Object.keys(pend).forEach(k=>delete pend[k]); draw(); }}},'ยกเลิก'))
       : h('div',{class:'row',style:'justify-content:flex-start'}, h('button',{class:'btn',on:{click:()=>file.click()}},'+ อัปโหลดรูปเป็นตัวละคร'), file);
     put(wrap, h('h3',{},'ตัวละครจากรูป'),
-      h('div',{class:'hint'},'ระบบอ่านทรงผม สีผม สีผิว เสื้อผ้า ลายเสื้อ แว่น รองเท้า เครื่องประดับ จากรูป แล้ววาดเป็นตัวการ์ตูนด้วยโค้ด และเอาพื้นหลังของรูปมาใช้เป็นฉากหลัง (ลบตัวคนออกก่อน ปรับเป็นภาพแบน หน้าคนจริงไม่ถูกส่งไปไหน ไม่ใช้ AI สร้างภาพ) · เลือกได้สูงสุด 3 คนต่อคลิป'),
+      h('div',{class:'hint'},'ระบบเก็บรูปอ้างอิงและส่งให้ AI ที่เชื่อมอยู่ดูตอนออกแบบใบหน้า รูปร่าง และเสื้อผ้าของตัวละคร แล้ววาดฉากใหม่ตามบทก่อนประกอบคลิป ความเหมือนเป็นภาพวาดตีความตามรูป ไม่รับประกันเหมือนทุกจุด · ตัวละครเก่าที่มีเพียงรูปย่อจะเก็บรายละเอียดได้น้อยกว่า · เลือกได้สูงสุด 3 คนต่อคลิป'),
       list, form, err);
   }
   function toggle(id){ let a=selectedChars(); a = a.includes(id) ? a.filter(x=>x!==id) : [...a,id].slice(-3); setSelectedChars(a); draw(); }

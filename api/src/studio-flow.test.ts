@@ -1,0 +1,101 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { Hono } from 'hono';
+
+// Provider configuration is read on module load. No external requests are made.
+process.env.MOTION_LLM_PROVIDER = 'openai';
+process.env.OPENAI_API_KEY = 'mock-key';
+process.env.MOTION_OPENAI_WEB_SEARCH = 'true';
+delete process.env.FIRECRAWL_API_KEY;
+const { registerStudio, Draft } = await import('./studio.js');
+
+test('pump plans, draws, sends previews, then approves on a later model turn only', async () => {
+  const script = [
+    { id: 'open', beat: 'hook', text: 'คนชื่อ เบล ในประเทศไทย มีกี่คน' },
+    ...['market', 'glasses', 'monkey', 'reveal'].map(id => ({ id, beat: 'rehook', text: 'แต่เดี๋ยวก่อน เรื่องของเบลยังไม่จบ เราจะตามไปดูที่ตลาด เมื่อแว่นหายไปแล้วใครกันที่เก็บได้ ลองสังเกตคนรอบตัวให้ดี เพราะคำตอบอาจอยู่ใกล้กว่าที่คิด' })),
+    { id: 'end', beat: 'cta', text: 'ถ้าคุณเป็นเบล จะเริ่มตามหาจากตรงไหน ลองเล่าในคอมเมนต์ให้ฟังหน่อย' },
+  ];
+  const plan = { script, shots: script.map(s => ({ seg: s.id, visual: 'Market scene with a monkey and the missing glasses', action: 'Bell reaches for glasses', camera: 'Medium tracking shot', characters: ['เบล'] })), character_notes: 'Bell has a long face and distinct hairline.' };
+  const submitted = Draft.parse({ title_th: 'แว่นของเบลหายไปไหน', format: 'mystery', script,
+    scenes: script.map(s => ({ seg: s.id, type: 'custom', code: 'def draw(c,t,p):\n  c.grad("sky","cream")\n  c.person("เบล",450,700,250)' })),
+    art: 'def ground(c):\n  c.rect(0,1200,1080,720,"cream")',
+    cast: [{ name: 'เบล', portrait_code: 'def draw(c,t,p):\n  c.ellipse(0,0,80,110,"tan")' }],
+    sources: [{ url: 'https://example.org/research', publisher: 'Example', published: String(new Date().getUTCFullYear()), claim: 'ไม่มีข้อมูลจำนวนคนชื่อเบล', confidence: 'low' }],
+    claims: [{ text: 'เบลเป็นชื่อของตัวละครสมมติ', kind: 'assumption', source_ids: [] }],
+    captions: { facebook: 'เบล', instagram: 'เบล', tiktok: 'เบล', youtube: 'เบล', twitter: 'เบล' },
+  });
+  const look = { hairstyle: 'short', hair_color: [20, 25, 30], skin: [200, 150, 120], top: 'shirt', top_color: [5, 70, 160], bottom: 'pants', bottom_color: [10, 10, 10], glasses: 'none', accessories: [], accessory_color: [0, 0, 0] };
+  let status = 'queued', calls = 0, previews = 0, finalAtCall = 0, persistedPlan: unknown, finalDraft: any;
+  let resolveDone!: () => void;
+  const done = new Promise<void>(resolve => { resolveDone = resolve; });
+  const row = { id: '10000000-0000-0000-0000-000000000001', topic: 'เรื่องเบล', model: 'gpt-6-astra', reasoning: 'low', characters: [{ id: '20000000-0000-0000-0000-000000000001', name: 'เบล', look }], style: 'classic', auto_produce: false };
+  const requests: any[] = [];
+  let fetchError: unknown;
+  const sql: string[] = [];
+  const pool = { query: async (query: string, args: any[] = []) => {
+    sql.push(query);
+    if (query.includes("WHERE status IN ('researching','writing')")) return { rows: [], rowCount: 0 };
+    if (query.includes("SELECT id FROM drafts WHERE status='queued'")) return { rows: status === 'queued' ? [{ id: row.id }] : [] };
+    if (query.startsWith('SELECT * FROM drafts WHERE id=')) return { rows: [{ ...row, status }] };
+    if (query.startsWith('SELECT id, draft FROM drafts')) return { rows: [] };
+    if (query.startsWith('SELECT reference_image, thumb')) return { rows: [{ reference_image: 'data:image/jpeg;base64,cmVmZXJlbmNl', thumb: null }] };
+    if (query.startsWith('INSERT INTO art_checks')) {
+      previews++; assert.equal(calls >= 3, true, 'cannot preview before plan');
+      const payload = JSON.parse(args[1]);
+      assert.equal(JSON.stringify(payload).includes('cmVmZXJlbmNl'), false, 'original photos stay out of worker payload');
+      assert.ok(payload.cast[0].portrait_code);
+      return { rows: [{ id: `check-${previews}` }] };
+    }
+    if (query.startsWith('SELECT status, result FROM art_checks')) return { rows: [{ status: 'done', result: { scenes: script.map(s => ({ seg: s.id, errors: [], frames: ['ZnJhbWU=', 'ZnJhbWU='] })) } }] };
+    if (query.startsWith('UPDATE drafts SET storyboard=')) { persistedPlan = JSON.parse(args[1]); status = 'writing'; }
+    else if (query.startsWith("UPDATE drafts SET status='researching'")) status = 'researching';
+    else if (query.startsWith("UPDATE drafts SET status='writing'")) status = 'writing';
+    else if (query.startsWith('UPDATE drafts SET draft=')) { status = args[4]; finalDraft = JSON.parse(args[1]); finalAtCall = calls; resolveDone(); }
+    else if (query.startsWith("UPDATE drafts SET status='failed'")) { status = 'failed'; resolveDone(); }
+    else if (!query.startsWith('UPDATE drafts SET log') && !query.startsWith('UPDATE drafts SET usage') && !query.startsWith('UPDATE drafts SET problems')) throw new Error('Unexpected SQL: ' + query);
+    return { rows: [], rowCount: 1 };
+  } };
+  const nativeFetch = globalThis.fetch, nativeTimeout = globalThis.setTimeout;
+  const timeout = nativeTimeout(() => resolveDone(), 5000);
+  const tool = (name: string, input: unknown, id: string) => ({ type: 'function_call', name, call_id: id, arguments: JSON.stringify(input) });
+  globalThis.fetch = async (_url, init) => {
+    try {
+    const body = JSON.parse(String(init?.body)); requests.push(body); calls++;
+    assert.equal(body.background, true);
+    assert.ok(body.max_output_tokens >= 32000);
+    let output: any[];
+    if (calls === 1) output = [tool('submit_episode', submitted, 'too-early')];
+    else if (calls === 2) {
+      assert.ok(body.input.some((i: any) => i.type === 'function_call_output' && i.call_id === 'too-early' && i.output.includes('First call plan_story')));
+      output = [{ type: 'web_search_call', action: { type: 'search', query: 'source', sources: [{ url: 'https://example.org/research', title: 'Example' }] } }, tool('plan_story', plan, 'plan')];
+    } else if (calls === 3) output = [tool('submit_episode', submitted, 'draw-a'), tool('submit_episode', submitted, 'draw-b')];
+    else if (calls === 4) {
+      assert.equal(status, 'writing', 'two submits in the same turn must not bypass visual review');
+      const shown = body.input.filter((i: any) => i.role === 'user' && Array.isArray(i.content) && i.content[0]?.text.startsWith('Preview frames'));
+      assert.equal(shown.length, 1);
+      assert.equal(shown[0].content.filter((c: any) => c.type === 'input_image').length, script.length * 2);
+      output = [tool('submit_episode', submitted, 'reviewed')];
+    } else throw new Error('Unexpected model turn ' + calls);
+    return new Response(JSON.stringify({ id: `resp_${calls}`, status: 'completed', output, usage: { input_tokens: 100, output_tokens: 100 } }), { status: 200 });
+    } catch (e) { fetchError = e; throw e; }
+  };
+  // Accelerate only app preview polling; suppress startup inbox import in this isolated test.
+  globalThis.setTimeout = ((callback: (...a: any[]) => void, ms?: number, ...args: any[]) =>
+    nativeTimeout(ms === 8000 ? () => {} : callback, ms === 1500 || ms === 8000 ? 0 : ms, ...args)) as typeof setTimeout;
+  try {
+    registerStudio(new Hono(), pool as any, { guard: async (_c, next) => next(),
+      createJob: async () => { throw new Error('must not auto-produce'); }, estimateCredits: () => 100,
+      validate: () => [], researchFreshness: () => [],
+    });
+    await done;
+    if (fetchError) throw fetchError;
+    assert.equal(status, 'ready');
+    assert.equal(finalAtCall, 4);
+    assert.equal(previews, 3);
+    assert.deepEqual(persistedPlan, plan);
+    assert.deepEqual(finalDraft.storyboard, plan);
+    assert.ok(requests[0].input.some((i: any) => Array.isArray(i.content) && i.content.some((c: any) => c.image_url === 'data:image/jpeg;base64,cmVmZXJlbmNl')));
+  } finally {
+    clearTimeout(timeout); globalThis.fetch = nativeFetch; globalThis.setTimeout = nativeTimeout;
+  }
+});

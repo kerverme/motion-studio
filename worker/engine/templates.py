@@ -991,6 +991,12 @@ def T_scale(img, d, t, seg, sp):
 ART = {'fns': {}}   # seg -> compiled draw(c, t, p) of an LLM-written scene (engine/artkit.py)
 
 
+def custom_person_style(who):
+    if who not in CAST:
+        raise artkit.ArtError(f'unknown cast member {who!r}')
+    return person_style({'who': who})
+
+
 def T_custom(img, d, t, seg, sp):
     """A scene whose art was written by the model for this story, drawn with the artkit shapes. A scene that fails to compile or
     to draw is reported to QA and replaced by the plain scenario layout with the cast, so a bad drawing never kills the render."""
@@ -999,7 +1005,7 @@ def T_custom(img, d, t, seg, sp):
     if fn is not None:
         hooks = {
             'put': put, 'text_img': text_img,
-            'person': lambda im, who, x, y, size, mood, talk: draw_person(im, x, y, size, t, style=person_style({'who': who}), pose='stand', mood=mood if mood in ('normal', 'happy', 'shock', 'think', 'sad') else 'normal', talk=talk),
+            'person': lambda im, who, x, y, size, mood, talk, pose, wave: draw_person(im, x, y, size, t, style=custom_person_style(who), pose=pose, mood=mood if mood in ('normal', 'happy', 'shock', 'think', 'sad') else 'normal', talk=talk, wave=wave),
             'cat': lambda im, x, y, size, mood, talk: draw_cat(im, x, y, size, t, mood=mood if mood in ('normal', 'happy', 'shock', 'worried') else 'normal', talk=talk),
             'cue': lambda w: at(seg, str(w)[:40], 0.0) - S['s'],
         }
@@ -1007,8 +1013,12 @@ def T_custom(img, d, t, seg, sp):
             artkit.run(fn, img, t - S['s'], clamp((t - S['s']) / max(0.1, S['e'] - S['s'])), hooks)
             return
         except artkit.ArtError as e:
+            if sp.get('_strict_art'):
+                raise
             if not any(x[0] == seg for x in ERRORS):
                 ERRORS.append((seg, 'custom art: ' + str(e)[:300]))
+    if sp.get('_strict_art'):
+        raise artkit.ArtError(f'scene {seg}: custom drawing was not compiled')
     T_scenario(img, d, t, seg, dict(sp, type='scenario'))
 
 
@@ -1048,7 +1058,9 @@ def _scene(seg, sp, seed):
             if kind not in OWN_TITLE:
                 headline(img, t, seg, sp)
             extras(img, d, t, seg, sp)
-        except Exception as e:  # never kill the render over one bad spec: show a plain card and report it
+        except Exception as e:  # legacy specs retain their original generic fallback
+            if sp.get('_strict_art'):
+                raise artkit.ArtError(f'scene {seg}: {type(e).__name__}: {e}') from e
             if seg not in [x[0] for x in ERRORS]:
                 ERRORS.append((seg, repr(e)))
                 traceback.print_exc(file=sys.stderr)
@@ -1066,6 +1078,7 @@ def build_scenes(spec):
         cast = {str(c.get('name')): c for c in cast if isinstance(c, dict) and c.get('name')}
     CAST.clear()
     CAST.update({k: v for k, v in cast.items() if isinstance(v, dict)})
+    strict_art = any(bool(member.get('portrait_code')) for member in CAST.values())
     BACKDROP.clear()
     for k, v in CAST.items():
         if v.get('backdrop'):
@@ -1073,11 +1086,30 @@ def build_scenes(spec):
             if bd is not None:
                 BACKDROP[k] = bd
     ART['fns'].clear()
+    portrait_errors = []
+    for name, member in CAST.items():
+        if member.get('portrait_code'):
+            try:
+                artkit.compile_portrait(member['portrait_code'])
+            except artkit.ArtError as e:
+                portrait_errors.append(f'portrait {name}: {e}')
     for sp in spec.get('scenes') or []:   # LLM-written scene art: compile once, report what does not compile
         if sp.get('type') == 'custom' and sp.get('seg'):
             try:
+                if portrait_errors:
+                    raise artkit.ArtError('; '.join(portrait_errors))
+                # Catch misspelled actor names before a fallback character reaches production.
+                import ast
+                tree = ast.parse(sp.get('code') or '')
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == 'person' and node.args:
+                        who = node.args[0]
+                        if isinstance(who, ast.Constant) and isinstance(who.value, str) and who.value not in CAST:
+                            raise artkit.ArtError(f'unknown cast member {who.value!r}')
                 ART['fns'][sp['seg']] = artkit.compile_art(spec.get('art') or '', sp.get('code') or '', 'scene ' + str(sp['seg']))
-            except artkit.ArtError as e:
+            except (artkit.ArtError, SyntaxError) as e:
+                if strict_art:
+                    raise artkit.ArtError(f'scene {sp["seg"]}: {e}') from e
                 ERRORS.append((sp['seg'], 'custom art: ' + str(e)[:300]))
     out = {}
     for i, sp in enumerate(spec.get('scenes') or []):
@@ -1085,8 +1117,10 @@ def build_scenes(spec):
         if not seg:
             continue
         pal = PALETTES.get(sp.get('bg')) or PALETTES[PAL_ORDER[i % len(PAL_ORDER)]]
-        out[seg] = (_scene(seg, dict(sp, _flip=bool(i % 2), _i=i), i + 3), pal)
+        out[seg] = (_scene(seg, dict(sp, _flip=bool(i % 2), _i=i, _strict_art=strict_art), i + 3), pal)
     for i, sid in enumerate(core.ORDER):
-        if sid not in out:  # a segment the spec forgot still gets a decent scene
+        if sid not in out:  # legacy specs keep their fallback; new story art fails closed
+            if strict_art:
+                raise artkit.ArtError(f'scene {sid}: no storyboard drawing supplied')
             out[sid] = (_scene(sid, {'type': 'scenario', 'bubble': {'text': _TEXT.get(sid, '')[:60]}}, 50 + i), PALETTES[PAL_ORDER[i % len(PAL_ORDER)]])
     return out

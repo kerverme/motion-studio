@@ -37,6 +37,8 @@ def look_style(look):
     into a draw_person style dict. Unknown values fall back to Tum's defaults."""
     look = look or {}
     st = {}
+    if isinstance(look.get('portrait_code'), str) and look['portrait_code'].strip():
+        st['portrait_code'] = look['portrait_code']
     if look.get('hairstyle') in HAIRSTYLES:
         st['hairstyle'] = look['hairstyle']
     if look.get('hair_color'):
@@ -87,6 +89,9 @@ def draw_person(base, cx, cy, S, t, style=None, pose='stand', mood='normal', tal
     white turtleneck, navy blazer, beige chinos, grey loafers. style keys (see look_style): hairstyle, hair, skin, skin_shadow,
     top, jacket, jacket_dark, inner, bottom, pants, shoes, frame, glasses (round|square|none), accessories, acc, strap.
     (cx, cy) = centre of the head, S = head width."""
+    if style and style.get('portrait_code'):
+        from .artkit import draw_portrait
+        return draw_portrait(base, style['portrait_code'], cx, cy, S, t, mood=mood, talk=talk, wave=wave, pose=pose, alpha=alpha)
     st = dict(DEFAULT_STYLE); st.update(style or {})
     SKIN, SKIN_D, HAIR = st['skin'], st['skin_shadow'], st['hair']
     NAVY, NAVY_D, WHITE = st['jacket'], st['jacket_dark'], st['inner']

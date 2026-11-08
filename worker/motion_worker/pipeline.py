@@ -346,11 +346,14 @@ def make_cover(ctx, number, out):
 
 
 def make_thumbnail(ctx, T, number, out):
+    from engine.artkit import ArtError
     from PIL import ImageDraw
     from engine import core, render
     if ctx.pkg.get('cover'):
         try:
             return make_cover(ctx, number, out)
+        except ArtError:
+            raise  # bespoke portrait failures must not silently become a generic thumbnail
         except Exception as e:   # a cover problem must never fail the clip: fall back to the scene-frame thumbnail
             print(f'[thumbnail] cover failed, using the scene frame: {e!r}', flush=True)
     code = write_scene_code(ctx)

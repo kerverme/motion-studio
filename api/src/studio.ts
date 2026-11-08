@@ -10,6 +10,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openaiResponse, networkCode } from './openai-response.js';
+import { Storyboard, validateStoryboardDraft, personCalls, type StoryboardT } from './storyboard.js';
 
 const env = process.env;
 const ANTHROPIC_URL = (env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/$/, '');
@@ -258,7 +259,7 @@ type Usage = { input_tokens: number; output_tokens: number; cache_read_input_tok
 type WebFound = { searches: number; queries: string[]; sources: { url: string; title: string }[] };
 // which research tools are usable right now (changes during a draft when Firecrawl runs out of credits or the web search budget is spent)
 type Active = { fc: boolean; ws: boolean };
-const activeTools = (a: Active) => TOOLS.filter((t) => t.name === 'submit_episode' || a.fc);
+const activeTools = (a: Active) => TOOLS.filter((t) => t.name === 'submit_episode' || t.name === 'plan_story' || a.fc);
 interface Conversation {
   turn(force: boolean): Promise<{ uses: ToolUse[]; usage: Usage; web?: WebFound }>;
   results(rs: ToolResult[], note?: string): void;
@@ -292,7 +293,7 @@ function anthropicConversation(system: string, first: string, model: string, act
     },
     say(text) { messages.push({ role: 'user', content: text }); },
     show(text, images) {
-      messages.push({ role: 'user', content: [{ type: 'text', text }, ...images.map((data) => ({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data } }))] });
+      messages.push({ role: 'user', content: [{ type: 'text', text }, ...images.map((data) => ({ type: 'image', source: { type: 'base64', media_type: data.startsWith('data:') ? data.slice(5, data.indexOf(';')) : 'image/jpeg', data: data.startsWith('data:') ? data.slice(data.indexOf(',') + 1) : data } }))] });
     },
   };
 }
@@ -307,7 +308,7 @@ function openaiConversation(system: string, first: string, model: string, effort
       const tools: any[] = fnTools(active);
       if (active.ws) tools.push({ type: 'web_search', search_context_size: WEB_SEARCH_CONTEXT, user_location: { type: 'approximate', country: 'TH', city: 'Bangkok', region: 'Bangkok', timezone: 'Asia/Bangkok' } });
       const resp = await openai({ model, instructions: system, input, tools, reasoning: { effort }, ...(active.ws ? { include: ['web_search_call.action.sources'] } : {}),
-        max_output_tokens: effort === 'high' ? 48000 : effort === 'medium' ? 32000 : 20000,
+        max_output_tokens: effort === 'high' ? 48000 : 32000,
         tool_choice: force ? { type: 'function', name: 'submit_episode' } : 'auto' }, onProgress);
       const out: any[] = resp.output || [];
       input.push(...out);
@@ -340,7 +341,7 @@ function openaiConversation(system: string, first: string, model: string, effort
     },
     say(text) { input.push({ role: 'user', content: text }); },
     show(text, images) {
-      input.push({ role: 'user', content: [{ type: 'input_text', text }, ...images.map((data) => ({ type: 'input_image', image_url: `data:image/jpeg;base64,${data}` }))] });
+      input.push({ role: 'user', content: [{ type: 'input_text', text }, ...images.map((data) => ({ type: 'input_image', image_url: data.startsWith('data:') ? data : `data:image/jpeg;base64,${data}` }))] });
     },
   };
 }
@@ -350,8 +351,8 @@ function systemPrompt(a: Active) {
   const ce = d.getUTCFullYear(), be = ce + 543;
   return `You are the head writer and researcher of a Thai short-video channel. Series tag: "${SERIES_TAG}".
 Today is ${todayIso()} (Thai year ${be}). Every clip is a 1080x1920 vertical video, 45–75 seconds, narrated in Thai by a synthetic voice,
-with 100% code-drawn motion graphics: a mint "jelly cat" mascot narrates, and an optional chibi guy with round glasses ("ตั้ม") acts out scenarios.
-The visuals come only from the template engine described below (no images, no AI art, no stock footage).
+with bespoke code-drawn motion graphics. Read the story, direct every shot and draw every scene and cast member for THIS episode.
+Use code and the canvas toolkit below; do not call image generation services or use stock footage. Reference photos guide likeness, never become the background.
 
 ## Research rule (the owner's standing instruction — non-negotiable)
 - Every fact, number and story condition must come from pages you retrieve in THIS session. ${a.fc && a.ws ? 'Use BOTH tools: firecrawl_search / read_page (Firecrawl, exact page text) and the built-in web_search (OpenAI, broad and fresh lookups, can open pages). Cross-check key numbers between them when you can.' : a.ws ? 'Firecrawl is not available now: research only with the built-in web_search tool (it can search and open pages; open the page to confirm exact figures and its publication date).' : 'Use firecrawl_search and read_page (Firecrawl).'}
@@ -389,39 +390,24 @@ taking sides, and content about private individuals.
 - Brand/English names in Thai script (ไลน์, ยูทูบ, ติ๊กต็อก). Total narration 450–1000 Thai characters.
 - segment ids: short lowercase ascii. Every segment has "beat": hook | rehook | info | payoff | cta.
 
-## Scenes (scenes[]) — one per segment, same seg id
+## Scenes (scenes[]) — one per segment, same seg id; prefer 6–8 concise shots and reusable art helpers
 Each scene: {"seg", "type", "bg", ...template fields, optional common fields}. Timing fields ("at", "*_at", countdown entries) must be a word or
 short phrase copied EXACTLY from that segment's narration (it fires when that word is spoken). On-screen text may use digits and is short
 (≤ 22 characters per line). Vary bg between consecutive scenes. bg: ${BGS.join(', ')}.
-Common optional fields (any type): "set": ${SETS.join('|')} (draw the scene in that location instead of a plain background;
-best for scenario, hook, chat, versus, outro), "headline": {"text","at"} (top title), "sub": {"text","at","color"}, "cat": {"mood": normal|happy|shock|worried,
-"x": right|left|center, "react": {"mood","at"}}, "person": {"mood": normal|happy|shock|think, "x": left|right, "outfit": navy|red|green|purple|orange|grey,
-"react": {...}}, "stamp": {"text" (≤ 12 chars),"at","color": red|green|orange}, "note": {"text"} (small source line, e.g. "ที่มา: สสช. 2568"), "confetti": {"at"}.
-Templates:
-- hook: {"lines": [{"text","at","color"}] (1–3 lines), "icon", "icon_at"}
-- number: {"value": number, "decimals", "prefix", "suffix" (e.g. " ล้านคน", "%"), "at", "label": {"text","at"}, "icon"} — counter rolls up when "at" is spoken
-- compare: {"items": [{"label","value","display","icon","at","color"}] (2–3), "highlight": index, "highlight_at"} — vertical bars
-- bars: {"items": [{"label","value","display","at"}] (2–6), "highlight": index} — horizontal ranking
-- list: {"items": [{"text","icon","at"}] (2–5), "mark": number|check|cross|icon}
-- quiz: {"question": {"text","at"}, "options": [{"letter","text","at"}] (3), "countdown": ["สาม","สอง","หนึ่ง"]}
-- reveal: {"options": same as quiz, "correct": index, "at", "big": {"text","at"}}
-- dots: {"total": 10–400, "highlight": count, "at", "highlight_at", "label": {"text","at"}, "unit": person|dot, "color"} — "x out of N"
-- timeline: {"items": [{"year","text","at"}] (2–5)}
-- truth: {"statement": {"text","at"}, "verdict": true|false, "verdict_at", "verdict_text", "explain": {"text","at"}} — myth vs fact
-- scenario: {"bubble": {"text","at"}, "icon", "icon_at", "person": {...}, "cat": {...}} — acted-out "what if" moment
-- icons: {"items": [{"icon","label","at"}] (2–6)}
-- outro: {"lines": [{"text","at"}] (1–2), "icon_at"} — comment call to action
-- chat: {"title", "messages": [{"from": left|right, "name", "text", "at"}] (2–6)} — a phone chat that types out as it is spoken
-- versus: {"items": [{"label", "who" (cast name) or "icon", "lines": [short stats], "at", "color"}] (exactly 2), "winner": index, "winner_at"}
-- scale: {"icon", "count": 1–60, "at", "label": {"text","at"}} — "that equals N of these" with the icon repeated
-Icons: ${ICONS.join(', ')}.
+Every scene MUST be type "custom", including the opening and closing. Draw the setting, props, characters, diagrams and action yourself with the canvas toolkit below.
+Common optional overlays: "headline": {"text","at"}, "sub": {"text","at","color"}, "stamp": {"text","at","color"}, "note": {"text"}, "confetti": {"at"}.
+No fixed scene layouts or preset sets. Vary shot scale, framing, setting, blocking and motion according to the narration and storyboard.
 
 ## Characters (cast)
-Define the people in this episode in "cast" (0–4 characters), each a distinct look, and refer to them in scenes with "person": {"who": name, ...}.
-Give each character a look that fits who they are; make characters in the same episode clearly different (hairstyle, hair colour, top colour).
-Fields: {"name" (as spoken/shown, e.g. "แบงค์"), "hairstyle": ${HAIRSTYLES.join('|')}, "hair_color": ${HAIR_COLORS.join('|')},
-"skin": ${SKINS.join('|')}, "top": ${TOPS.join('|')}, "top_color", "bottom": ${BOTTOMS.join('|')}, "bottom_color" (colours: ${CLOTH.join('|')}),
-"glasses": round|square|none, "accessories": [${ACCESSORIES.join(', ')}], "accessory_color"}.
+Define 1–4 people in "cast", each with "name", "portrait_description" and "portrait_code". Call c.person("name", x, y, size, mood, talk) in scenes.
+Draw a distinct face AND full body, not a generic chibi with different clothes. For uploaded people, study the labelled reference image: face silhouette, jaw/chin,
+relative eye spacing and shape, brows, nose, lips, ears, hairline, hair volume, glasses, body proportions, clothes, colours and visible distinguishing details.
+Preserve the same identity throughout the episode; reuse each cast member's portrait_code in every shot. Do not infer identity, ethnicity, health or hidden details.
+Likeness is a stylised interpretation, not a guaranteed exact copy. Describe uncertainty where the reference is small or obscured.
+portrait_code (≤9000 chars) is standalone Python def draw(c,t,p): using the same canvas shapes below. Canonical head centre (0,0), head width about 200,
+full silhouette within x=-160..160, y=-140..370, feet near y=370. Draw on transparency (no background); c.person/c.cat/c.grad are forbidden inside portraits.
+Use c.mood, c.talk (0..1), c.wave, c.pose to animate face/arms; t is seconds, p is normalised talk. Portrait code cannot call top-level art helpers.
+Use enough facial geometry to reflect the reference. Every invented character also needs bespoke portrait_code. Optional legacy clothing fields may be included.
 ## Cover + opening (the owner's standing rule for EVERY clip)
 Every clip has a main character: cast[0]. Its "name" is the name the clip is about. The cover image reads "คนนี้ชื่อ “<name>”" with that character, so cast[0].name must be a real, speakable Thai name or nickname (≤ 14 characters).
 If the owner's topic starts with "คนชื่อ X ในประเทศไทย มีกี่คน", then cast[0].name = X. If the topic gives no name, pick a common Thai name that fits the story. If the topic says "แล้วต่อด้วยเรื่อง: Y", Y is the story that follows the opener; if there is no Y, choose a fresh story angle yourself.
@@ -433,16 +419,13 @@ The clip OPENS with that question, then the story follows:
   ("ไม่มีสถิติทางการ แต่ข้อมูลล่าสุดบอกว่า…"), give only what the source supports (rank, share, a stated estimate), and record it as a claim of kind "assumption".
 - then continue into the story/topic with the usual formats, re-hooks and CTA. A claim in "claims" must mention the name and cover the count.
 Optional "cover": {"name": (default cast[0].name), "line": (≤ 28 chars, the bottom hook line on the cover; default = the title)}.
-Show the main character BIG in the opening: segment 1's scene must be type "scenario" with "person": {"who": cast[0].name} and a "headline" (or "bubble") with the question,
+Show the main character BIG in the opening custom scene with c.person(cast[0].name as a literal string, ..., size=240 or larger) and a headline with the question,
 so viewers see clearly who "this person" is in the first seconds (like the cover).
 
 ## Characters in EVERY frame, acting out the context (the owner's standing rule)
-The jelly cat narrator is on screen in every scene and any cast member appears in every scene too (the engine adds them even if you do not place them; "cat": false is not allowed).
-They must MOVE differently with what is being said. Give every scene's "cat" an "action": {"name", "at"} (and "person" one when it is placed; the person's action should differ from the cat's).
-Actions: ${ACTIONS.join(', ')} — wave (greeting/CTA), hop (good news), jump (the big hook or reveal), nod (agreeing, facts), sway (thinking, quiz), shake (shock, no, myth),
-dance (celebration, outro), lean (pointing at the number/item on screen), peek (a surprise slides in), run (journey, timeline, getting away), cheer (the answer is right), idle (calm).
-"at" is a word from that segment's narration (the action starts when it is spoken). Combine with moods (cat: normal|happy|shock|worried, person: normal|happy|shock|think) and "react".
-Match the action to the meaning of the words, change it between consecutive scenes, and use at least 4 different actions in an episode. Move the characters with "x": left|right|center in some scenes.
+Every custom scene must actually draw at least one named cast member with c.person("name", ...). The mint cat mascot is optional.
+Animate the cast with movement, expression, scale, rotation and poses suited to the narration. Show uploaded characters clearly in at least a third of the shots.
+Do not paste a static portrait on the same background throughout. Use c.cue("word") to align reveals and movement to the narration.
 
 ## Pace (the owner wants it faster)
 The voice runs fast (about ${CPS.toFixed(1)} characters per second). Write punchy narration: short phrases, active verbs, no filler or
@@ -454,10 +437,6 @@ this story's emotion and setting)}. Fit THIS story and the visual style (e.g. pi
 woodwinds, risograph → indie lo-fi, ps2 → early-2000s game soundtrack). Do not default to fast or hyped: calm or touching stories get slower, softer music,
 tense ones tense music, comedy gets comedic music. Vary the music from recent episodes.
 
-"ตั้ม" is the recurring guy from earlier episodes (hairstyle helmet, top blazer navy, glasses round, accessories [bag]); reuse exactly that look if he appears.
-A "scenario" scene can show two characters: "person" (left) and "person2" (right), with "bubble" and "bubble2" speech lines; name tags show automatically.
-Elsewhere "person" appears small in a corner. The cat is always the narrator.
-
 ## Sound
 sfx: up to 10 cues {"sfx", "seg", "at" (word from that segment), "gain" 0.3–0.7}. "sfx" is a library sound (${Object.keys(SFX).join('|')})
 or "custom" with "prompt" (English, ≤ 100 chars, a sound that belongs to THIS story, e.g. "paper train whistle", "robot beeping happily") and "duration" 0.5–4 s
@@ -465,13 +444,13 @@ or "custom" with "prompt" (English, ≤ 100 chars, a sound that belongs to THIS 
 quiet moments can have soft sounds or none. Avoid the same set of sounds as every other episode.
 
 ## Custom scene art — draw THIS story's own pictures with code (type "custom")
-The templates above cover data and talking scenes. Anything the story is actually ABOUT that they cannot show (a monkey stealing glasses, a temple,
+Draw everything the story is actually ABOUT (a monkey stealing glasses, a temple,
 a jeep, a market stall, a flood, a giant coin) you draw yourself, new for this story, with a tiny shape toolkit. Nothing is pre-drawn: if the story
 has a monkey you build the monkey. This is still code only (no images, no AI art); the visual style (claymation, lego, ...) is applied on top.
-Use at least 2 "custom" scenes (more when the story is visual). Put the shared drawing functions of the story in top-level "art" (≤ 9000 chars,
+Use "custom" for EVERY scene. Put the shared drawing functions of the story in top-level "art" (≤ 9000 chars,
 defined ONCE and reused by every custom scene so the monkey looks the same in each scene), and per scene {"seg", "type": "custom", "code": "def draw(c, t, p): ..."}
 (≤ 6000 chars; it may call the functions from "art"). A custom scene still accepts headline / sub / stamp / note / confetti and the "at" cues like the others.
-Scene 1 stays the "scenario" opener with the hero.
+Scene 1 is also custom: stage a new opening with the hero, not a fixed template.
 draw(c, t, p): c = the canvas, t = seconds since the scene started, p = 0..1 progress through the scene. Frame is 1080 x 1920 px, origin top-left;
 keep the subject inside y 330–1380 (the headline sits above, the subtitles below). Redraw everything every frame: paint the background FIRST
 (c.grad sky/wall, ground, far things), then mid things, then the subject, then details.
@@ -483,12 +462,12 @@ Canvas methods (colours: (r,g,b) tuples, "#ff8800", or white black red orange ye
   c.arc(x, y, r, a0, a1, color, w=8) angles in degrees (0 = right, 90 = down)
 - c.push() / c.pop() save/restore the transform; c.move(x, y), c.rotate(deg), c.scale(s) or c.scale(sx, sy) apply to everything drawn after (build a figure around (0,0), then move/scale/rotate it)
 - c.text(x, y, "short text", size=64, color="white", stroke=6) (≤ 60 chars, Thai ok, for signs and labels)
-- c.person("name", x, y, size=240, mood="normal", talk=0) draws a cast member with their uploaded look: (x, y) is the head centre and the body extends about 1.85 x size below it;
+- c.person("name", x, y, size=240, mood="normal", talk=0, pose="stand", wave=0.0) draws a cast member with their uploaded look: (x, y) is the head centre and the body extends about 1.85 x size below it;
   moods normal|happy|shock|think. c.cat(x, y, size=160, mood="normal") draws the channel's mint cat mascot (moods normal|happy|shock|worried)
 - c.cue("word") = seconds from the scene start until that word is spoken in the narration: time reveals to it, e.g. k = ease_out((t - c.cue("ลิง")) * 2.5)
 Helpers: sin(deg) cos(deg) tan(deg) atan2(y,x) sqrt hypot pi floor ceil lerp(a,b,x) clamp(x,a,b) ease(x) ease_out(x) osc(t, period, amp) pingpong(t, period)
 rnd(i) (0..1, repeatable) noise(x) mix(c1,c2,x) shade(color, k) (k>0 lighter, k<0 darker) rgb(r,g,b) range len min max abs round int float sum enumerate zip list sorted.
-The code is checked and a sandbox runs it. Allowed: def, if/else, for (at most 2 loops nested; range up to 300), assignments, arithmetic, f-strings, lists/tuples/dicts, lambda.
+At top level, use ONLY function definitions and literal constant assignments: no calls, calculations, loops or computed default arguments. Put executable work inside draw or helper functions. The code is checked and a sandbox runs it. Allowed: def, if/else, for (at most 2 loops nested; range up to 300), assignments, arithmetic, f-strings, lists/tuples/dicts, lambda.
 NOT allowed (the check rejects them): import, while, class, try, with, global, print, open, anything starting with "_", "**" except small integer powers, string .format.
 Make it good: build each figure from many shapes (≥ 20 for the main subject), outline main shapes (outline=shade(color,-0.4)), shade with a lighter belly/highlight and a darker
 side, give creatures eyes, ears and a mouth, keep the main subject big (≥ 350 px) and give everything a little life with osc()/pingpong() (bobbing, blinking, tail, arms).
@@ -506,11 +485,19 @@ one short "อ้างอิง:" line naming the main sources and years, 5–8
 
 ## Process
 1. Plan, then research (several queries, Thai + English, newest year first) and confirm the key figures on the actual pages.
-2. Write everything, then call submit_episode once with the complete episode. If it returns problems, fix them and call submit_episode again.
+2. Write the complete narration and shot plan FIRST. Call plan_story with script, shots and character_notes. Each shot describes what is seen, action, camera and cast names.
+3. After plan_story succeeds, write portrait_code for every cast member, shared art helpers and custom code for EVERY shot. Keep the planned narration unchanged; call plan_story again if you need to change it.
+4. Call submit_episode with the complete episode. The worker renders all scenes; inspect its preview images against the original references and narration. Correct likeness, composition and action before resubmitting. Only inspected, successfully rendered art can become ready.
 Reply only through tools.`;
 }
 
 const TOOLS = [
+  { name: 'plan_story', description: 'Save the narration and visual storyboard BEFORE drawing. Required before submit_episode. Re-plan if changing narration.',
+    input_schema: { type: 'object', required: ['script', 'shots', 'character_notes'], properties: {
+      script: { type: 'array', items: { type: 'object', required: ['id','text','beat'], properties: { id: {type:'string'}, text:{type:'string'}, beat:{type:'string',enum:[...BEATS]} } } },
+      shots: { type:'array', items:{type:'object',required:['seg','visual','action','camera','characters'],properties:{seg:{type:'string'},visual:{type:'string'},action:{type:'string'},camera:{type:'string'},characters:{type:'array',items:{type:'string'}}}} },
+      character_notes: {type:'string'}
+    } } },
   {
     name: 'firecrawl_search',
     description: 'Search the web with Firecrawl. Returns up to 5 results with title, URL, publication hint and the start of each page as markdown. Put the year in the query to get the newest data.',
@@ -530,6 +517,7 @@ const TOOLS = [
       properties: {
         title_th: { type: 'string', description: 'clip title, ≤ 60 chars' },
         format: { type: 'string', enum: Object.keys(FORMATS) },
+        art: { type: 'string', description: 'Shared scene drawing helpers, maximum 9000 characters' },
         angle: { type: 'string', description: 'one sentence: the story angle and why it is interesting (Thai)' },
         script: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, text: { type: 'string' }, beat: { type: 'string', enum: [...BEATS] } }, required: ['id', 'text', 'beat'] } },
         scenes: { type: 'array', items: { type: 'object' } },
@@ -548,7 +536,7 @@ const TOOLS = [
         style: { type: 'string', enum: STYLE_NAMES },
         cast: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, hairstyle: { type: 'string' }, hair_color: { type: 'string' },
           skin: { type: 'string' }, top: { type: 'string' }, top_color: { type: 'string' }, bottom: { type: 'string' }, bottom_color: { type: 'string' },
-          glasses: { type: 'string' }, accessories: { type: 'array', items: { type: 'string' } }, accessory_color: { type: 'string' } }, required: ['name'] } },
+          glasses: { type: 'string' }, accessories: { type: 'array', items: { type: 'string' } }, accessory_color: { type: 'string' }, portrait_code: {type:'string'}, portrait_description: {type:'string'} }, required: ['name','portrait_code','portrait_description'] } },
         thumbnail: { type: 'object', properties: { seg: { type: 'string' }, title: { type: 'string' } } },
         cover: { type: 'object', properties: { name: { type: 'string' }, line: { type: 'string' } } },
       },
@@ -559,7 +547,8 @@ const TOOLS = [
 // ---------------------------------------------------------------- validation of a draft
 // a colour is a name from the lists above or an exact [r,g,b] (cast made from a photo)
 const Colour = z.union([z.string(), z.array(z.number().int().min(0).max(255)).length(3)]);
-const Draft = z.object({
+export const Draft = z.object({
+  storyboard: Storyboard.optional(),
   title_th: z.string().min(4).max(90),
   angle: z.string().default(''),
   format: z.string().default(''),
@@ -579,7 +568,7 @@ const Draft = z.object({
   style: z.string().optional(),
   music_mode: z.enum(['default', 'ai']).optional(),
   cast: z.array(z.object({
-    name: z.string().min(1).max(20), hairstyle: z.string().optional(), hair_color: Colour.optional(), skin: Colour.optional(),
+    name: z.string().min(1).max(20), portrait_code: z.string().max(9000).optional(), portrait_description: z.string().max(2500).optional(), hairstyle: z.string().optional(), hair_color: Colour.optional(), skin: Colour.optional(),
     top: z.string().optional(), top_color: Colour.optional(), bottom: z.string().optional(), bottom_color: Colour.optional(),
     glasses: z.string().optional(), accessories: z.array(z.string()).optional(), accessory_color: Colour.optional(),
     inner_color: Colour.optional(), shoes_color: Colour.optional(), frame_color: Colour.optional(), pattern: z.string().optional(), pattern_color: Colour.optional(),
@@ -625,8 +614,14 @@ export function timing(script: { text: string }[]) {
   return script.map((s) => { const start = t; const dur = s.text.replace(/\s+/g, '').length / CPS; t += dur + 0.35; return { start, dur, end: start + dur }; });
 }
 
-export function checkDraft(d: DraftT, seen: Map<string, Seen> | null, recent: Recent[] = [], opts: { requiredNames?: string[] } = {}) {
+export function checkDraft(d: DraftT, seen: Map<string, Seen> | null, recent: Recent[] = [], opts: { requiredNames?: string[]; bespoke?: boolean } = {}) {
   const problems: string[] = [], warnings: string[] = [];
+  const bespoke = opts.bespoke || !!d.storyboard;
+  if (bespoke) {
+    if (!d.storyboard) problems.push('Call plan_story before drawing the episode');
+    else problems.push(...validateStoryboardDraft(d.storyboard, d));
+    for (const c of d.cast) if (!c.portrait_code || !/def\s+draw\s*\(\s*c\s*,\s*t\s*,\s*p\s*\)/.test(c.portrait_code)) problems.push(`cast ${c.name}: bespoke portrait_code must define def draw(c,t,p):`);
+  }
   const ids = d.script.map((s) => s.id);
   if (new Set(ids).size !== ids.length) problems.push('script ids must be unique');
   const customScenes = d.scenes.filter((x: any) => x.type === 'custom') as any[];
@@ -687,15 +682,19 @@ export function checkDraft(d: DraftT, seen: Map<string, Seen> | null, recent: Re
     if (!d.claims.some((c) => normText(c.text).includes(normText(nm)))) problems.push(`add a claim about how many people in Thailand are named "${nm}" (with its source, or kind "assumption" when no official count exists)`);
     // the main character big on screen in the opening (like the cover)
     const sc0: any = d.scenes.find((x) => x.seg === d.script[0]?.id);
-    if (sc0 && (sc0.type !== 'scenario' || (sc0.person?.who && sc0.person.who !== nm)))
+    if (!bespoke && sc0 && (sc0.type !== 'scenario' || (sc0.person?.who && sc0.person.who !== nm)))
       problems.push(`segment 1's scene must be type "scenario" showing the main character big: "person": {"who": "${nm}"} with the question as headline or bubble`);
   }
   // characters made from the owner's photos are shown big (scenario scenes), not only small in a corner
   const req = (opts.requiredNames || []).filter((n) => names.has(n));
-  if (req.length) {
+  if (req.length && !bespoke) {
     const big = (d.scenes as any[]).filter((sc) => sc.type === 'scenario' && (req.includes(sc.person?.who) || req.includes(sc.person2?.who))).length;
     const need = Math.min(4, Math.ceil(d.scenes.length / 3));
     if (big < need) problems.push(`the owner's photo characters (${req.join(', ')}) must be seen big: use at least ${need} "scenario" scenes with one of them as "person" (now ${big})`);
+  }
+  if (bespoke) {
+    if (!personCalls(String(d.scenes.find(s => s.seg === d.script[0]?.id)?.code || '')).includes(d.cast[0]?.name)) problems.push('opening scene must draw the main cast member with c.person');
+    for (const name of req) if (d.scenes.filter(s => personCalls(s.code || '').includes(name)).length < Math.ceil(d.scenes.length / 3)) problems.push(`show reference character ${name} clearly in at least a third of scenes`);
   }
   for (const sc of d.scenes as any[]) for (const k of ['person', 'person2']) {
     const who = sc[k]?.who;
@@ -749,14 +748,14 @@ export function checkDraft(d: DraftT, seen: Map<string, Seen> | null, recent: Re
   const types = d.script.map((s) => (d.scenes.find((x) => x.seg === s.id) as any)?.type).filter(Boolean) as string[];
   for (let i = 1; i < types.length; i++) if (types[i] === types[i - 1] && types[i] !== 'scenario' && types[i] !== 'custom') problems.push(`scenes ${d.script[i - 1].id} and ${d.script[i].id} both use "${types[i]}"; change one (avoid the same layout twice in a row)`);
   const counts = types.reduce((m: Record<string, number>, x) => ({ ...m, [x]: (m[x] || 0) + 1 }), {});
-  for (const [k, n] of Object.entries(counts)) if (n > (k === 'scenario' ? 5 : 2)) problems.push(`scene type "${k}" is used ${n} times; vary the layouts`);
+  for (const [k, n] of Object.entries(counts)) if (k !== 'custom' && n > (k === 'scenario' ? 5 : 2)) problems.push(`scene type "${k}" is used ${n} times; vary the layouts`);
   if (d.format && !FORMATS[d.format]) problems.push(`unknown format "${d.format}"`);
   if (!d.format) problems.push('set "format" to one of: ' + Object.keys(FORMATS).join(', '));
   const clash = recent.slice(0, 2).filter((r) => r.format && r.format === d.format);
   if (d.format && clash.length) problems.push(`format "${d.format}" was used in a recent episode ("${clash[0].title}"); choose a different format`);
   const sig = (xs: string[]) => xs.slice(0, 5).join('>');
   const same = recent.slice(0, 6).find((r) => r.types.length && sig(r.types) === sig(types));
-  if (same) problems.push(`the scene sequence starts exactly like "${same.title}" (${sig(types)}); change the order or the layouts`);
+  if (same && !bespoke) problems.push(`the scene sequence starts exactly like "${same.title}" (${sig(types)}); change the order or the layouts`);
   if (!MUSIC[d.music]) warnings.push(`unknown music mood "${d.music}" (playful is used)`);
   const thisYear = nowBkk().getUTCFullYear();
   d.sources.forEach((s, i) => {
@@ -810,7 +809,7 @@ export function buildPackage(topic: string, d: DraftT, research: Seen[]) {
     sfx: [...cues.entries()].map(([id, cs]) => ({ id, prompt: customSfx.get(id)?.prompt ?? SFX[id].prompt, duration: customSfx.get(id)?.duration ?? SFX[id].duration, cues: cs })),
     style: d.style && STYLES[d.style] ? d.style : 'classic',
     scene_code: sceneCode(d),
-    storyboard: d.scenes.map((s: any) => ({ seg: s.seg, visual: `template:${s.type}`, onscreen: firstLine(s), bg: s.bg ?? null, transition: 'iris' })),
+    storyboard: d.scenes.map((s: any) => ({ ...d.storyboard?.shots.find(x => x.seg === s.seg), seg: s.seg, visual: d.storyboard?.shots.find(x => x.seg === s.seg)?.visual || `template:${s.type}`, onscreen: firstLine(s), bg: s.bg ?? null, transition: 'iris' })),
     sources: d.sources.map((s) => {
       const r = byUrl.get(normUrl(s.url));
       return { url: s.url, publisher: s.publisher, title: s.title || r?.title, published: s.published, collected: r?.collected || todayIso(), methodology: s.methodology,
@@ -835,7 +834,7 @@ type Deps = {
 
 // ---------------------------------------------------------------- characters from a photo
 // The photo is only ANALYSED (vision) into the parameters the code-drawn chibi engine understands; nothing is generated from it.
-type Look = { hairstyle: string; hair_color: number[]; skin: number[]; top: string; top_color: number[]; inner_color?: number[]; bottom: string; bottom_color: number[]; shoes_color?: number[]; frame_color?: number[];
+type Look = { reference_description?: string; hairstyle: string; hair_color: number[]; skin: number[]; top: string; top_color: number[]; inner_color?: number[]; bottom: string; bottom_color: number[]; shoes_color?: number[]; frame_color?: number[];
   pattern?: string; pattern_color?: number[]; glasses: string; accessories: string[]; accessory_color: number[]; backdrop?: string };
 export type PhotoResult = { look: Look; person_box: number[] | null };
 const PATTERNS = ['none', 'stripes', 'plaid', 'dots'];
@@ -845,8 +844,9 @@ const pick = (v: any, list: string[], d: string) => (list.includes(v) ? v : d);
 const RGB3 = { type: 'array', items: { type: 'integer' }, minItems: 3, maxItems: 3 };
 const LOOK_SCHEMA = {
   type: 'object', additionalProperties: false,
-  required: ['person_visible', 'hairstyle', 'hair_color', 'skin', 'top', 'top_color', 'inner_color', 'bottom', 'bottom_color', 'shoes_color', 'frame_color', 'pattern', 'pattern_color', 'glasses', 'accessories', 'accessory_color', 'boxes'],
+  required: ['reference_description', 'person_visible', 'hairstyle', 'hair_color', 'skin', 'top', 'top_color', 'inner_color', 'bottom', 'bottom_color', 'shoes_color', 'frame_color', 'pattern', 'pattern_color', 'glasses', 'accessories', 'accessory_color', 'boxes'],
   properties: {
+    reference_description: {type:'string', description:'Visible facial geometry, hairline, body proportions and distinctive clothing details; do not identify the person.'},
     person_visible: { type: 'boolean' },
     inner_color: RGB3, shoes_color: RGB3, frame_color: RGB3, pattern: { type: 'string', enum: PATTERNS }, pattern_color: RGB3,
     boxes: { type: 'object', additionalProperties: false, required: ['person', 'head', 'hair', 'torso', 'legs', 'shoes'],
@@ -865,6 +865,7 @@ Do NOT identify the person or guess their name, age, ethnicity or health; descri
 - inner_color: the shirt/turtleneck under a jacket (same as top_color when there is no outer layer). shoes_color: the shoes (grey when not visible). frame_color: the glasses frame colour (brown when no glasses).
 - pattern: stripes, plaid or dots when the top clearly has that print, else none; pattern_color is the colour of the print lines/dots.
 - boxes: where each part is in the picture as [x0, y0, x1, y1] integers 0-1000 (fractions of the image width/height, origin top-left). person = the whole visible body incl. hair; head = the face incl. forehead; hair = the visible hair mass only; torso = the top/jacket; legs = trousers/skirt/shorts; shoes = the shoes. Use [0,0,0,0] for a part that is not visible.
+- reference_description: describe the visible face shape, jaw/chin, relative eyes/brows/nose/lips/ears, hairline, body silhouette and distinguishing visible details in up to 1200 characters. Record obscured features as uncertain; never invent them.
 - If there is no person in the picture set person_visible to false and fill the rest with neutral values.`;
 
 // Sample the real colours from the photo itself: the browser sends a 96x96 RGB grid (base64) of the same picture, and the boxes
@@ -918,6 +919,7 @@ export async function analyzePhoto(dataUrl: string, gridB64?: string): Promise<P
   // hair: the top part of the hair box (the fringe/crown), where the hair is, not the forehead or the shoulders
   const hairTop = Array.isArray(bx.hair) && bx.hair.length === 4 ? [bx.hair[0], bx.hair[1], bx.hair[2], bx.hair[1] + (bx.hair[3] - bx.hair[1]) * 0.5] : null;
   const look: Look = {
+    reference_description: String(raw.reference_description || '').slice(0, 1500),
     hairstyle: pick(raw.hairstyle, HAIRSTYLES, 'short'),
     hair_color: prefer(sampleColour(grid, hairTop, 'median', 0.7), hairM),
     skin: prefer(sampleColour(grid, faceBox, 'lit', 0.8), skinM),
@@ -939,10 +941,11 @@ export async function analyzePhoto(dataUrl: string, gridB64?: string): Promise<P
 // The owner's photo characters are forced into the draft's cast with exactly their stored look.
 type ReqChar = { id?: string; name: string; look: Look };
 export function applyCast(d: DraftT, req: ReqChar[]): DraftT {
-  if (!req?.length) return d;
+  if (!req?.length) return d.storyboard ? {...d, cast:d.cast.map(({backdrop,...c})=>c)} : d;
   const names = new Set(req.map((r) => r.name));
-  const forced = req.map((r) => ({ name: r.name, ...r.look }));
-  return { ...d, cast: [...forced, ...d.cast.filter((c) => !names.has(c.name))].slice(0, 4) } as DraftT;
+  const forced = req.map((r) => { const drawn = d.cast.find(c => c.name === r.name); const { backdrop, ...look } = r.look; return { ...drawn, name: r.name, ...look, portrait_code: drawn?.portrait_code, portrait_description: drawn?.portrait_description, ...(!d.storyboard && backdrop ? {backdrop} : {}) }; });
+  const cast = [...forced, ...d.cast.filter(c => !names.has(c.name))].slice(0, 4);
+  return { ...d, cast: d.storyboard ? cast.map(({backdrop,...c}) => c) : cast } as DraftT;
 }
 
 export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
@@ -1027,11 +1030,8 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     }
     const reqChars: ReqChar[] = Array.isArray(row.characters) ? row.characters : [];
     if (reqChars.length) {
-      userText += `\n\nRequired characters (the owner uploaded photos of them; their look is applied automatically, do not change it): ${reqChars.map((c) => `"${c.name}"`).join(', ')}. ` +
-        `Make them the main cast of this episode: put them in "cast" by exactly these names, write them into the story (what they do, say and feel) and refer to them in scenes with "person": {"who": name}. ` +
-        `Show them BIG so viewers recognise them: about a third of the scenes must be "scenario" scenes with one of them as "person". ` +
-        (reqChars.some((c) => (c.look as any)?.backdrop) ? `The background of their uploaded photo is drawn automatically behind their scenario scenes (and on the cover), so do NOT give those scenario scenes a "set" (leave "set" out); use "set" only on scenes about other places. ` : '') +
-        `You may add at most ${Math.max(0, 4 - reqChars.length)} other characters.`;
+      userText += `\n\nRequired characters (reference images follow): ${reqChars.map(c => JSON.stringify({name:c.name,look:((({backdrop,...look})=>look)(c.look))})).join('\n')}. ` +
+        `Make these the first cast members in this order. Draw their actual visible features in portrait_code; every scene is custom. Show each in at least a third of the shots. Ignore any old backdrop; draw locations from the story. `;
     }
     const recent = await recentEpisodes(id);
     const fixedStyle = row.style && STYLES[row.style] ? row.style : null;
@@ -1044,14 +1044,23 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const model = row.model && MODEL_RE.test(row.model) ? row.model : MODEL;
     const effort = REASONING_LEVELS.includes(row.reasoning) ? row.reasoning : REASONING;
     const conv = PROVIDER === 'openai' ? openaiConversation(systemPrompt(active), userText, model, effort, active, (message) => log(id, message)) : anthropicConversation(systemPrompt(active), userText, model, active);
+    // Load originals only for the LLM, never include them in the public episode package.
+    for (const c of reqChars) {
+      const ref = c.id ? (await pool.query('SELECT reference_image, thumb FROM characters WHERE id=$1', [c.id])).rows[0] : null;
+      const photo = ref?.reference_image || ref?.thumb;
+      if (photo) conv.show(`Reference for ${c.name}. Use only as visual reference for their bespoke face and body. ${ref.reference_image ? '' : 'Only a small legacy thumbnail is available: likeness is limited; do not invent hidden details.'}`, [photo]);
+      else await log(id, `ไม่มีรูปอ้างอิงของ ${c.name} แล้ว ใช้รายละเอียดลักษณะที่บันทึกไว้`);
+    }
+    let storyboard: StoryboardT | null = null;
+    let reviewedArt = '';
+    let pendingReview = '';
     let submits = 0;
-    let artLooks = 0;
     let pendingImages: { text: string; images: string[] } | null = null;
 
     for (let turn = 0; turn < MAX_TURNS; turn++) {
       usage.turns = turn + 1;
       const totalIn = usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens;
-      const mustSubmit = turn >= MAX_TURNS - 2 || totalIn > MAX_INPUT_TOKENS * 0.8;
+      const mustSubmit = !!storyboard && (turn >= MAX_TURNS - 2 || totalIn > MAX_INPUT_TOKENS * 0.8);
       await log(id, `รอบที่ ${turn + 1}: กำลังรอ ${model} ค้นข้อมูล/เขียนร่าง`);
       const { uses, usage: u, web } = await conv.turn(mustSubmit);
       if (web) {
@@ -1100,7 +1109,18 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
               research.push({ kind: 'read', url, at: new Date().toISOString(), title: r.title, published: r.published });
               results.push({ type: 'tool_result', tool_use_id: u.id, content: `${r.title}\nURL: ${r.url}\nPublished (page metadata): ${r.published || 'unknown'}\n---\n${r.markdown || '(empty page)'}` });
             }
+          } else if (u.name === 'plan_story') {
+            const plan = Storyboard.safeParse(u.input);
+            if (!plan.success) { results.push({type:'tool_result',tool_use_id:u.id,is_error:true,content:plan.error.message}); continue; }
+            storyboard = plan.data;
+            reviewedArt = '';
+            pendingReview = '';
+            pendingImages = null;
+            await pool.query("UPDATE drafts SET storyboard=$2, status='writing', updated_at=now() WHERE id=$1", [id, JSON.stringify(storyboard)]);
+            await log(id, `วางบทและสตอรีบอร์ด ${storyboard.shots.length} ฉากแล้ว กำลังออกแบบตัวละครและวาดฉากใหม่`);
+            results.push({type:'tool_result',tool_use_id:u.id,content:'Storyboard saved. Now draw bespoke portrait_code for every cast member and custom code for every planned shot, then submit_episode with exactly this script.'});
           } else if (u.name === 'submit_episode') {
+            if (!storyboard) { results.push({type:'tool_result',tool_use_id:u.id,is_error:true,content:'First call plan_story with the complete narration and shots. Do not draw before planning.'}); continue; }
             submits++;
             await pool.query("UPDATE drafts SET status='writing', updated_at=now() WHERE id=$1", [id]);
             await log(id, submits === 1 ? 'เขียนสคริปต์และวางฉากเสร็จ กำลังตรวจกฎ' : `แก้ตามที่ตรวจพบ (รอบ ${submits})`);
@@ -1108,7 +1128,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
               results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: 'The arguments were not valid JSON. Submit again with valid JSON.' });
               continue;
             }
-            const parsed = Draft.safeParse(u.input);
+            const parsed = Draft.safeParse({ ...u.input, storyboard });
             if (!parsed.success) {
               const issues = parsed.error.issues.slice(0, 15).map((i) => `${i.path.join('.')}: ${i.message}`);
               results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: `Fix these and submit again:\n- ${issues.join('\n- ')}` });
@@ -1116,17 +1136,18 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
             }
             const d0 = applyCast(parsed.data, reqChars);
             const d = { ...d0, ...(fixedStyle ? { style: fixedStyle } : {}), music_mode: row.music_mode === 'ai' ? 'ai' as const : 'default' as const };
-            const { problems, warnings } = checkDraft(d, seen, recent, { requiredNames: reqChars.map((c) => c.name) });
+            const { problems, warnings } = checkDraft(d, seen, recent, { requiredNames: reqChars.map((c) => c.name), bespoke: true });
             let est: number | null = null;
             let showImages: { text: string; images: string[] } | null = null;
             if (!problems.length && d.scenes.some((x: any) => x.type === 'custom')) {
               await log(id, 'ส่งภาพที่โมเดลเขียนโค้ดให้ worker ลองวาด');
               const ac = await artCheck(id, d, (d as any).style || 'classic');
-              if (!ac) { warnings.push('worker did not answer the art preview in time; the scene art was not test-rendered'); await log(id, 'worker ไม่ตอบ ข้ามการลองวาด'); }
+              if (!ac) { throw new Error('worker ยังไม่ตอบการลองวาด ร่างยังไม่พร้อมผลิต กรุณาลองใหม่เมื่อ worker พร้อม'); }
               else if (ac.errors.length) { problems.push(...ac.errors); await log(id, `ลองวาดแล้วพบ ${ac.errors.length} จุดต้องแก้`); }
-              else if (artLooks < 1 && submits < 6 && ac.frames.length) {
-                artLooks++;
-                problems.push('VISUAL REVIEW: the scene art compiled and rendered; its preview frames follow in the next message. Look at each one against its narration. If something is wrong (the subject is unrecognisable, tiny, overlapping the text, off-topic, cut off) fix the art and submit again; if all are good, submit the same episode again unchanged.');
+              else if (ac.frames.length !== d.scenes.length) { problems.push('preview must include every scene before approval'); }
+              else if (reviewedArt !== JSON.stringify({art:d.art,cast:d.cast,scenes:d.scenes,script:d.script,style:d.style})) {
+                pendingReview = JSON.stringify({art:d.art,cast:d.cast,scenes:d.scenes,script:d.script,style:d.style});
+                problems.push('VISUAL REVIEW: the scene art compiled and rendered; its preview frames follow in the next message. Compare every face and body with the labelled original reference images, and every scene with the storyboard and narration. If something is wrong (the subject is unrecognisable, tiny, overlapping the text, off-topic, cut off) fix the art and submit again; if all are good, submit the same episode again unchanged.');
                 showImages = { text: 'Preview frames of your custom scenes (each scene shown early and late). Scene ids in order: ' + ac.frames.map((f) => `${f.seg} (2 frames)`).join(', '), images: ac.frames.flatMap((f) => f.images) };
               }
               if (showImages) pendingImages = showImages;
@@ -1169,7 +1190,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       }
       conv.results(results.map((r: any) => ({ id: r.tool_use_id, content: r.content, is_error: r.is_error })),
         !mustSubmit && !active.ws && (usage.firecrawl_calls >= MAX_FIRECRAWL || !active.fc) ? 'Research budget reached: write and submit now.' : undefined);
-      if (pendingImages) { conv.show(pendingImages.text, pendingImages.images); pendingImages = null; }
+      if (pendingImages) { conv.show(pendingImages.text, pendingImages.images); pendingImages = null; reviewedArt = pendingReview; pendingReview = ''; }
       await saveUsage();
     }
     await pool.query("UPDATE drafts SET status='failed', error=$2, usage=$3, research=$4, updated_at=now() WHERE id=$1",
@@ -1327,8 +1348,24 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     let res: PhotoResult;
     try { res = await analyzePhoto(image, typeof b.pixels === 'string' && b.pixels.length < 40_000 ? b.pixels : undefined); } catch (e) { return c.json({ error: e instanceof Error ? e.message : String(e) }, 422); }
     const thumb = typeof b.thumb === 'string' && /^data:image\/jpeg;base64,/.test(b.thumb) && b.thumb.length < 60_000 ? b.thumb : null;
-    const r = await pool.query('INSERT INTO characters (name, look, thumb) VALUES ($1,$2,$3) RETURNING id, name, look, thumb, created_at', [name, JSON.stringify(res.look), thumb]);
+    const r = await pool.query('INSERT INTO characters (name, look, thumb, reference_image) VALUES ($1,$2,$3,$4) RETURNING id, name, look, thumb, created_at', [name, JSON.stringify(res.look), thumb, image]);
     return c.json({ character: r.rows[0], person_box: res.person_box }, 201);
+  });
+
+  // Refresh a saved reference without changing the character ID or old episode packages.
+  app.put('/app/api/studio/characters/:id/reference', g, async (c) => {
+    const id = c.req.param('id');
+    if (!isId(id) || !(await pool.query('SELECT 1 FROM characters WHERE id=$1', [id])).rowCount) return c.json({error:'not found'}, 404);
+    const b = await c.req.json().catch(() => ({}));
+    const image = String(b.image || '');
+    if (!/^data:image\/(jpeg|png|webp);base64,/.test(image) || image.length > 2_500_000) return c.json({error:'รูปต้องเป็น JPG, PNG หรือ WebP ขนาดไม่เกินประมาณ 1.8 MB'}, 422);
+    if (!configured().llm) return c.json({error:'ยังไม่ได้เชื่อม AI'}, 503);
+    try {
+      const res = await analyzePhoto(image, typeof b.pixels === 'string' && b.pixels.length < 40_000 ? b.pixels : undefined);
+      const thumb = typeof b.thumb === 'string' && /^data:image\/jpeg;base64,/.test(b.thumb) && b.thumb.length < 60_000 ? b.thumb : null;
+      const r = await pool.query('UPDATE characters SET look=$2, reference_image=$3, thumb=$4 WHERE id=$1 RETURNING id,name,look,thumb,created_at', [id, JSON.stringify(res.look), image, thumb]);
+      return c.json({character:r.rows[0]});
+    } catch (e) { return c.json({error:e instanceof Error ? e.message : String(e)}, 422); }
   });
 
   // the browser erases the person from the photo and sends back only the background (small JPEG)
@@ -1405,6 +1442,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       const map = new Map(b.script.map((s: any) => [String(s.id), String(s.text || '').trim()]));
       d.script = d.script.map((s: any) => (map.has(s.id) && map.get(s.id) ? { ...s, text: map.get(s.id) } : s));
     }
+    if (d.storyboard && JSON.stringify(d.script) !== JSON.stringify(row.draft.script)) return c.json({error:'บทนี้มีภาพวาดตามสตอรีบอร์ดแล้ว ใช้ปุ่มเขียนใหม่พร้อมระบุบทที่ต้องการ เพื่อให้ AI วาดและตรวจภาพให้ตรงกับบทใหม่'}, 422);
     if (b.captions && typeof b.captions === 'object') for (const k of ['facebook', 'instagram', 'tiktok', 'youtube', 'twitter']) if (typeof b.captions[k] === 'string') d.captions = { ...d.captions, [k]: b.captions[k] };
     const parsed = Draft.safeParse(d);
     if (!parsed.success) return c.json({ error: 'invalid', problems: parsed.error.issues.slice(0, 10).map((i) => `${i.path.join('.')}: ${i.message}`) }, 422);

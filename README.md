@@ -131,6 +131,25 @@ New motion-api variables: `ANTHROPIC_API_KEY`, `FIRECRAWL_API_KEY` (required for
 
 ### AI provider
 
+OpenAI calls use Responses background mode: create once, then poll the same response ID.
+This avoids the Node fetch default ~5 minute response-header timeout during long reasoning/search.
+Draft logs show the round, response ID and a heartbeat every minute. Transient GET failures retry
+the same response; ambiguous creation failures are not automatically resubmitted. A round has a
+15 minute deadline with best-effort cancellation. API restarts still require restarting the draft;
+this change does not persist the whole model conversation for restart recovery.
+
+Validate the transport with `cd api && npm run typecheck && node --import tsx --test src/openai-response.test.ts`.
+
 The studio works with either provider: `ANTHROPIC_API_KEY` (default model `claude-opus-5-5`) or `OPENAI_API_KEY`
 (Responses API, default model `gpt-6.1-sol`). With only one key set, that provider is used; force one with
 `MOTION_LLM_PROVIDER=anthropic|openai`, pick a model with `MOTION_LLM_MODEL`. Firecrawl, the rule checks and the renderer are the same for both.
+
+### Bespoke story art and reference characters
+
+New studio drafts first call `plan_story` to persist narration and shot direction, then draw every shot as sandboxed custom code (including opener/outro). Each cast member has standalone `portrait_code` for the face and body, reused in scenes and the cover. Legacy drafts and template episodes remain supported.
+
+Uploaded reference images are stored in `characters.reference_image` and sent to the configured vision LLM during story design; they are not included in downloadable episode packages or used as scene backgrounds. Older characters can refresh their original via **อัปเดตรูป**; otherwise only their saved thumbnail is available. Code-drawn likeness is stylised and must be reviewed, not treated as an exact face reproduction.
+
+Every scene must compile/render and the model must receive preview frames in a prior turn before the draft becomes ready. Any changed art requires a new visual review. New bespoke renders fail on drawing errors instead of substituting a generic template. Change narration via Rewrite so its storyboard and visuals are rebuilt.
+
+Validation: `cd api && npm run typecheck && node --import tsx --test src/*.test.ts`; `cd worker && python -m unittest discover -s tests -v`. Migration `012_character_reference.sql` adds nullable reference-image and storyboard fields. Deploy the worker before the API so the new portrait renderer is available when generation starts.
