@@ -345,10 +345,14 @@ def make_cover(ctx, number, out):
     return out
 
 
-def make_thumbnail(ctx, T, number, out):
+def make_thumbnail(ctx, T, number, out, video=None):
     from engine.artkit import ArtError
     from PIL import ImageDraw
     from engine import core, render
+    if (ctx.pkg.get('thumbnail') or {}).get('mode') == 'opening_frame':
+        if not video:
+            raise ValueError('opening-frame cover requires the delivered video')
+        return rendering.first_frame(video, out)
     if ctx.pkg.get('cover'):
         try:
             return make_cover(ctx, number, out)
@@ -455,7 +459,7 @@ def stage_upload(ctx):
     os.makedirs(out, exist_ok=True)
     files = {}
     mp4 = os.path.join(out, f'{base}.mp4'); shutil.copyfile(final, mp4); files[os.path.basename(mp4)] = (mp4, 'video/mp4')
-    th = make_thumbnail(ctx, T, number, os.path.join(out, f'{base}_thumbnail.png')); files[os.path.basename(th)] = (th, 'image/png')
+    th = make_thumbnail(ctx, T, number, os.path.join(out, f'{base}_thumbnail.png'), video=mp4); files[os.path.basename(th)] = (th, 'image/png')
     for name, pth in write_docs(ctx, T, number, out).items():
         mime = {'.txt': 'text/plain', '.md': 'text/markdown', '.srt': 'application/x-subrip', '.json': 'application/json'}[os.path.splitext(name)[1]]
         files[name] = (pth, mime)

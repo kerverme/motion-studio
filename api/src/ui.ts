@@ -107,7 +107,7 @@ export function registerUi(app: Hono, pool: pg.Pool, deps: { API_TOKEN: string; 
   // ---- clips
   const CLIP_SQL = `
     SELECT e.id, e.number, e.title_th, e.topic, e.ui_status, e.used_at, e.created_at, e.notion_page_id, e.notion_synced_at, e.notion_error,
-           h.files, h.created_at AS delivered_at, j.package->'captions' AS captions,
+           h.files, h.created_at AS delivered_at, j.package->'captions' AS captions, j.package->'thumbnail'->>'mode' AS thumbnail_mode,
            EXTRACT(EPOCH FROM (COALESCE(j.finished_at, h.created_at) - j.created_at))::int AS produce_seconds, j.package->>'series_tag' AS series_tag, j.source_type,
            COALESCE((SELECT json_agg(json_build_object('id', p.id, 'channel_id', p.channel_id, 'channel_name', p.channel_name, 'service', p.service, 'mode', p.mode,
                      'due_at', p.due_at, 'status', p.status, 'error', COALESCE(p.post_error, p.error), 'created_at', p.created_at,
@@ -124,6 +124,7 @@ export function registerUi(app: Hono, pool: pg.Pool, deps: { API_TOKEN: string; 
     const caps = (r.captions || {}) as Record<string, string>;
     return {
       id: r.id, number: r.number, title: titleOf(r), topic: r.topic, series_tag: r.series_tag, ui_status: r.ui_status, used_at: r.used_at, delivered_at: r.delivered_at, produce_seconds: r.produce_seconds ?? null, source_type: r.source_type ?? 'studio',
+      thumbnail_offset_ms: buffer.thumbnailOffsetFor(r.thumbnail_mode),
       video_url: video?.url ?? null, thumbnail_url: thumb?.url ?? null, video_bytes: video?.bytes ?? null,
       captions: {
         facebook: caps.facebook ?? '', instagram: caps.instagram ?? '', tiktok: caps.tiktok ?? '',
@@ -259,7 +260,7 @@ export function registerUi(app: Hono, pool: pg.Pool, deps: { API_TOKEN: string; 
       if (!ins.rowCount) { results.push({ channel_id: ch.id, service: svc, status: 'skipped', error: 'already published or pending for this channel' }); continue; }
       const logId = ins.rows[0].id;
       try {
-        const post = await buffer.createPost({ channel: ch, text, videoUrl: ep.video_url, mode: body.mode, dueAt: dueIso, thumbnailOffsetMs: 1500, aiDisclosure: AI_DISCLOSURE });
+        const post = await buffer.createPost({ channel: ch, text, videoUrl: ep.video_url, mode: body.mode, dueAt: dueIso, thumbnailOffsetMs: ep.thumbnail_offset_ms, aiDisclosure: AI_DISCLOSURE });
         await pool.query("UPDATE publish_log SET status='sent', buffer_post_id=$2 WHERE id=$1", [logId, post.id]);
         results.push({ channel_id: ch.id, service: svc, status: 'sent', buffer_post_id: post.id });
       } catch (e) {

@@ -54,7 +54,7 @@ const SERIES_TAG = env.MOTION_SERIES_TAG || 'จะเกิดอะไรข�
 
 const llmKey = () => (PROVIDER === 'openai' ? !!env.OPENAI_API_KEY : !!env.ANTHROPIC_API_KEY);
 export const configured = () => ({ llm: llmKey(), provider: PROVIDER, key_name: PROVIDER === 'openai' ? 'OPENAI_API_KEY' : 'ANTHROPIC_API_KEY',
-  anthropic: llmKey(), firecrawl: !!env.FIRECRAWL_API_KEY, web_search: WEB_SEARCH && !!env.OPENAI_API_KEY, research_policy:{primary:'openai_web_search',firecrawl:'fallback_only',default_credit_limit:25,budget_scope:'research_job',sequential:true} });
+  anthropic: llmKey(), firecrawl: !!env.FIRECRAWL_API_KEY, web_search: WEB_SEARCH && !!env.OPENAI_API_KEY, cover_policy:{mode:'opening_frame',thumbnail_offset_ms:0,static_intro:false,new_drafts_only:true}, research_policy:{primary:'openai_web_search',firecrawl:'fallback_only',default_credit_limit:25,budget_scope:'research_job',sequential:true} });
 const researchReady = (cf: ReturnType<typeof configured>) => cf.llm && cf.web_search;
 const researchMissing = (cf: ReturnType<typeof configured>) => [!cf.llm && cf.key_name, !cf.web_search && 'OPENAI_API_KEY (Web Search first)'].filter(Boolean).join(' และ ');
 
@@ -450,6 +450,14 @@ Draw every shot from its own narration and storyboard; show the relevant subject
     prompt = prompt.replace('Define 1–4 people', 'If people are needed, define 0–4 people').replace('Scene 1 is also custom: stage a new opening with the hero, not a fixed template.', 'Scene 1 is custom: draw a topical opening; a human is optional.');
     prompt += `\nOwner supplied source text is unverified input. Retrieve the original source and cross-check factual claims. For health content, distinguish an expert's suggested routine from established clinical evidence; do not generalize precise quantities or hormonal timings to everyone. Do not diagnose viewers. Preserve uncertainties without repeating disclaimers in every sentence.`;
   }
+  prompt += `
+## Opening frame is the cover (all new clips)
+The first video frame at t=0 is also the cover shown in Studio and selected in Buffer. There is no separate cover artwork and no frozen intro.
+Draw the main subject fully visible, at full size and opacity, from t=0. For name stories show cast[0] large; for general stories show the relevant subject (a human is optional).
+Draw a short readable Thai headline from t=0 with c.text, within x=100..980 and y=300..620. Keep the main subject inside x=100..980, y=650..1450 so profile crops remain readable.
+Do not gate the subject/headline on c.cue, p, or positive t; no fade-in, scale-from-zero, blank lead-in or one-second still. Start subtle motion immediately and let narration run on its normal timeline.
+The first shot's t starts at the video's start (0 seconds); c.cue still gives the matching narration time. Other scenes use their normal local narration time.
+Use the same headline in thumbnail.title. The first preview of the opening shot is the exact frame at 0 seconds: inspect it for a complete subject, readable headline and safe crop before accepting the draft.`;
   return prompt;
 }
 
@@ -538,6 +546,7 @@ export const Draft = z.object({
     inner_color: Colour.optional(), shoes_color: Colour.optional(), frame_color: Colour.optional(), pattern: z.string().optional(), pattern_color: Colour.optional(),
     backdrop: z.string().max(220_000).optional(),   // photo background of a photo character, set by the server, never by the brain
   })).max(4).default([]),
+  cover_mode: z.literal('opening_frame').optional(), // server-set after generation; legacy drafts keep their cover
   thumbnail: z.object({ seg: z.string().optional(), title: z.string().optional() }).optional(),
   cover: z.object({ name: z.string().max(20).optional(), line: z.string().max(40).optional() }).optional(),
 });
@@ -741,7 +750,7 @@ export function checkDraft(d: DraftT, seen: Map<string, Seen> | null, recent: Re
 
 // ---------------------------------------------------------------- draft -> episode package
 export function sceneCode(d: DraftT) {
-  const spec = { strict_art: !!d.storyboard, scenes: d.scenes, text: Object.fromEntries(d.script.map((s) => [s.id, s.text])), cast: d.cast, art: d.art || '' };
+  const spec = { opening_frame_cover: d.cover_mode === 'opening_frame', strict_art: !!d.storyboard, scenes: d.scenes, text: Object.fromEntries(d.script.map((s) => [s.id, s.text])), cast: d.cast, art: d.art || '' };
   return `"""Generated episode: scenes are data rendered by engine.templates (code-drawn templates, no images)."""\nimport json\nfrom engine.templates import build_scenes\n\nSPEC = json.loads(${JSON.stringify(JSON.stringify(spec))})\nSCENES = build_scenes(SPEC)\n`;
 }
 
@@ -783,8 +792,10 @@ export function buildPackage(topic: string, d: DraftT, research: Seen[]) {
     }),
     claims: d.claims,
     captions: d.captions,
-    thumbnail: { seg: thumbSeg, offset: 1.5, title: d.thumbnail?.title || d.title_th.slice(0, 40) },
-    ...(d.story_mode !== 'general' && d.cast.length ? { cover: { who: d.cast[0].name, name: (d.cover?.name || d.cast[0].name).slice(0, 20), line: (d.cover?.line || d.thumbnail?.title || d.title_th).slice(0, 40) } } : {}),
+    thumbnail: d.cover_mode === 'opening_frame'
+      ? { mode: 'opening_frame' as const, seg: d.script[0].id, offset: 0, title: d.thumbnail?.title || d.title_th.slice(0, 40) }
+      : { seg: thumbSeg, offset: 1.5, title: d.thumbnail?.title || d.title_th.slice(0, 40) },
+    ...(d.cover_mode !== 'opening_frame' && d.story_mode !== 'general' && d.cast.length ? { cover: { who: d.cast[0].name, name: (d.cover?.name || d.cast[0].name).slice(0, 20), line: (d.cover?.line || d.thumbnail?.title || d.title_th).slice(0, 40) } } : {}),
     budget: { max_credits: DRAFT_MAX_CREDITS },
   };
 }
@@ -942,7 +953,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
   async function artCheck(id: string, d: DraftT, style: string): Promise<{ errors: string[]; frames: { seg: string; images: string[] }[] } | null> {
     const customs = d.scenes.filter((x: any) => x.type === 'custom');
     if (!customs.length) return { errors: [], frames: [] };
-    const payload = { strict_art: !!d.storyboard, script: d.script.map((x) => ({ id: x.id, text: x.text })), cast: d.cast, art: d.art || '', scenes: customs, style: style || 'classic' };
+    const payload = { opening_frame_cover: d.cover_mode === 'opening_frame', strict_art: !!d.storyboard, script: d.script.map((x) => ({ id: x.id, text: x.text })), cast: d.cast, art: d.art || '', scenes: customs, style: style || 'classic' };
     const ins = await pool.query('INSERT INTO art_checks (draft_id, payload) VALUES ($1,$2) RETURNING id', [id, JSON.stringify(payload)]);
     const cid = ins.rows[0].id;
     for (let i = 0; i < 80; i++) {   // up to ~2 minutes
@@ -952,6 +963,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
         const res = r.result || {};
         if (res.error) return { errors: [`the preview failed: ${String(res.error).slice(0, 300)}`], frames: [] };
         const errors: string[] = [];
+        if (d.cover_mode === 'opening_frame' && (res.scenes || []).find((sc: any) => sc.seg === d.script[0].id)?.frames?.length !== 3) errors.push('opening cover requires video-time-zero, early and late previews; update the worker and retry');
         for (const sc of res.scenes || []) for (const e of sc.errors || []) errors.push(`custom scene ${sc.seg}: ${e}`);
         return { errors, frames: (res.scenes || []).filter((sc: any) => sc.frames?.length).map((sc: any) => ({ seg: sc.seg, images: sc.frames })) };
       }
@@ -1143,7 +1155,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
             const checkpoint = Artwork.safeParse({art:parsed.data.art,cast:parsed.data.cast,scenes:parsed.data.scenes});
             if (checkpoint.success) { artwork = checkpoint.data; await persistArtwork(); }
             const d0 = applyCast(parsed.data, reqChars);
-            const d = { ...d0, ...(fixedStyle ? { style: fixedStyle } : {}), music_mode: row.music_mode === 'ai' ? 'ai' as const : 'default' as const };
+            const d = { ...d0, cover_mode: 'opening_frame' as const, ...(fixedStyle ? { style: fixedStyle } : {}), music_mode: row.music_mode === 'ai' ? 'ai' as const : 'default' as const };
             let sourceReview = '';
             const missing = d.sources.filter(src => !seen.has(normUrl(src.url)) && !attemptedVerification.has(normUrl(src.url))).slice(0,4);
             if (missing.length && PROVIDER === 'openai' && verificationCalls < 4) {
@@ -1171,8 +1183,8 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
               else if (ac.frames.length !== d.scenes.length) { problems.push('preview must include every scene before approval'); }
               else if (reviewedArt !== JSON.stringify({art:d.art,cast:d.cast,scenes:d.scenes,script:d.script,style:d.style})) {
                 pendingReview = JSON.stringify({art:d.art,cast:d.cast,scenes:d.scenes,script:d.script,style:d.style});
-                problems.push('VISUAL REVIEW: the scene art compiled and rendered; its preview frames follow in the next message. Compare every face and body with the labelled original reference images, and every scene with the storyboard and narration. If something is wrong (the subject is unrecognisable, tiny, overlapping the text, off-topic, cut off) fix the art and submit again; if all are good, submit the same episode again unchanged.');
-                showImages = { text: 'Preview frames of your custom scenes (each scene shown early and late). Scene ids in order: ' + ac.frames.map((f) => `${f.seg} (2 frames)`).join(', '), images: ac.frames.flatMap((f) => f.images) };
+                problems.push('VISUAL REVIEW: the scene art compiled and rendered; its preview frames follow in the next message. The opening shot starts with an extra preview at exactly video time 0: verify the subject and headline are fully visible, readable and inside the crop-safe area; reject a blank or delayed entrance. Compare every face and body with the labelled original reference images, and every scene with the storyboard and narration. If something is wrong (the subject is unrecognisable, tiny, overlapping the text, off-topic, cut off) fix the art and submit again; if all are good, submit the same episode again unchanged.');
+                showImages = { text: 'Preview frames of your custom scenes (opening shot: video time 0, early, late; other shots: early, late). Scene ids in order: ' + ac.frames.map((f) => `${f.seg} (${f.images.length} frames)`).join(', '), images: ac.frames.flatMap((f) => f.images) };
               }
               if (showImages) pendingImages = showImages;
             }

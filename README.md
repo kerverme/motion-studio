@@ -179,3 +179,9 @@ Successful extraction responses and exact source URLs are cached in Postgres for
 The draft UI shows cumulative used/reserved credits, remaining budget, requests, and any blocked state. The authenticated owner can explicitly approve a larger **total** via `POST /app/api/studio/drafts/:id/research-budget` with `{limit: 40, approved: true, confirmation: "APPROVE FIRECRAWL TOTAL 40"}`. This action is absent from model tools and is audited; a rewrite never replenishes the budget. Approval does not resolve uncertain charges. Historical lineages with untracked Firecrawl usage are conservatively marked `legacy_usage_unknown` and cannot silently receive a fresh 25 credits.
 
 Validation: `cd api && npm run typecheck && node --import tsx --test src/*.test.ts`. Firecrawl budget tests use mocked HTTP; no paid requests are required.
+
+### Opening-frame covers
+
+New Studio-generated drafts carry `cover_mode: opening_frame`. Their first custom shot starts at video time zero, with the subject and Thai headline already visible and motion beginning immediately. Narration and subsequent scene timing are unchanged; no still intro or extra second is inserted. Visual review includes the exact opening frame in addition to early/late previews. An almost blank opening fails preflight.
+
+Produced packages retain this choice in `thumbnail.mode`. The worker extracts the PNG directly from the first decoded frame of the final delivered MP4; it adds no separate cover layout. Buffer receives `thumbnailOffset: 0` for supported services (including Instagram and TikTok). Facebook/Twitter retain their existing API restrictions. Legacy drafts/packages keep their old cover behavior and 1500ms Buffer selection. Existing published posts are not modified. Deploy worker before API.

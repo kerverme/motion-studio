@@ -1002,15 +1002,16 @@ def T_custom(img, d, t, seg, sp):
     to draw is reported to QA and replaced by the plain scenario layout with the cast, so a bad drawing never kills the render."""
     fn = ART['fns'].get(seg)
     S = core.SEG[seg]
+    origin = 0.0 if sp.get('_opening_frame') else S['s']
     if fn is not None:
         hooks = {
             'put': put, 'text_img': text_img,
             'person': lambda im, who, x, y, size, mood, talk, pose, wave: draw_person(im, x, y, size, t, style=custom_person_style(who), pose=pose, mood=mood if mood in ('normal', 'happy', 'shock', 'think', 'sad') else 'normal', talk=talk, wave=wave),
             'cat': lambda im, x, y, size, mood, talk: draw_cat(im, x, y, size, t, mood=mood if mood in ('normal', 'happy', 'shock', 'worried') else 'normal', talk=talk),
-            'cue': lambda w: at(seg, str(w)[:40], 0.0) - S['s'],
+            'cue': lambda w: at(seg, str(w)[:40], 0.0) - origin,
         }
         try:
-            artkit.run(fn, img, t - S['s'], clamp((t - S['s']) / max(0.1, S['e'] - S['s'])), hooks)
+            artkit.run(fn, img, t - origin, clamp((t - origin) / max(0.1, S['e'] - origin)), hooks)
             return
         except artkit.ArtError as e:
             if sp.get('_strict_art'):
@@ -1117,7 +1118,7 @@ def build_scenes(spec):
         if not seg:
             continue
         pal = PALETTES.get(sp.get('bg')) or PALETTES[PAL_ORDER[i % len(PAL_ORDER)]]
-        out[seg] = (_scene(seg, dict(sp, _flip=bool(i % 2), _i=i, _strict_art=strict_art), i + 3), pal)
+        out[seg] = (_scene(seg, dict(sp, _flip=bool(i % 2), _i=i, _strict_art=strict_art, _opening_frame=bool(spec.get('opening_frame_cover')) and seg == core.ORDER[0]), i + 3), pal)
     for i, sid in enumerate(core.ORDER):
         if sid not in out:  # legacy specs keep their fallback; new story art fails closed
             if strict_art:

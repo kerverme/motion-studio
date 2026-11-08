@@ -16,13 +16,14 @@ def check(payload):
     from engine import render, templates, artkit
     script = [{'id': s['id'], 'text': s['text']} for s in payload['script']]
     scenes = [s for s in payload.get('scenes', []) if s.get('type') == 'custom']
-    spec = {'strict_art': payload.get('strict_art', False), 'scenes': scenes, 'text': {s['id']: s['text'] for s in script}, 'cast': payload.get('cast') or [], 'art': payload.get('art') or ''}
+    spec = {'opening_frame_cover': payload.get('opening_frame_cover', False), 'strict_art': payload.get('strict_art', False), 'scenes': scenes, 'text': {s['id']: s['text'] for s in script}, 'cast': payload.get('cast') or [], 'art': payload.get('art') or ''}
     out = {'scenes': []}
     tl = fake_timeline(script)
     segs = {s['id']: s for s in tl}
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, 'scenes.py')
-        open(path, 'w').write(scene_code(spec))
+        with open(path, 'w') as f:
+            f.write(scene_code(spec))
         mod = render.load_episode_module(path, tl, None, 'check', payload.get('style') or 'classic')
         for sc in scenes:
             seg = sc['seg']
@@ -33,9 +34,16 @@ def check(payload):
                 continue
             s = segs[seg]
             t0 = time.time()
-            for f in FRAMES:
+            fractions = (0.0,) + FRAMES if payload.get('opening_frame_cover') and seg == script[0]['id'] else FRAMES
+            for f in fractions:
                 try:
-                    im = render.frame(mod, s['s'] + (s['e'] + 0.3 - s['s']) * f).convert('RGB')
+                    t = 0.0 if f == 0.0 else s['s'] + (s['e'] + 0.3 - s['s']) * f
+                    # Inspect the artwork itself before badges/subtitles can disguise a blank opener.
+                    if f == 0.0:
+                        raw = render.scene_frame(mod, seg, 0.0).resize(THUMB).convert('L')
+                        if ImageStat.Stat(raw).stddev[0] < 6:
+                            res['errors'].append('opening frame is almost blank: show the subject and headline at t=0 without an entrance delay')
+                    im = render.frame(mod, t).convert('RGB')
                 except Exception as e:   # the engine never raises for scene art (it falls back); anything here is a real problem
                     res['errors'].append(f'render failed: {type(e).__name__}: {e}')
                     break
@@ -44,7 +52,7 @@ def check(payload):
                     res['errors'].append('the frame is almost blank: draw the scene (c.grad for the sky/wall first, then the subject)')
                 b = io.BytesIO(); small.save(b, 'JPEG', quality=62)
                 res['frames'].append(base64.b64encode(b.getvalue()).decode())
-            res['ms'] = int((time.time() - t0) * 1000 / max(1, len(FRAMES)))
+            res['ms'] = int((time.time() - t0) * 1000 / max(1, len(fractions)))
             res['errors'] += [e[1] for e in templates.ERRORS if e[0] == seg]
             if res['ms'] > 1800:
                 res['errors'].append(f'drawing is slow ({res["ms"]} ms per frame); use fewer shapes or smaller loops')

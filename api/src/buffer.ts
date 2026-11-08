@@ -6,6 +6,11 @@ const API_URL = env.BUFFER_API_URL || 'https://api.buffer.com';
 export type Channel = { id: string; name: string; displayName?: string | null; service: string; avatar?: string | null };
 export type PublishMode = 'shareNow' | 'addToQueue' | 'customScheduled';
 
+// The mode belongs to the delivered job, not the current global default.
+export function thumbnailOffsetFor(mode: unknown): number {
+  return mode === 'opening_frame' ? 0 : 1500;
+}
+
 export function configured() {
   return !!env.BUFFER_API_KEY;
 }

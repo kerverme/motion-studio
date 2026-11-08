@@ -64,3 +64,12 @@ def still(scene_code_path, timeline, end, series_tag, t, out, style='classic'):
     mod = render.load_episode_module(scene_code_path, timeline, end, series_tag, style)
     render.frame(mod, t).save(out)
     return out
+
+
+def first_frame(video, out):
+    """Use the decoded first frame of the delivered MP4, without adding or shifting frames."""
+    subprocess.run(['ffmpeg', '-v', 'error', '-y', '-i', video, '-map', '0:v:0',
+                    '-frames:v', '1', '-update', '1', out], check=True)
+    if not os.path.isfile(out) or os.path.getsize(out) == 0:
+        raise RuntimeError('delivered video has no first frame')
+    return out

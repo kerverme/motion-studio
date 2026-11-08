@@ -45,9 +45,10 @@ for (const repair of [false,true]) test(repair ? 'missing source repair delivers
       const payload = JSON.parse(args[1]);
       assert.equal(JSON.stringify(payload).includes('cmVmZXJlbmNl'), false, 'original photos stay out of worker payload');
       assert.ok(payload.cast[0].portrait_code);
+      assert.equal(payload.opening_frame_cover,true);
       return { rows: [{ id: `check-${previews}` }] };
     }
-    if (query.startsWith('SELECT status, result FROM art_checks')) return { rows: [{ status: 'done', result: { scenes: script.map(s => ({ seg: s.id, errors: [], frames: ['ZnJhbWU=', 'ZnJhbWU='] })) } }] };
+    if (query.startsWith('SELECT status, result FROM art_checks')) return { rows: [{ status: 'done', result: { scenes: script.map(s => ({ seg: s.id, errors: [], frames: s.id === script[0].id ? ['ZnJhbWU=', 'ZnJhbWU=', 'ZnJhbWU='] : ['ZnJhbWU=', 'ZnJhbWU='] })) } }] };
     if (query.startsWith('UPDATE drafts SET artwork=')) { checkpoints.push(JSON.parse(args[1])); return {rows:[],rowCount:1}; }
     if (query.startsWith('UPDATE drafts SET storyboard=')) { persistedPlan = JSON.parse(args[1]); status = 'writing'; }
     else if (query.startsWith("UPDATE drafts SET status='researching'")) status = 'researching';
@@ -90,7 +91,7 @@ for (const repair of [false,true]) test(repair ? 'missing source repair delivers
       assert.equal(status, 'writing', 'two submits in the same turn must not bypass visual review');
       const shown = body.input.filter((i: any) => i.role === 'user' && Array.isArray(i.content) && i.content[0]?.text.startsWith('Preview frames'));
       assert.equal(shown.length, 1);
-      assert.equal(shown[0].content.filter((c: any) => c.type === 'input_image').length, script.length * 2);
+      assert.equal(shown[0].content.filter((c: any) => c.type === 'input_image').length, script.length * 2 + 1);
       const {art,cast,scenes,script:lockedScript,...metadata}=submitted;
       assert.equal(body.input.filter((i:any)=>i.type==='function_call_output').some((i:any)=>i.output.includes('was not retrieved')),false,'completed open_page is accepted research evidence');
       if(repair){
@@ -119,6 +120,7 @@ for (const repair of [false,true]) test(repair ? 'missing source repair delivers
     await done;
     if (fetchError) throw fetchError;
     assert.equal(status, 'ready');
+    assert.equal(finalDraft.cover_mode, 'opening_frame');
     assert.equal(finalAtCall, repair?13:12);
     assert.equal(verificationCalls,repair?1:0);
     if(repair)assert.equal(finalDraft.sources[0].url,'https://official.example/new-data');
