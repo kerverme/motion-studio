@@ -153,3 +153,11 @@ Uploaded reference images are stored in `characters.reference_image` and sent to
 Every scene must compile/render and the model must receive preview frames in a prior turn before the draft becomes ready. Any changed art requires a new visual review. New bespoke renders fail on drawing errors instead of substituting a generic template. Change narration via Rewrite so its storyboard and visuals are rebuilt.
 
 Validation: `cd api && npm run typecheck && node --import tsx --test src/*.test.ts`; `cd worker && python -m unittest discover -s tests -v`. Migration `012_character_reference.sql` adds nullable reference-image and storyboard fields. Deploy the worker before the API so the new portrait renderer is available when generation starts.
+
+### Bounded composition and source repair
+
+The composer saves one character or shot per model response (`draw_character`, `save_art`, `draw_scene`), then assembles saved artwork with metadata-only submissions. Artwork checkpoints and the storyboard survive a failed draft's Retry when the direction is unchanged. New direction deliberately starts a new design.
+
+Hosted research records completed search sources, exact `open_page`/`find_in_page` URLs and citation annotations. Source comparison preserves URL path case and ignores tracking parameters. If a proposed source is missing, a separate small OpenAI lookup opens it and returns evidence for review; requested URLs are never accepted merely because the model supplied them. Exact-page reads stay available after Firecrawl depletion.
+
+Broad hosted search is bounded to at most 3 tool calls per response and disabled during artwork generation. High reasoning is retained for research/planning; drawing individual assets uses medium reasoning and a 16000 token output ceiling. The existing model choice stays the same. Provider waits are configurable with `MOTION_OPENAI_TIMEOUT_MS` (default 30 minutes, range 5–45); per-asset checkpoints preserve completed work if a provider still times out. No ambiguous create request is retried automatically.

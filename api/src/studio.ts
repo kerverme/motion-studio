@@ -10,6 +10,8 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openaiResponse, networkCode } from './openai-response.js';
+import { Artwork, emptyArtwork, updateArtwork, mergeArtwork, artworkComplete, ARTWORK_TOOLS, type ArtworkState } from './art-batches.js';
+import { extractWebEvidence, verifySources, sourceKey } from './source-evidence.js';
 import { Storyboard, validateStoryboardDraft, personCalls, type StoryboardT } from './storyboard.js';
 
 const env = process.env;
@@ -37,7 +39,7 @@ if (!MODEL_CHOICES[PROVIDER].some((m) => m.id === MODEL)) MODEL_CHOICES[PROVIDER
 const REASONING_LEVELS = ['low', 'medium', 'high'];
 const REASONING = REASONING_LEVELS.includes(String(env.MOTION_LLM_REASONING)) ? String(env.MOTION_LLM_REASONING) : 'high';
 const MODEL_RE = /^[a-z0-9][a-z0-9.\-]{2,60}$/;
-const MAX_TURNS = Number(env.MOTION_LLM_MAX_TURNS || 18);
+const MAX_TURNS = Number(env.MOTION_LLM_MAX_TURNS || 48);
 const MAX_INPUT_TOKENS = Number(env.MOTION_LLM_MAX_INPUT_TOKENS || 1_200_000); // incl. cache reads, per draft
 const MAX_FIRECRAWL = Number(env.MOTION_FIRECRAWL_MAX_CALLS || 16);
 // OpenAI's hosted web search (Responses API tool) runs beside Firecrawl; when Firecrawl is out of credits (or not set) it carries the research alone.
@@ -162,16 +164,7 @@ const STYLE_NAMES = Object.keys(STYLES);
 // ---------------------------------------------------------------- helpers
 const nowBkk = () => new Date(Date.now() + 7 * 3600_000);
 const todayIso = () => nowBkk().toISOString().slice(0, 10);
-const normUrl = (u: string) => {
-  try {
-    const x = new URL(u);
-    x.hash = '';
-    for (const k of [...x.searchParams.keys()]) if (/^utm_|^fbclid$|^gclid$/.test(k)) x.searchParams.delete(k);
-    return (x.origin + x.pathname.replace(/\/+$/, '') + (x.search || '')).toLowerCase();
-  } catch {
-    return u.trim().toLowerCase();
-  }
-};
+const normUrl = (url: string) => sourceKey(url) || url.trim();
 const normText = (s: string) => String(s ?? '').replace(/[\s.?!…,"“”'()[\]:;\-–—]/g, '');
 const yearOf = (s?: string | null) => {
   const m = String(s || '').match(/(?:19|20|25)\d{2}/)?.[0];
@@ -250,7 +243,7 @@ async function claude(body: any) {
 
 async function openai(body: any, onProgress?: (message: string) => Promise<void>) {
   if (!env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not set on motion-api');
-  return openaiResponse(body, { apiKey: env.OPENAI_API_KEY, baseUrl: OPENAI_URL, onProgress });
+  return openaiResponse(body, { apiKey: env.OPENAI_API_KEY, baseUrl: OPENAI_URL, onProgress, timeoutMs: Math.min(45 * 60_000, Math.max(5 * 60_000, Number(env.MOTION_OPENAI_TIMEOUT_MS) || 30 * 60_000)) });
 }
 
 type ToolUse = { id: string; name: string; input: any };
@@ -258,8 +251,8 @@ type ToolResult = { id: string; content: string; is_error?: boolean };
 type Usage = { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number };
 type WebFound = { searches: number; queries: string[]; sources: { url: string; title: string }[] };
 // which research tools are usable right now (changes during a draft when Firecrawl runs out of credits or the web search budget is spent)
-type Active = { fc: boolean; ws: boolean };
-const activeTools = (a: Active) => TOOLS.filter((t) => t.name === 'submit_episode' || t.name === 'plan_story' || a.fc);
+type Active = { fc: boolean; ws: boolean; drawing?: boolean; searches?: number };
+const activeTools = (a: Active) => TOOLS.filter(t => ['submit_episode','plan_story',...ARTWORK_TOOLS.map(x=>x.name)].includes(t.name) || !a.drawing && (t.name === 'read_page' ? PROVIDER === 'openai' || a.fc : a.fc));
 interface Conversation {
   turn(force: boolean): Promise<{ uses: ToolUse[]; usage: Usage; web?: WebFound }>;
   results(rs: ToolResult[], note?: string): void;
@@ -306,9 +299,10 @@ function openaiConversation(system: string, first: string, model: string, effort
     async turn(force) {
       // reasoning tokens count against max_output_tokens, so leave room for high effort
       const tools: any[] = fnTools(active);
-      if (active.ws) tools.push({ type: 'web_search', search_context_size: WEB_SEARCH_CONTEXT, user_location: { type: 'approximate', country: 'TH', city: 'Bangkok', region: 'Bangkok', timezone: 'Asia/Bangkok' } });
-      const resp = await openai({ model, instructions: system, input, tools, reasoning: { effort }, ...(active.ws ? { include: ['web_search_call.action.sources'] } : {}),
-        max_output_tokens: effort === 'high' ? 48000 : 32000,
+      if (active.ws && !active.drawing) tools.push({ type: 'web_search', search_context_size: WEB_SEARCH_CONTEXT, user_location: { type: 'approximate', country: 'TH', city: 'Bangkok', region: 'Bangkok', timezone: 'Asia/Bangkok' } });
+      const resp = await openai({ model, instructions: system, input, tools, reasoning: { effort: active.drawing && effort === 'high' ? 'medium' : effort }, ...(active.ws && !active.drawing ? { include: ['web_search_call.action.sources'] } : {}),
+        max_output_tokens: active.drawing ? 16000 : 24000,
+        parallel_tool_calls: false, max_tool_calls: Math.max(1, Math.min(3, MAX_WEB_SEARCH - (active.searches || 0))),
         tool_choice: force ? { type: 'function', name: 'submit_episode' } : 'auto' }, onProgress);
       const out: any[] = resp.output || [];
       input.push(...out);
@@ -322,17 +316,7 @@ function openaiConversation(system: string, first: string, model: string, effort
       }
       const u = resp.usage || {};
       const cached = Number(u.input_tokens_details?.cached_tokens || 0);
-      // what the hosted web search looked at: every source it consulted plus the inline citations of the answer
-      const web: WebFound = { searches: 0, queries: [], sources: [] };
-      for (const o of out) {
-        if (o.type === 'web_search_call') {
-          const a = o.action || {};
-          if (a.type === 'search') { web.searches++; web.queries.push(...[a.query, ...(Array.isArray(a.queries) ? a.queries : [])].filter((x: any) => typeof x === 'string' && x).slice(0, 3)); }
-          for (const src of Array.isArray(a.sources) ? a.sources : []) if (src?.url && /^https?:\/\//.test(src.url)) web.sources.push({ url: String(src.url), title: String(src.title || '') });
-        } else if (o.type === 'message') {
-          for (const c of o.content || []) for (const an of c.annotations || []) if (an?.type === 'url_citation' && an.url) web.sources.push({ url: String(an.url), title: String(an.title || '') });
-        }
-      }
+      const web = extractWebEvidence(out);
       return { uses, web: web.searches || web.sources.length ? web : undefined, usage: { input_tokens: Math.max(0, Number(u.input_tokens || 0) - cached), output_tokens: Number(u.output_tokens || 0), cache_read_input_tokens: cached, cache_creation_input_tokens: 0 } };
     },
     results(rs, note) {
@@ -486,12 +470,15 @@ one short "อ้างอิง:" line naming the main sources and years, 5–8
 ## Process
 1. Plan, then research (several queries, Thai + English, newest year first) and confirm the key figures on the actual pages.
 2. Write the complete narration and shot plan FIRST. Call plan_story with script, shots and character_notes. Each shot describes what is seen, action, camera and cast names.
-3. After plan_story succeeds, write portrait_code for every cast member, shared art helpers and custom code for EVERY shot. Keep the planned narration unchanged; call plan_story again if you need to change it.
-4. Call submit_episode with the complete episode. The worker renders all scenes; inspect its preview images against the original references and narration. Correct likeness, composition and action before resubmitting. Only inspected, successfully rendered art can become ready.
+3. After plan_story succeeds, draw ONE small asset per turn. Call draw_character once per cast member, save_art once for shared helpers, then draw_scene once per shot. Never write the whole episode's artwork in one response. Work is checkpointed after each asset; reuse saved assets and only change the broken one.
+4. Call submit_episode with narration and metadata (sources,claims,captions,music etc), OMIT cast/scenes/art because saved artwork is assembled by the server. Keep narration equal to plan_story. If a correction needs different narration, call plan_story again and recheck the affected shots.
+Do not continue broad web research after planning. When a source fails provenance, read_page opens the exact URL via the available provider; do not invent a replacement URL.
+5. Inspect the preview frames sent after submission and repair individual assets with draw_character/draw_scene/save_art. Resubmit metadata without reprinting all drawings. The worker renders all scenes; inspect its preview images against the original references and narration. Correct likeness, composition and action before resubmitting. Only inspected, successfully rendered art can become ready.
 Reply only through tools.`;
 }
 
 const TOOLS = [
+  ...ARTWORK_TOOLS,
   { name: 'plan_story', description: 'Save the narration and visual storyboard BEFORE drawing. Required before submit_episode. Re-plan if changing narration.',
     input_schema: { type: 'object', required: ['script', 'shots', 'character_notes'], properties: {
       script: { type: 'array', items: { type: 'object', required: ['id','text','beat'], properties: { id: {type:'string'}, text:{type:'string'}, beat:{type:'string',enum:[...BEATS]} } } },
@@ -998,13 +985,17 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const row = (await pool.query('SELECT * FROM drafts WHERE id=$1', [id])).rows[0];
     if (!row || row.status !== 'queued') return;
     const seen = new Map<string, Seen>();
-    const research: any[] = [];
+    const research: any[] = Array.isArray(row.research) ? [...row.research] : [];
     let parent: any = null;
     if (row.parent_id) {
-      parent = (await pool.query('SELECT draft, research FROM drafts WHERE id=$1', [row.parent_id])).rows[0] ?? null;
-      for (const r of (parent?.research ?? []) as any[]) {
-        if (r.url && r.collected && Date.now() - new Date(r.collected).getTime() < 25 * 86400_000) seen.set(normUrl(r.url), r);
+      parent = (await pool.query('SELECT draft, research, storyboard, artwork FROM drafts WHERE id=$1', [row.parent_id])).rows[0] ?? null;
+      if (!research.length && Array.isArray(parent?.research)) research.push(...parent.research);
+      for (const event of [...(parent?.research || []), ...(row.research || [])]) {
+        const collected = event.collected || event.at;
+        if (!collected || Date.now() - new Date(collected).getTime() > 25 * 86400_000) continue;
+        for (const r of event.results || [event]) if (r.url) seen.set(normUrl(r.url), {...r,collected,via:event.kind === 'web' ? 'web' : event.kind === 'read' ? 'read' : 'search'});
       }
+      for (const r of parent?.draft?.research_seen || []) if (r.url && r.collected && Date.now() - new Date(r.collected).getTime() < 25 * 86400_000) seen.set(normUrl(r.url), r);
     }
     const usage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, firecrawl_calls: 0, web_searches: 0, turns: 0 };
     const cfg0 = configured();
@@ -1051,7 +1042,15 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       if (photo) conv.show(`Reference for ${c.name}. Use only as visual reference for their bespoke face and body. ${ref.reference_image ? '' : 'Only a small legacy thumbnail is available: likeness is limited; do not invent hidden details.'}`, [photo]);
       else await log(id, `ไม่มีรูปอ้างอิงของ ${c.name} แล้ว ใช้รายละเอียดลักษณะที่บันทึกไว้`);
     }
-    let storyboard: StoryboardT | null = null;
+    let storyboard: StoryboardT | null = row.storyboard || null;
+    let artwork: ArtworkState = row.artwork || emptyArtwork();
+    active.drawing = !!storyboard;
+    if (storyboard) conv.say('Resume the saved storyboard and artwork. Only draw missing pieces. Previously retrieved source metadata (open exact pages with read_page if you need the figures): ' + JSON.stringify([...seen.values()]) + '\nSaved plan: ' + JSON.stringify(storyboard) + '\nSaved artwork: ' + JSON.stringify(artwork));
+    const persistArtwork = () => pool.query('UPDATE drafts SET artwork=$2, updated_at=now() WHERE id=$1', [id, JSON.stringify(artwork)]);
+    const attemptedVerification = new Set<string>();
+    let verificationCalls = 0;
+    let sourceReviewTurn = -1;
+    let sourceReviewEvidence = '';
     let reviewedArt = '';
     let pendingReview = '';
     let submits = 0;
@@ -1060,11 +1059,13 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     for (let turn = 0; turn < MAX_TURNS; turn++) {
       usage.turns = turn + 1;
       const totalIn = usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens;
-      const mustSubmit = !!storyboard && (turn >= MAX_TURNS - 2 || totalIn > MAX_INPUT_TOKENS * 0.8);
-      await log(id, `รอบที่ ${turn + 1}: กำลังรอ ${model} ค้นข้อมูล/เขียนร่าง`);
+      if (totalIn > MAX_INPUT_TOKENS) throw new Error('ครบงบโทเค็นของร่างนี้แล้ว เก็บบทและภาพที่วาดสำเร็จไว้ สามารถลองใหม่เพื่อทำต่อได้');
+      const mustSubmit = !!storyboard && artworkComplete(artwork, storyboard) && (turn >= MAX_TURNS - 2 || totalIn > MAX_INPUT_TOKENS * 0.8);
+      await log(id, `รอบที่ ${turn + 1}: ${storyboard ? `วาดทีละส่วน (${artwork.cast.length} ตัวละคร · ${artwork.scenes.length}/${storyboard.shots.length} ฉาก · reasoning ${effort === 'high' ? 'medium' : effort})` : 'ค้นข้อมูล/วางบท'} (${model})`);
       const { uses, usage: u, web } = await conv.turn(mustSubmit);
       if (web) {
         usage.web_searches += web.searches;
+        active.searches = usage.web_searches;
         const fresh = web.sources.filter((x, i, arr) => arr.findIndex((y) => normUrl(y.url) === normUrl(x.url)) === i);
         for (const x of fresh) if (!seen.has(normUrl(x.url))) seen.set(normUrl(x.url), { url: x.url, title: x.title, published_hint: null, collected: todayIso(), via: 'web' });
         if (web.queries.length) await log(id, `web search: ${web.queries.slice(0, 2).join(' | ').slice(0, 150)}`);
@@ -1072,6 +1073,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
         if (usage.web_searches >= MAX_WEB_SEARCH && active.ws) { active.ws = false; await log(id, 'ครบโควตา web search ของร่างนี้แล้ว'); }
       }
       for (const k of ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'] as const) usage[k] += u[k];
+      await saveUsage();
       if (!uses.length) {
         conv.say('Continue: research with the tools if needed, then call submit_episode.');
         continue;
@@ -1079,7 +1081,24 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       const results: any[] = [];
       for (const u of uses) {
         try {
-          if (u.name === 'firecrawl_search' || u.name === 'read_page') {
+          if (ARTWORK_TOOLS.some(t => t.name === u.name)) {
+            if (!storyboard) throw new Error('Call plan_story before drawing assets');
+            artwork = updateArtwork(artwork, u.name, u.input, storyboard);
+            reviewedArt = ''; pendingReview = ''; pendingImages = null;
+            await persistArtwork();
+            await log(id, u.name === 'draw_scene' ? `บันทึกภาพฉาก ${u.input.scene?.seg} แล้ว (${artwork.scenes.length}/${storyboard.shots.length})` : u.name === 'draw_character' ? `บันทึกตัวละคร ${u.input.character?.name} แล้ว` : 'บันทึกโค้ดวาดร่วมแล้ว');
+            results.push({type:'tool_result',tool_use_id:u.id,content:'Asset saved. Draw only the next missing asset; when complete submit narration and metadata without artwork.'});
+          } else if (u.name === 'read_page' && !active.fc && PROVIDER === 'openai') {
+            if (verificationCalls >= 4) throw new Error('Exact source read budget used; cite only verified sources or state the data is unavailable');
+            verificationCalls++;
+            const checked = await verifySources([String(u.input?.url || '')], { apiKey: env.OPENAI_API_KEY!, baseUrl: OPENAI_URL, model, onProgress: message => log(id,message) });
+            for (const src of checked.sources) seen.set(normUrl(src.url), { ...src, collected:todayIso(), via:'web' });
+            for (const k of ['input_tokens','output_tokens','cache_read_input_tokens','cache_creation_input_tokens'] as const) usage[k] += checked.usage[k];
+            usage.web_searches += checked.searches;
+            research.push({kind:'web',at:new Date().toISOString(),queries:['Exact source read'],results:checked.sources});
+            sourceReviewTurn = turn; sourceReviewEvidence = checked.text;
+            results.push({type:'tool_result',tool_use_id:u.id,is_error:!checked.sources.length,content:checked.text || 'No evidence returned for this URL. Do not cite it.'});
+          } else if (u.name === 'firecrawl_search' || u.name === 'read_page') {
             if (!active.fc) {
               results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: active.ws ? 'Firecrawl is not available (out of credits). Use the built-in web_search tool instead.' : 'Firecrawl is not available. Write with what you have and call submit_episode.' });
               continue;
@@ -1112,13 +1131,16 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
           } else if (u.name === 'plan_story') {
             const plan = Storyboard.safeParse(u.input);
             if (!plan.success) { results.push({type:'tool_result',tool_use_id:u.id,is_error:true,content:plan.error.message}); continue; }
+            if (JSON.stringify(storyboard) !== JSON.stringify(plan.data)) artwork = emptyArtwork();
             storyboard = plan.data;
+            active.drawing = true;
+            await persistArtwork();
             reviewedArt = '';
             pendingReview = '';
             pendingImages = null;
             await pool.query("UPDATE drafts SET storyboard=$2, status='writing', updated_at=now() WHERE id=$1", [id, JSON.stringify(storyboard)]);
             await log(id, `วางบทและสตอรีบอร์ด ${storyboard.shots.length} ฉากแล้ว กำลังออกแบบตัวละครและวาดฉากใหม่`);
-            results.push({type:'tool_result',tool_use_id:u.id,content:'Storyboard saved. Now draw bespoke portrait_code for every cast member and custom code for every planned shot, then submit_episode with exactly this script.'});
+            results.push({type:'tool_result',tool_use_id:u.id,content:'Storyboard saved. Use draw_character for ONE actor at a time, save_art for shared helpers, draw_scene for ONE shot at a time. Then submit metadata only. Do not draw the entire episode in one response.'});
           } else if (u.name === 'submit_episode') {
             if (!storyboard) { results.push({type:'tool_result',tool_use_id:u.id,is_error:true,content:'First call plan_story with the complete narration and shots. Do not draw before planning.'}); continue; }
             submits++;
@@ -1128,15 +1150,33 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
               results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: 'The arguments were not valid JSON. Submit again with valid JSON.' });
               continue;
             }
-            const parsed = Draft.safeParse({ ...u.input, storyboard });
+            const parsed = Draft.safeParse({ ...mergeArtwork(u.input, artwork), storyboard });
             if (!parsed.success) {
               const issues = parsed.error.issues.slice(0, 15).map((i) => `${i.path.join('.')}: ${i.message}`);
               results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: `Fix these and submit again:\n- ${issues.join('\n- ')}` });
               continue;
             }
+            const checkpoint = Artwork.safeParse({art:parsed.data.art,cast:parsed.data.cast,scenes:parsed.data.scenes});
+            if (checkpoint.success) { artwork = checkpoint.data; await persistArtwork(); }
             const d0 = applyCast(parsed.data, reqChars);
             const d = { ...d0, ...(fixedStyle ? { style: fixedStyle } : {}), music_mode: row.music_mode === 'ai' ? 'ai' as const : 'default' as const };
+            let sourceReview = '';
+            const missing = d.sources.filter(src => !seen.has(normUrl(src.url)) && !attemptedVerification.has(normUrl(src.url))).slice(0,4);
+            if (missing.length && PROVIDER === 'openai' && verificationCalls < 4) {
+              missing.forEach(src => attemptedVerification.add(normUrl(src.url))); verificationCalls++;
+              await log(id, `กำลังเปิดแหล่งอ้างอิงที่ยังไม่มีหลักฐาน ${missing.length} หน้า`);
+              const checked = await verifySources(missing.map(src=>src.url), {apiKey:env.OPENAI_API_KEY!,baseUrl:OPENAI_URL,model,onProgress:message=>log(id,message)});
+              for (const src of checked.sources) seen.set(normUrl(src.url), {...src,collected:todayIso(),via:'web'});
+              for (const k of ['input_tokens','output_tokens','cache_read_input_tokens','cache_creation_input_tokens'] as const) usage[k] += checked.usage[k];
+              usage.web_searches += checked.searches;
+              research.push({kind:'web',at:new Date().toISOString(),queries:['Verify submitted sources'],results:checked.sources});
+              sourceReviewTurn = turn; sourceReviewEvidence = checked.text;
+              sourceReview = 'SOURCE REVIEW: the server opened missing sources. Read the evidence, correct any unsupported claims and submit metadata again. Do not redraw artwork. Evidence: ' + (checked.text || 'No readable content returned; remove unsupported claims.');
+              await saveUsage();
+            }
             const { problems, warnings } = checkDraft(d, seen, recent, { requiredNames: reqChars.map((c) => c.name), bespoke: true });
+            if (turn <= sourceReviewTurn) sourceReview = 'SOURCE REVIEW: read the newly retrieved evidence before submitting metadata on the NEXT model turn. Evidence: ' + (sourceReviewEvidence || 'Page content unavailable; do not invent unsupported figures.');
+            if (sourceReview) problems.push(sourceReview);
             let est: number | null = null;
             let showImages: { text: string; images: string[] } | null = null;
             if (!problems.length && d.scenes.some((x: any) => x.type === 'custom')) {
@@ -1478,9 +1518,12 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const keepStyle = row.draft?.style && STYLES[row.draft.style] && row.style !== 'auto' ? row.draft.style : row.style || 'auto';
     const keepMusic = row.draft?.music_mode || row.music_mode || 'default';
     const r = await pool.query('INSERT INTO drafts (topic, note, parent_id, auto_produce, model, reasoning, characters, source_type, community_id, style, music_mode) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id',
-      [row.topic, String(b.note ?? row.note ?? '').trim().slice(0, 1000) || null, row.draft ? row.id : null, row.source_type === 'community' ? false : !!b.auto_produce,
+      [row.topic, String(b.note ?? row.note ?? '').trim().slice(0, 1000) || null, row.id, row.source_type === 'community' ? false : !!b.auto_produce,
         typeof b.model === 'string' && MODEL_RE.test(b.model) ? b.model : row.model, REASONING_LEVELS.includes(b.reasoning) ? b.reasoning : row.reasoning,
         JSON.stringify(row.characters ?? []), row.source_type || 'studio', row.community_id ?? null, keepStyle, keepMusic]);
+    if (row.status === 'failed' && row.storyboard && (b.note === undefined || String(b.note).trim() === String(row.note || '').trim())) {
+      await pool.query('UPDATE drafts SET storyboard=$2, artwork=$3, research=$4 WHERE id=$1', [r.rows[0].id,JSON.stringify(row.storyboard),JSON.stringify(row.artwork || emptyArtwork()),JSON.stringify(row.research || [])]);
+    }
     if (row.community_id) await pool.query('UPDATE community_winners SET draft_id=$2, updated_at=now() WHERE id=$1 AND draft_id=$3', [row.community_id, r.rows[0].id, id]);
     if (['ready', 'failed'].includes(row.status)) await pool.query("UPDATE drafts SET status='discarded', updated_at=now() WHERE id=$1", [id]);
     await log(r.rows[0].id, row.draft ? 'เขียนใหม่จากร่างเดิม รอคิว' : 'ลองใหม่ รอคิว');
