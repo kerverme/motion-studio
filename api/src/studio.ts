@@ -252,7 +252,7 @@ type Usage = { input_tokens: number; output_tokens: number; cache_read_input_tok
 type WebFound = { searches: number; queries: string[]; sources: { url: string; title: string }[] };
 // which research tools are usable right now (changes during a draft when Firecrawl runs out of credits or the web search budget is spent)
 type Active = { fc: boolean; ws: boolean; drawing?: boolean; searches?: number };
-const activeTools = (a: Active) => TOOLS.filter(t => ['submit_episode','plan_story',...ARTWORK_TOOLS.map(x=>x.name)].includes(t.name) || !a.drawing && (t.name === 'read_page' ? PROVIDER === 'openai' || a.fc : a.fc)).map(t => {
+const activeTools = (a: Active) => TOOLS.filter(t => ['submit_episode','plan_story',...ARTWORK_TOOLS.map(x=>x.name)].includes(t.name) || (t.name === 'read_page' ? PROVIDER === 'openai' || a.fc : !a.drawing && a.fc)).map(t => {
   if (t.name !== 'submit_episode' || !a.drawing) return t;
   const schema:any = t.input_schema;
   const omit = new Set(['script','scenes','cast','art']);
@@ -477,7 +477,7 @@ one short "อ้างอิง:" line naming the main sources and years, 5–8
 2. Write the complete narration and shot plan FIRST. Call plan_story with script, shots and character_notes. Each shot describes what is seen, action, camera and cast names.
 3. After plan_story succeeds, draw ONE small asset per turn. Call draw_character once per cast member, save_art once for shared helpers, then draw_scene once per shot. Never write the whole episode's artwork in one response. Work is checkpointed after each asset; reuse saved assets and only change the broken one.
 4. Call submit_episode with narration and metadata (sources,claims,captions,music etc), OMIT script/cast/scenes/art because saved narration and artwork are assembled by the server. If a correction needs different narration, call plan_story again and recheck the affected shots.
-Do not continue broad web research after planning. When a source fails provenance, read_page opens the exact URL via the available provider; do not invent a replacement URL.
+A real retrieved source is required for factual context. If no nickname counts are available, state that honestly; read_page remains available to verify supporting context (e.g. population data or monkeys), and fiction must stay labelled as fiction. Do not erase sources or redesign art merely to repair metadata. Do not continue broad web research after planning. When a source fails provenance, read_page opens the exact URL via the available provider; do not invent a replacement URL.
 5. Inspect the preview frames sent after submission and repair individual assets with draw_character/draw_scene/save_art. Resubmit metadata without reprinting all drawings. The worker renders all scenes; inspect its preview images against the original references and narration. Correct likeness, composition and action before resubmitting. Only inspected, successfully rendered art can become ready.
 Reply only through tools.`;
 }
@@ -1160,7 +1160,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
               const issues = parsed.error.issues.slice(0, 15).map((i) => `${i.path.join('.')}: ${i.message}`);
               await pool.query('UPDATE drafts SET problems=$2 WHERE id=$1', [id,JSON.stringify(issues)]);
               await log(id, 'รูปแบบร่างต้องแก้: '+issues.slice(0,3).join(' · ').slice(0,300));
-              results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: `Fix these and submit again:\n- ${issues.join('\n- ')}` });
+              results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: `Fix these metadata fields only; do NOT re-plan or redraw saved assets. Narration comes from the saved storyboard. If sources is empty, use read_page to retrieve a relevant real source and ground at least one factual claim; keep unknown name counts explicitly unknown and do not invent citations.\n- ${issues.join('\n- ')}` });
               continue;
             }
             const checkpoint = Artwork.safeParse({art:parsed.data.art,cast:parsed.data.cast,scenes:parsed.data.scenes});

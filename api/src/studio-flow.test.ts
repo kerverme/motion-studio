@@ -73,7 +73,7 @@ for (const repair of [false,true]) test(repair ? 'missing source repair delivers
     assert.ok(body.max_tool_calls <= 3);
     assert.equal(body.max_output_tokens, calls <= 2 ? 24000 : 16000);
     assert.equal(body.reasoning.effort, calls <= 2 ? 'high' : 'medium');
-    if (calls >= 3) { const submit = body.tools.find((t:any)=>t.name==='submit_episode'); for (const key of ['script','cast','scenes','art']) assert.equal(key in submit.parameters.properties,false); }
+    if (calls >= 3) { assert.ok(body.tools.some((t:any)=>t.name==='read_page')); const submit = body.tools.find((t:any)=>t.name==='submit_episode'); for (const key of ['script','cast','scenes','art']) assert.equal(key in submit.parameters.properties,false); }
     let output: any[];
     if (calls === 1) output = [tool('submit_episode', submitted, 'too-early')];
     else if (calls === 2) {
