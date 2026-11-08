@@ -27,7 +27,7 @@ test('general mode and source text persist with Sol and survive rewrite; old cli
     assert.equal(res.status,201,await res.text());
     assert.equal(inserts[0].args[3],'gpt-6.1-sol');assert.equal(inserts[0].args[8],'general');assert.equal(inserts[0].args[9],source);assert.equal(inserts[0].args[5],'[]');
     const rewrite=await app.request(`/app/api/studio/drafts/${id}/rewrite`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({note:'อธิบายด้วยกราฟิก ไม่ใช้คน'})});
-    assert.equal(rewrite.status,201);assert.equal(inserts[1].args[11],'general');assert.equal(inserts[1].args[12],source);assert.equal(inserts[1].args[4],'gpt-6.1-sol');
+    assert.equal(rewrite.status,201);assert.equal(inserts[1].args[11],'general');assert.equal(inserts[1].args[12],source);assert.equal(inserts[1].args[4],'gpt-6.1-sol');assert.equal(inserts[1].args[13],row.id,'rewrites inherit the Research Job inside the INSERT, before becoming visible to the pump');
     await app.request('/app/api/studio/drafts',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({topic:'คนชื่อเบลในประเทศไทยมีกี่คน'})});
     assert.equal(inserts[2].args[8],'name_story');
   }finally{globalThis.setTimeout=nativeTimeout;}

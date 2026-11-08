@@ -715,7 +715,7 @@ function community(cm){
 function studio(st, drafts){
   S.studioBusy = drafts.some(inProgress);
   const head = h('div',{class:'head'}, h('div',{}, h('h1',{},'สร้างคลิปใหม่'), h('p',{},'เลือกโหมด ใส่เรื่องหรือแหล่งข้อมูล แล้วให้ AI ตรวจข้อมูล เขียนบท และวาดฉากตามเนื้อหาก่อนผลิต')));
-  const ready = st.llm && (st.firecrawl || st.web_search);
+  const ready = st.llm && st.web_search;
   const modeSel=h('select',{class:'field','aria-label':'โหมดการเล่าเรื่อง'}, h('option',{value:'general'},'เล่าเรื่องทั่วไป'), h('option',{value:'name_story'},'ซีรีส์คนชื่อ…'));
   try{modeSel.value=sessionStorage.getItem('ms.story_mode')||'general';}catch{}
   const sourceText=h('textarea',{class:'field',rows:5,maxlength:20000,'aria-label':'เนื้อหาหรือลิงก์อ้างอิง',placeholder:'วางข้อความ บทความ หรือลิงก์ต้นทาง (ไม่บังคับ) · AI จะตรวจข้อมูลก่อนนำไปใช้'});
@@ -753,7 +753,7 @@ function studio(st, drafts){
   const changeMode=()=>{const general=modeSel.value==='general';heroGroup.hidden=general;sourcePanel.hidden=!general;charChoice.hidden=!general;charsPanel.hidden=general&&!useChars.checked;topic.setAttribute('aria-label',general?'หัวข้อเรื่อง':'เรื่องที่จะเล่าต่อ');topic.placeholder=general?'หัวข้อหรือสิ่งที่อยากเล่า เช่น มอร์นิ่งรูทีนช่วยให้ตื่นสดชื่นอย่างไร':'เรื่องที่จะเล่าต่อจากคำถามชื่อ';modeHint.textContent=general?'เปิดเรื่องตามหัวข้อ วาดฉาก สิ่งของ หรือภาพอธิบายตามบท ไม่บังคับชื่อและตัวละคร':'เปิดด้วย “คนชื่อ … ในประเทศไทย มีกี่คน” และใช้ตัวเอกบนปก';try{sessionStorage.setItem('ms.story_mode',modeSel.value);}catch{}};
   modeSel.addEventListener('change',changeMode);useChars.addEventListener('change',changeMode);changeMode();
   const composer = h('div',{class:'composer'},
-    !ready ? h('div',{class:'note'},'ยังเขียนอัตโนมัติไม่ได้: ตั้งค่า ', [!st.llm&&('ANTHROPIC_API_KEY หรือ OPENAI_API_KEY'), (!st.firecrawl&&!st.web_search)&&'FIRECRAWL_API_KEY'].filter(Boolean).join(' และ '), ' ใน Railway → motion-api → Variables แล้วกด Deploy') : '',
+    !ready ? h('div',{class:'note'},'ยังเขียนอัตโนมัติไม่ได้: ตั้งค่า ', [!st.llm&&('ANTHROPIC_API_KEY หรือ OPENAI_API_KEY'), !st.web_search&&'OPENAI_API_KEY (Web Search)'].filter(Boolean).join(' และ '), ' ใน Railway → motion-api → Variables แล้วกด Deploy') : '',
     h('label',{class:'sub'},'โหมดการเล่าเรื่อง',modeSel), modeHint, heroGroup, topic, sourcePanel,
     h('div',{class:'ideas'}, h('span',{class:'sub'},'ลองหัวข้อ:'), IDEAS.map(i=>h('button',{on:{click:()=>{ topic.value=i; topic.focus(); }}},i))),
     h('details',{}, h('summary',{},'เพิ่มแนวทาง (ไม่บังคับ)'), h('div',{style:'margin-top:10px'},note)),
@@ -788,8 +788,24 @@ function openDraft(id){
       if (inProgress(d)) timer=setTimeout(refresh, 4000);
     }
     function logList(d){ return h('ol',{class:'logl'}, (d.log||[]).slice(-14).map(l=>h('li',{}, h('time',{},hhmm(l.at)), h('span',{},l.msg)))); }
-    function usage(d){ const u=d.usage||{}; if(!u.turns) return ''; const tin=(u.input_tokens||0)+(u.cache_read_input_tokens||0)+(u.cache_creation_input_tokens||0);
-      return h('div',{class:'sub'}, d.model+(d.reasoning?' (reasoning '+d.reasoning+')':'')+' · '+u.turns+' รอบ · Firecrawl '+(u.firecrawl_calls||0)+' ครั้ง'+(u.web_searches?' · web search '+u.web_searches+' ครั้ง':'')+' · โทเค็นเข้า '+fmtN(tin)+' (แคช '+fmtN(u.cache_read_input_tokens||0)+') ออก '+fmtN(u.output_tokens||0)); }
+    function usage(d){
+      const u=d.usage||{}, b=d.research_budget||u.firecrawl_budget;
+      const tin=(u.input_tokens||0)+(u.cache_read_input_tokens||0)+(u.cache_creation_input_tokens||0);
+      return h('div',{class:'sub'},
+        b ? h('div',{},'Firecrawl งานค้นข้อมูลนี้: ใช้/กันงบ '+b.committed+' / '+b.limit+' เครดิต · เหลือ '+b.remaining+' · '+b.calls+' คำขอ'+(b.reserved?' · รอตรวจยอด '+b.reserved:'')+(b.reported?' · ผู้ให้บริการรายงาน '+b.reported:''),
+          h('div',{},'รวมทุกคำขอ รวมลองใหม่และเขียนใหม่ · จองราคาสูงสุดก่อนส่ง · แคชไม่เสียเครดิต'),
+          b.blocked_reason ? h('div',{class:'warn'},'หยุด Firecrawl: '+(b.blocked_reason==='legacy_usage_unknown'?'งานเดิมไม่มียอดเครดิตที่ยืนยันได้ ใช้ข้อมูล OpenAI ต่อ':b.blocked_reason==='uncertain_charge'?'คำขอก่อนหน้ายังไม่ทราบยอดแน่นอน เก็บงบที่จองไว้':'ค่าใช้จ่ายไม่ตรงกับราคาสูงสุด ต้องตรวจสอบก่อน')) : '',
+          !b.blocked_reason && b.remaining<3 ? h('button',{class:'btn quiet',on:{click:()=>approveResearchBudget(d,b)}},'อนุมัติเพิ่มงบ Firecrawl…') : '') : '',
+        u.turns ? h('div',{},d.model+(d.reasoning?' (reasoning '+d.reasoning+')':'')+' · '+u.turns+' รอบ'+(u.web_searches?' · web search '+u.web_searches+' ครั้ง':'')+' · โทเค็นเข้า '+fmtN(tin)+' (แคช '+fmtN(u.cache_read_input_tokens||0)+') ออก '+fmtN(u.output_tokens||0)) : '');
+    }
+    async function approveResearchBudget(d,b){
+      const value=prompt('งบ Firecrawl รวมใหม่สำหรับงานนี้ (ปัจจุบัน '+b.limit+' เครดิต) — จะใช้ร่วมกับร่างที่เขียนใหม่ทั้งหมด');
+      if(value===null)return;
+      const limit=Number(value);
+      if(!Number.isInteger(limit)||limit<=b.limit||limit>1000){toast('ระบุงบรวมมากกว่า '+b.limit+' และไม่เกิน 1000 เครดิต');return;}
+      if(!confirm('ยืนยันอนุมัติงบ Firecrawl รวม '+limit+' เครดิต สำหรับ Research Job นี้? ใช้/กันงบไปแล้ว '+b.committed+' เครดิต'))return;
+      try{await api('/app/api/studio/drafts/'+d.id+'/research-budget',{method:'POST',body:JSON.stringify({limit,approved:true,confirmation:'APPROVE FIRECRAWL TOTAL '+limit})});toast('บันทึกการอนุมัติงบรวมแล้ว');await refresh();}catch(x){toast(x.message);}
+    }
     function render(d){
       const dr = d.draft;
       const head = [h('p',{class:'sub',style:'margin:0'},'หัวข้อ: '+d.topic+(d.note?' · แนวทาง: '+d.note:''))];
@@ -867,7 +883,7 @@ function openDraft(id){
           h('dt',{},'รูปแบบเรื่อง'), h('dd',{}, (S.formats&&S.formats[dr.format])||dr.format||'—'),
           h('dt',{},'สไตล์ภาพ'), h('dd',{}, styleSel),
           h('dt',{},'เพลง'), h('dd',{}, musicSel, h('div',{class:'sub',style:'margin-top:4px'}, (dr.music_mode==='ai'?'AI จะแต่ง: ':'ถ้าหาเพลงเริ่มต้นไม่เจอ AI จะแต่ง: ')+[dr.music||'playful', dr.music_brief&&dr.music_brief.tempo_bpm?' · ~'+dr.music_brief.tempo_bpm+' BPM':'', dr.music_brief&&dr.music_brief.instruments?' · '+dr.music_brief.instruments:''].join(''))),
-          dr.cast&&dr.cast.length ? [h('dt',{},'ตัวละคร'), h('dd',{}, dr.cast.map(c=>c.name).join(', '))] : '', h('dt',{},'ข้อมูลอ้างอิง'), h('dd',{}, (dr.sources||[]).length+' แหล่ง (Firecrawl)')),
+          dr.cast&&dr.cast.length ? [h('dt',{},'ตัวละคร'), h('dd',{}, dr.cast.map(c=>c.name).join(', '))] : '', h('dt',{},'ข้อมูลอ้างอิง'), h('dd',{}, (dr.sources||[]).length+' แหล่งที่ตรวจสอบแล้ว')),
         d.status==='submitted' ? h('div',{class:'note'}, 'ส่งผลิตแล้ว: ', draftState(d)[1], d.job_error?h('div',{class:'err'},d.job_error):'', ' ', h('button',{class:'btn quiet',on:{click:()=>{ close(); go(d.job_status==='READY_TO_POST'?'ready':'working'); }}}, d.job_status==='READY_TO_POST'?'ดูคลิป':'ดูความคืบหน้า')) : '',
         dr.warnings&&dr.warnings.length ? h('details',{}, h('summary',{},'ข้อสังเกต '+dr.warnings.length+' ข้อ'), h('ul',{class:'warnl'}, dr.warnings.map(w=>h('li',{},w)))) : '',
         h('h4',{},'บทพูดและฉาก'), editable?h('p',{class:'sub',style:'margin:-10px 0 0'},'แก้บทได้ เขียนตัวเลขเป็นคำอ่าน (เช่น หกสิบห้าล้าน) เว้นวรรคทุกช่วงหายใจ'):'', segs,
@@ -890,7 +906,7 @@ function openDraft(id){
 const STAGE = {GENERATING_AUDIO:'สร้างเสียง', BUILDING_TIMELINE:'จัดไทม์ไลน์', RENDERING:'เรนเดอร์ภาพ', QUALITY_CHECK:'ตรวจคุณภาพ', UPLOADING_DRIVE:'อัปโหลด', NEW:'รอคิว', FAILED:'ล้มเหลว', CANCELLED:'ยกเลิก'};
 const CEIL = {NEW:.05, GENERATING_AUDIO:.25, BUILDING_TIMELINE:.30, RENDERING:.75, QUALITY_CHECK:.85, UPLOADING_DRIVE:.98};
 const WHO = {NEW:'รอ worker รับงาน', GENERATING_AUDIO:'ElevenLabs กำลังสร้างเสียงพากย์ (เสียงเท่านั้น ไม่ใช่ LLM)', BUILDING_TIMELINE:'โค้ดกำลังจัดจังหวะเสียงกับภาพ (ไม่ใช้ LLM)', RENDERING:'โค้ดกำลังวาดภาพทีละเฟรม ด้วย Pillow + FFmpeg (ไม่ใช้ LLM / ไม่ใช้ AI สร้างภาพ)', QUALITY_CHECK:'โค้ดกำลังตรวจคุณภาพภาพและเสียง (ไม่ใช้ LLM)', UPLOADING_DRIVE:'กำลังอัปโหลดขึ้น Cloudflare R2'};
-const DSTAT = {queued:'รอคิว', researching:'กำลังค้นข้อมูล (Firecrawl + web search)', writing:'กำลังเขียนสคริปต์และฉาก'};
+const DSTAT = {queued:'รอคิว', researching:'กำลังค้นข้อมูล (OpenAI ก่อน)', writing:'กำลังเขียนสคริปต์และฉาก'};
 const DFLOOR = {queued:.04, researching:.3, writing:.65};
 function whoWrote(m, r){
   if (!m) return 'ไม่ระบุ';
@@ -951,7 +967,7 @@ function patchDraft(c, d){
   c.state.className='state wait'; c.state.textContent = DSTAT[d.status]||d.status;
   c.beat = 0; c.target = DFLOOR[d.status] ?? .1; c.ceil = c.target + .3; c.last = +new Date(d.updated_at); c.stalledAfter = 240000;
   if (c.shown < c.target) c.shown = c.target*0.9;
-  c.who.replaceChildren(h('div',{}, 'LLM ที่กำลังคิดอยู่: '+whoWrote(d.model, d.reasoning)), h('small',{}, 'ค้นข้อมูลล่าสุดด้วย Firecrawl แล้วเขียนสคริปต์ ฉาก และคำบรรยาย ก่อนส่งเข้ากฎตรวจ'));
+  c.who.replaceChildren(h('div',{}, 'LLM ที่กำลังคิดอยู่: '+whoWrote(d.model, d.reasoning)), h('small',{}, 'ค้นข้อมูลด้วย OpenAI ก่อน ใช้ Firecrawl เฉพาะเมื่อจำเป็นภายในงบรวม แล้วเขียนสคริปต์ ฉาก และคำบรรยาย ก่อนส่งเข้ากฎตรวจ'));
   setFeed(c, (d.log||[]).map((l,i)=>({k:l.at+i, t:tm(l.at), m:l.msg})));
   c.created = +new Date(d.created_at); c.ended = 0; c.stageStart = 0;
   if (!c.clock){ c.clock = h('div',{class:'clock'}); c.sub.before(c.clock); }

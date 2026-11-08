@@ -84,14 +84,14 @@ Backups: `GET /app/api/export` (JSON of episodes, scripts, sources, handoffs, pu
 
 ### Research rule (from 2026-11-04)
 
-Every fact behind a story is researched with **live Firecrawl searches**, preferring the most recent year available.
-`POST /jobs` rejects a package (HTTP 422) unless every source has `retrieved_via: "firecrawl"`, a `collected` date within
+Every fact behind a story is researched with **OpenAI Web Search first**, preferring the most recent year available. Firecrawl is optional, budgeted deeper extraction only.
+`POST /jobs` rejects a package (HTTP 422) unless every source has `retrieved_via: "firecrawl"` or `"openai_web_search"`, a `collected` date within
 `MOTION_SOURCE_MAX_AGE_DAYS` (default 30) and a `published` date/year (Gregorian or Thai Buddhist era). A source published more than
 `MOTION_SOURCE_MAX_YEARS` (default 2) years ago needs `freshness_note` explaining why nothing newer exists (e.g. a survey run every 10 years).
 
 ### Content studio (v4): topic in, finished clip out
 
-The **สร้าง** tab of `/app` is the production line: type a topic → motion-api researches it live with **Firecrawl**
+The **สร้าง** tab of `/app` is the production line: type a topic → motion-api researches it live with **OpenAI Web Search first**
 (newest year first, Thai + English queries, key pages read in full) → Claude writes the Thai narration, a scene spec
 and per-platform captions → every rule is checked → the draft waits for review (edit lines, title, captions, or ask
 for a rewrite with a note) → **ผลิตคลิปนี้** queues a normal episode job → the worker renders it → the clip lands in **พร้อมใช้**.
@@ -101,7 +101,7 @@ How it is built:
 
 * `api/src/studio.ts` – agent loop over the Anthropic Messages API with three tools: `web_search` / `read_page` (Firecrawl
   `/v2/search`, `/v2/scrape`) and `submit_episode`. Prompt caching keeps each turn cheap. Limits: `MOTION_LLM_MAX_TURNS` (18),
-  `MOTION_FIRECRAWL_MAX_CALLS` (16), `MOTION_LLM_MAX_INPUT_TOKENS` (1.2M incl. cache reads), `MOTION_MAX_DRAFTS_PER_DAY` (20),
+  a durable 25-credit Firecrawl budget per Research Job, `MOTION_LLM_MAX_INPUT_TOKENS` (1.2M incl. cache reads), `MOTION_MAX_DRAFTS_PER_DAY` (20),
   `MOTION_DRAFT_MAX_CREDITS` (4500 ElevenLabs credits). One draft is generated at a time.
 * Checks on every submission (the model must fix them, up to 4 rounds): sources must be URLs fetched with Firecrawl in that
   session; each has a publication year, and anything older than `MOTION_SOURCE_MAX_YEARS` needs a freshness note; every
@@ -114,7 +114,7 @@ How it is built:
 * SFX use a fixed library of prompts, so they are served from the audio cache after first use.
 * Preview without ElevenLabs: `cd worker && python -m motion_worker.preview out.png` (sample) or `... draft.json out.png`.
 
-New motion-api variables: `ANTHROPIC_API_KEY`, `FIRECRAWL_API_KEY` (required for the studio), optional `MOTION_LLM_MODEL`
+New motion-api variables: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` (required for primary research), optional `FIRECRAWL_API_KEY` (deeper extraction fallback), optional `MOTION_LLM_MODEL`
 (default `claude-opus-5-5`), `MOTION_SERIES_TAG`, and the limits above.
 
 ### Story variety and retention rules (v5)
@@ -167,3 +167,15 @@ Broad hosted search is bounded to at most 3 tool calls per response and disabled
 The composer now offers **เล่าเรื่องทั่วไป** (default in the new UI) and **ซีรีส์คนชื่อ…**. General mode accepts a topic and optional source text/URLs up to 20,000 characters. Reference characters are opt-in; old selected characters are not silently attached. GPT-6.1 Sol and the existing model selector work for both modes.
 
 General stories use a topical hook and custom object/diagram/environment scenes; cast and shot character lists may be empty. Covers use the topical frame/title. Name-series defaults remain enforced for old records and clients. Mode and source material persist through rewrites and retries. All new art, including character-free scenes, must render and receive visual review; drawing failures cannot substitute a generic mascot. User-provided factual or health material remains unverified input until sources are retrieved.
+
+### Strict Firecrawl budget (2026-11-08)
+
+`015_research_budget.sql` adds a persistent Research Job shared by every rewrite/retry. All Firecrawl traffic goes through `BudgetedFirecrawl` and `PgResearchBudget`; there is no call-count budget or automatic credit increase. Default total: **25 credits**. A PostgreSQL advisory lock serializes calls across jobs and API replicas. An atomic transaction commits the maximum reservation and request audit before dispatch. Reservations stay charged conservatively even when the provider omits attributable usage. `creditsUsed`, when returned, is recorded separately; a cache hit spends zero. Provider errors are not automatically retried; ambiguous transport failures retain the reservation and block further Firecrawl calls. A crash leaving an outstanding reservation also blocks new requests.
+
+The model first reads an exact URL through OpenAI. Only a later `read_page` with `use_firecrawl: true` and a concrete `fallback_reason` may extract deeper text. The primary OpenAI reader is available to Anthropic writers via `openai_search`. Firecrawl search is not exposed to the writer; the shared transport's bounded search pricing supports no result scraping. All unknown endpoints/options, crawl, batch, agents, structured extraction, X/Twitter and LinkedIn enrichment are refused. Plain markdown extraction disables all parsers (including extensionless PDFs), actions, media and optional formats. Known PDF URLs are rejected. The plain scrape maximum reserves 3 credits (1 base + a conservative 2 for an account threat scan). Search, if invoked through the shared transport, reserves 12 for five results without scraping (2 search + conservative 2 per result for threat scans). These bounds use [official billing](https://docs.firecrawl.dev/billing) and [scrape options](https://docs.firecrawl.dev/api-reference/endpoint/scrape), checked 2026-11-08. Provider pricing changes must be reviewed before enabling new operations.
+
+Successful extraction responses and exact source URLs are cached in Postgres for 24 hours. URL identity preserves path/query case. Failed, blocked, empty and raw binary responses are never promoted to source evidence. User-supplied material remains unverified until retrieved. Sources retain original/final URLs and collection times.
+
+The draft UI shows cumulative used/reserved credits, remaining budget, requests, and any blocked state. The authenticated owner can explicitly approve a larger **total** via `POST /app/api/studio/drafts/:id/research-budget` with `{limit: 40, approved: true, confirmation: "APPROVE FIRECRAWL TOTAL 40"}`. This action is absent from model tools and is audited; a rewrite never replenishes the budget. Approval does not resolve uncertain charges. Historical lineages with untracked Firecrawl usage are conservatively marked `legacy_usage_unknown` and cannot silently receive a fresh 25 credits.
+
+Validation: `cd api && npm run typecheck && node --import tsx --test src/*.test.ts`. Firecrawl budget tests use mocked HTTP; no paid requests are required.

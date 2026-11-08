@@ -1,4 +1,4 @@
-// Content studio: the owner types a topic; Claude researches it live with Firecrawl (latest data first), writes the Thai
+// Content studio: OpenAI Web Search first, budgeted Firecrawl fallback, then the Thai
 // script and a scene spec for the code-drawn template engine (worker/engine/templates.py), and the result waits as a
 // draft for review. "Produce" turns the draft into a normal episode package and queues it for the worker.
 // Keys: ANTHROPIC_API_KEY and FIRECRAWL_API_KEY live only in Railway variables.
@@ -11,7 +11,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openaiResponse, networkCode } from './openai-response.js';
 import { Artwork, emptyArtwork, reconcileArtwork, updateArtwork, mergeArtwork, artworkComplete, ARTWORK_TOOLS, type ArtworkState } from './art-batches.js';
-import { extractWebEvidence, verifySources, sourceKey } from './source-evidence.js';
+import { BudgetedFirecrawl, PgResearchBudget, ResearchBudgetError } from './firecrawl-budget.js';
+import { extractWebEvidence, verifySources, searchWeb, sourceKey } from './source-evidence.js';
 import { Storyboard, validateStoryboardDraft, personCalls, type StoryboardT } from './storyboard.js';
 
 const env = process.env;
@@ -41,9 +42,8 @@ const REASONING = REASONING_LEVELS.includes(String(env.MOTION_LLM_REASONING)) ? 
 const MODEL_RE = /^[a-z0-9][a-z0-9.\-]{2,60}$/;
 const MAX_TURNS = Number(env.MOTION_LLM_MAX_TURNS || 48);
 const MAX_INPUT_TOKENS = Number(env.MOTION_LLM_MAX_INPUT_TOKENS || 1_200_000); // incl. cache reads, per draft
-const MAX_FIRECRAWL = Number(env.MOTION_FIRECRAWL_MAX_CALLS || 16);
-// OpenAI's hosted web search (Responses API tool) runs beside Firecrawl; when Firecrawl is out of credits (or not set) it carries the research alone.
-const WEB_SEARCH = PROVIDER === 'openai' && (env.MOTION_OPENAI_WEB_SEARCH || 'true') !== 'false';
+// OpenAI research is required first, including when Anthropic writes the story.
+const WEB_SEARCH = (env.MOTION_OPENAI_WEB_SEARCH || 'true') !== 'false';
 const MAX_WEB_SEARCH = Number(env.MOTION_WEB_SEARCH_MAX_CALLS || 10);
 const WEB_SEARCH_CONTEXT = ['low', 'medium', 'high'].includes(String(env.MOTION_WEB_SEARCH_CONTEXT)) ? String(env.MOTION_WEB_SEARCH_CONTEXT) : 'medium';
 const DAILY_LIMIT = Number(env.MOTION_MAX_DRAFTS_PER_DAY || 20);
@@ -54,9 +54,9 @@ const SERIES_TAG = env.MOTION_SERIES_TAG || 'จะเกิดอะไรข�
 
 const llmKey = () => (PROVIDER === 'openai' ? !!env.OPENAI_API_KEY : !!env.ANTHROPIC_API_KEY);
 export const configured = () => ({ llm: llmKey(), provider: PROVIDER, key_name: PROVIDER === 'openai' ? 'OPENAI_API_KEY' : 'ANTHROPIC_API_KEY',
-  anthropic: llmKey(), firecrawl: !!env.FIRECRAWL_API_KEY, web_search: WEB_SEARCH && llmKey() });
-const researchReady = (cf: ReturnType<typeof configured>) => cf.llm && (cf.firecrawl || cf.web_search);
-const researchMissing = (cf: ReturnType<typeof configured>) => [!cf.llm && cf.key_name, !cf.firecrawl && !cf.web_search && 'FIRECRAWL_API_KEY'].filter(Boolean).join(' และ ');
+  anthropic: llmKey(), firecrawl: !!env.FIRECRAWL_API_KEY, web_search: WEB_SEARCH && !!env.OPENAI_API_KEY, research_policy:{primary:'openai_web_search',firecrawl:'fallback_only',default_credit_limit:25,budget_scope:'research_job',sequential:true} });
+const researchReady = (cf: ReturnType<typeof configured>) => cf.llm && cf.web_search;
+const researchMissing = (cf: ReturnType<typeof configured>) => [!cf.llm && cf.key_name, !cf.web_search && 'OPENAI_API_KEY (Web Search first)'].filter(Boolean).join(' และ ');
 
 // ---------------------------------------------------------------- engine vocabulary (must match worker/engine)
 export const TEMPLATES = ['hook', 'number', 'compare', 'bars', 'list', 'quiz', 'reveal', 'dots', 'timeline', 'truth', 'scenario', 'icons', 'outro', 'chat', 'versus', 'scale', 'custom'] as const;
@@ -174,51 +174,8 @@ const host = (u: string) => { try { return new URL(u).hostname.replace(/^www\./,
 
 type Seen = { url: string; title?: string; published_hint?: string | null; collected: string; via: 'search' | 'read' | 'web' };
 
-// ---------------------------------------------------------------- Firecrawl (research rule: every fact comes from here)
-async function firecrawl(path: string, body: unknown, timeoutMs = 90_000) {
-  if (!env.FIRECRAWL_API_KEY) throw new Error('FIRECRAWL_API_KEY is not set on motion-api');
-  for (let i = 0; ; i++) {
-    const r = await fetch(FIRECRAWL_URL + path, {
-      method: 'POST',
-      headers: { authorization: `Bearer ${env.FIRECRAWL_API_KEY}`, 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    const j: any = await r.json().catch(() => ({}));
-    if ((r.status === 429 || r.status >= 500) && i < 2) {
-      await new Promise((res) => setTimeout(res, 3000 * (i + 1)));
-      continue;
-    }
-    if (!r.ok || j.success === false) {
-      const msg = String(j.error || j.message || '');
-      const err: any = new Error(`Firecrawl ${r.status}: ${msg.slice(0, 200)}`);
-      // out of credits / plan limit / still rate-limited after retries: Firecrawl is not usable for the rest of this draft
-      if (r.status === 402 || r.status === 429 || /credit|insufficient|quota|payment|limit exceeded/i.test(msg)) err.fcDown = true;
-      throw err;
-    }
-    return j;
-  }
-}
-
+// Firecrawl traffic is exclusively routed through the persistent research budget.
 const pubHint = (m: any) => m?.publishedTime || m?.['article:published_time'] || m?.publishedDate || m?.['og:updated_time'] || m?.modifiedTime || m?.date || null;
-
-async function fcSearch(query: string, recent: boolean) {
-  const body: any = { query, limit: 5, sources: ['web'], scrapeOptions: { formats: ['markdown'], onlyMainContent: true } };
-  if (recent) body.tbs = 'qdr:y';
-  const j = await firecrawl('/v2/search', body);
-  const list: any[] = j.data?.web ?? (Array.isArray(j.data) ? j.data : []);
-  return list.filter((x) => x?.url).map((x) => ({
-    url: String(x.url), title: String(x.title || x.metadata?.title || ''), description: String(x.description || ''),
-    published: pubHint(x.metadata), markdown: String(x.markdown || '').replace(/\n{3,}/g, '\n\n').slice(0, 2600),
-  }));
-}
-
-async function fcRead(url: string) {
-  const j = await firecrawl('/v2/scrape', { url, formats: ['markdown'], onlyMainContent: true }, 120_000);
-  const d = j.data || {};
-  return { url: String(d.metadata?.sourceURL || d.metadata?.url || url), title: String(d.metadata?.title || ''), published: pubHint(d.metadata),
-    markdown: String(d.markdown || '').replace(/\n{3,}/g, '\n\n').slice(0, 14000) };
-}
 
 // ---------------------------------------------------------------- Claude
 async function claude(body: any) {
@@ -252,7 +209,7 @@ type Usage = { input_tokens: number; output_tokens: number; cache_read_input_tok
 type WebFound = { searches: number; queries: string[]; sources: { url: string; title: string }[] };
 // which research tools are usable right now (changes during a draft when Firecrawl runs out of credits or the web search budget is spent)
 type Active = { fc: boolean; ws: boolean; drawing?: boolean; searches?: number };
-const activeTools = (a: Active) => TOOLS.filter(t => ['submit_episode','plan_story',...ARTWORK_TOOLS.map(x=>x.name)].includes(t.name) || (t.name === 'read_page' ? PROVIDER === 'openai' || a.fc : !a.drawing && a.fc)).map(t => {
+const activeTools = (a: Active) => TOOLS.filter(t => t.name !== 'openai_search' || PROVIDER !== 'openai').filter(t => ['submit_episode','plan_story',...ARTWORK_TOOLS.map(x=>x.name)].includes(t.name) || (t.name === 'read_page' ? !!env.OPENAI_API_KEY : t.name === 'openai_search' && !a.drawing && a.ws)).map(t => {
   if (t.name !== 'submit_episode' || !a.drawing) return t;
   const schema:any = t.input_schema;
   const omit = new Set(['script','scenes','cast','art']);
@@ -344,7 +301,7 @@ with bespoke code-drawn motion graphics. Read the story, direct every shot and d
 Use code and the canvas toolkit below; do not call image generation services or use stock footage. Reference photos guide likeness, never become the background.
 
 ## Research rule (the owner's standing instruction — non-negotiable)
-- Every fact, number and story condition must come from pages you retrieve in THIS session. ${a.fc && a.ws ? 'Use BOTH tools: firecrawl_search / read_page (Firecrawl, exact page text) and the built-in web_search (OpenAI, broad and fresh lookups, can open pages). Cross-check key numbers between them when you can.' : a.ws ? 'Firecrawl is not available now: research only with the built-in web_search tool (it can search and open pages; open the page to confirm exact figures and its publication date).' : 'Use firecrawl_search and read_page (Firecrawl).'}
+- Every fact, number and story condition must come from pages you retrieve in THIS session. Use OpenAI Web Search FIRST (built-in web_search, or openai_search for an Anthropic writer). read_page defaults to an exact source read through OpenAI. Firecrawl is ONLY a fallback for deeper text extraction after that exact URL has already been attempted through OpenAI; set use_firecrawl=true and explain the missing evidence in fallback_reason. Start with ONE selected source, never bulk extraction. A durable 25-credit maximum applies cumulatively to the entire Research Job, across endpoints, retries and rewrites. Each call reserves its maximum cost before dispatch; calls are sequential. On insufficient budget, stop Firecrawl and ask the owner for an explicit budget increase, or continue using verified OpenAI evidence. Never assume permission. Unpriced operations, PDF parsing, X/Twitter, provider enrichment and agents are disabled. Reuse cached results and preserve original URLs.
 - Always look for the MOST RECENT data that exists. Put the year in queries (${ce} / ${be}, or ${ce - 1} / ${be - 1}) and search in Thai and English.
   Prefer primary/official sources (สำนักงานสถิติแห่งชาติ, ministries, Bank of Thailand, WHO, World Bank, UN, OECD, DataReportal, peer-reviewed papers,
   reputable news citing them). Confirm exact figures on the key pages before you use them.
@@ -403,7 +360,7 @@ If the owner's topic starts with "คนชื่อ X ในประเทศ�
 If the owner picked saved characters (see below) they come first in cast: cast[0] is the first of them and its name is the one used in the opener and on the cover.
 The clip OPENS with that question, then the story follows:
 - segment 1 (beat "hook"): the question itself, e.g. "คนชื่อ X ในประเทศไทย มีกี่คน?" — it must contain the name and the word "ประเทศไทย".
-- segment 2: the answer — how many people in Thailand have that name (or rank/share if only that exists). This number is research: search with Firecrawl for the NEWEST data (official registry/DOPA statistics,
+- segment 2: the answer — how many people in Thailand have that name (or rank/share if only that exists). This number is research: search with OpenAI Web Search for the NEWEST data (official registry/DOPA statistics,
   national name rankings, news, academic work), take the latest year available, and cite it in sources with its "published" year. Never invent a count. If no official count is published, say so honestly in the narration
   ("ไม่มีสถิติทางการ แต่ข้อมูลล่าสุดบอกว่า…"), give only what the source supports (rank, share, a stated estimate), and record it as a claim of kind "assumption".
 - then continue into the story/topic with the usual formats, re-hooks and CTA. A claim in "claims" must mention the name and cover the count.
@@ -505,14 +462,14 @@ const TOOLS = [
       character_notes: {type:'string'}
     } } },
   {
-    name: 'firecrawl_search',
-    description: 'Search the web with Firecrawl. Returns up to 5 results with title, URL, publication hint and the start of each page as markdown. Put the year in the query to get the newest data.',
-    input_schema: { type: 'object', properties: { query: { type: 'string' }, recent_only: { type: 'boolean', description: 'only pages from the past 12 months' } }, required: ['query'] },
+    name: 'openai_search',
+    description: 'Primary research using OpenAI Web Search. Use before any Firecrawl fallback. Returns retrieved evidence and source URLs.',
+    input_schema: {type:'object',properties:{query:{type:'string'}},required:['query']},
   },
   {
     name: 'read_page',
-    description: 'Read one page with Firecrawl (markdown, up to ~14k characters). Use it to confirm exact numbers and publication dates.',
-    input_schema: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] },
+    description: 'Read one source with OpenAI first. ONLY after this exact URL was attempted and evidence remains insufficient, request deeper Firecrawl extraction with use_firecrawl=true and fallback_reason. Cached responses are free. The entire Research Job has a strict 25-credit Firecrawl budget; no automatic increase.',
+    input_schema: { type:'object', properties:{url:{type:'string'},use_firecrawl:{type:'boolean'},fallback_reason:{type:'string',description:'What specific evidence is missing after the OpenAI exact-page read?'}},required:['url']},
   },
   {
     name: 'submit_episode',
@@ -1022,12 +979,20 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const usage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, firecrawl_calls: 0, web_searches: 0, turns: 0 };
     const cfg0 = configured();
     const active: Active = { fc: cfg0.firecrawl, ws: cfg0.web_search };
-    if (!active.fc && !active.ws) { await pool.query("UPDATE drafts SET status='failed', error=$2, updated_at=now() WHERE id=$1", [id, 'ยังไม่ได้ตั้งค่า FIRECRAWL_API_KEY และไม่ได้เปิด web search ของ OpenAI']); return; }
+    const researchJob = row.research_job_id || row.id;
+    const fcStore = new PgResearchBudget(pool);
+    const fc = new BudgetedFirecrawl(fcStore,{apiKey:env.FIRECRAWL_API_KEY || '',baseUrl:FIRECRAWL_URL});
+    const webCache = new Map<string,any>();
+    let fcBudget = cfg0.firecrawl ? await fcStore.snapshot(researchJob) : null;
+    if (fcBudget?.blocked_reason || fcBudget?.remaining === 0) active.fc=false;
+    const syncFcBudget = async () => { if (cfg0.firecrawl) { fcBudget=await fcStore.snapshot(researchJob); usage.firecrawl_calls=fcBudget.calls; Object.assign(usage,{firecrawl_budget:fcBudget}); } };
+    await syncFcBudget();
+    if (!active.ws) { await pool.query("UPDATE drafts SET status='failed', error=$2, updated_at=now() WHERE id=$1", [id, 'ต้องเปิด OpenAI Web Search เพื่อค้นข้อมูลก่อนใช้ Firecrawl']); return; }
     const saveUsage = () => pool.query('UPDATE drafts SET usage=$2, research=$3, updated_at=now() WHERE id=$1', [id, JSON.stringify(usage), JSON.stringify(research)]);
     const useModel = row.model && MODEL_RE.test(row.model) ? row.model : MODEL;
     const useEffort = PROVIDER === 'openai' ? (REASONING_LEVELS.includes(row.reasoning) ? row.reasoning : REASONING) : null;
     await pool.query("UPDATE drafts SET status='researching', model=$2, reasoning=$3, updated_at=now() WHERE id=$1", [id, useModel, useEffort]);
-    await log(id, `เริ่มค้นข้อมูลด้วย ${[active.fc && 'Firecrawl', active.ws && 'OpenAI web search'].filter(Boolean).join(' + ')} (${useModel}${useEffort ? ' · reasoning ' + useEffort : ''})`);
+    await log(id, `เริ่มค้นข้อมูลด้วย OpenAI Web Search ก่อน · Firecrawl สำรองไม่เกิน ${fcBudget?.limit || 25} เครดิตต่อ Research Job (${useModel}${useEffort ? ' · reasoning ' + useEffort : ''})`);
 
     const storyMode = row.story_mode === 'general' ? 'general' as const : 'name_story' as const;
     let userText = `Story mode: ${storyMode}. Topic from the owner: ${row.topic}`;
@@ -1036,7 +1001,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     if (parent?.draft) {
       const p = parent.draft;
       userText += `\n\nThis is a rewrite. Previous version (title "${p.title_th}"):\n${(p.script || []).map((s: any) => `[${s.id}] ${s.text}`).join('\n')}\n` +
-        `Previous sources (already fetched with Firecrawl recently, you may cite them again without re-reading):\n${(p.sources || []).map((s: any) => `- ${s.url} (${s.publisher}, ${s.published})`).join('\n')}\n` +
+        `Previous sources (previously retrieved and recorded; check freshness before citing again):\n${(p.sources || []).map((s: any) => `- ${s.url} (${s.publisher}, ${s.published})`).join('\n')}\n` +
         `Apply the owner's direction; check for newer data where it matters.`;
     }
     if (row.source_type === 'community' && row.community_id) {
@@ -1112,45 +1077,38 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
             await persistArtwork();
             await log(id, u.name === 'draw_scene' ? `บันทึกภาพฉาก ${u.input.scene?.seg} แล้ว (${artwork.scenes.length}/${storyboard.shots.length})` : u.name === 'draw_character' ? `บันทึกตัวละคร ${u.input.character?.name} แล้ว` : 'บันทึกโค้ดวาดร่วมแล้ว');
             results.push({type:'tool_result',tool_use_id:u.id,content:'Asset saved. Draw only the next missing asset; when complete submit narration and metadata without artwork.'});
-          } else if (u.name === 'read_page' && !active.fc && PROVIDER === 'openai') {
-            if (verificationCalls >= 4) throw new Error('Exact source read budget used; cite only verified sources or state the data is unavailable');
-            verificationCalls++;
-            const checked = await verifySources([String(u.input?.url || '')], { apiKey: env.OPENAI_API_KEY!, baseUrl: OPENAI_URL, model, onProgress: message => log(id,message) });
-            for (const src of checked.sources) seen.set(normUrl(src.url), { ...src, collected:todayIso(), via:'web' });
-            for (const k of ['input_tokens','output_tokens','cache_read_input_tokens','cache_creation_input_tokens'] as const) usage[k] += checked.usage[k];
-            usage.web_searches += checked.searches;
-            research.push({kind:'web',at:new Date().toISOString(),queries:['Exact source read'],results:checked.sources});
-            sourceReviewTurn = turn; sourceReviewEvidence = checked.text;
-            results.push({type:'tool_result',tool_use_id:u.id,is_error:!checked.sources.length,content:checked.text || 'No evidence returned for this URL. Do not cite it.'});
-          } else if (u.name === 'firecrawl_search' || u.name === 'read_page') {
-            if (!active.fc) {
-              results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: active.ws ? 'Firecrawl is not available (out of credits). Use the built-in web_search tool instead.' : 'Firecrawl is not available. Write with what you have and call submit_episode.' });
-              continue;
-            }
-            if (usage.firecrawl_calls >= MAX_FIRECRAWL) {
-              results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: 'Research budget for this clip is used up. Write the episode with what you have and call submit_episode.' });
-              continue;
-            }
-            usage.firecrawl_calls++;
-            if (u.name === 'firecrawl_search') {
-              const q = String(u.input?.query || '').slice(0, 300);
-              await log(id, `ค้นหา: ${q}`);
-              const res = await fcSearch(q, !!u.input?.recent_only);
-              for (const r of res) {
-                const s: Seen = { url: r.url, title: r.title, published_hint: r.published, collected: todayIso(), via: 'search' };
-                if (!seen.has(normUrl(r.url))) seen.set(normUrl(r.url), s);
+          } else if (u.name === 'openai_search' || u.name === 'read_page') {
+            const url=String(u.input?.url || ''), key=sourceKey(url);
+            if (u.name === 'openai_search' || !u.input?.use_firecrawl) {
+              if (u.name === 'read_page' && !key) throw new Error('A valid public source URL is required');
+              const cacheKey=u.name === 'openai_search' ? 'query:'+String(u.input?.query || '').trim().slice(0,500) : key;
+              let checked=cfg0.firecrawl ? await fcStore.webRead(researchJob,cacheKey) : webCache.get(cacheKey);
+              const cacheHit=!!checked;
+              if (!checked) {
+                if (verificationCalls>=4) throw new Error('Exact source read budget used; cite only verified evidence or state the information is unavailable.');
+                verificationCalls++;
+                const options={apiKey:env.OPENAI_API_KEY!,baseUrl:OPENAI_URL,model:PROVIDER === 'openai' ? model : 'gpt-6.1-sol',onProgress:(message:string)=>log(id,message)};
+                checked=u.name === 'openai_search' ? await searchWeb(String(u.input?.query || ''),options) : await verifySources([url],options);
+                if (cfg0.firecrawl) await fcStore.saveWebRead(researchJob,cacheKey,checked); else webCache.set(cacheKey,checked);
+                for (const k of ['input_tokens','output_tokens','cache_read_input_tokens','cache_creation_input_tokens'] as const) usage[k]+=checked.usage[k];
+                usage.web_searches+=checked.searches;
               }
-              research.push({ kind: 'search', query: q, at: new Date().toISOString(), results: res.map((r) => ({ url: r.url, title: r.title, published: r.published })) });
-              results.push({ type: 'tool_result', tool_use_id: u.id, content: res.length ? res.map((r, i) =>
-                `[${i + 1}] ${r.title}\nURL: ${r.url}\nPublished (page metadata): ${r.published || 'unknown'}\n${r.description}\n---\n${r.markdown}`).join('\n\n=====\n\n') : 'No results. Try another query.' });
+              for (const src of checked.sources) seen.set(normUrl(src.url),{...src,collected:todayIso(),via:'web'});
+              research.push({kind:'web',at:new Date().toISOString(),queries:[u.name === 'openai_search' ? String(u.input.query) : 'Exact source read'],results:checked.sources,cache_hit:cacheHit});
+              sourceReviewTurn=turn; sourceReviewEvidence=checked.text;
+              results.push({type:'tool_result',tool_use_id:u.id,is_error:!checked.sources.length,content:checked.text || 'No evidence returned. Do not cite or invent this source. If deeper extraction is needed, request this exact URL with use_firecrawl=true and a fallback_reason.'});
             } else {
-              const url = String(u.input?.url || '');
-              await log(id, `อ่าน: ${host(url)}`);
-              const r = await fcRead(url);
-              seen.set(normUrl(url), { url, title: r.title, published_hint: r.published, collected: todayIso(), via: 'read' });
-              if (normUrl(r.url) !== normUrl(url)) seen.set(normUrl(r.url), { url: r.url, title: r.title, published_hint: r.published, collected: todayIso(), via: 'read' });
-              research.push({ kind: 'read', url, at: new Date().toISOString(), title: r.title, published: r.published });
-              results.push({ type: 'tool_result', tool_use_id: u.id, content: `${r.title}\nURL: ${r.url}\nPublished (page metadata): ${r.published || 'unknown'}\n---\n${r.markdown || '(empty page)'}` });
+              if (!cfg0.firecrawl) throw new Error('Firecrawl fallback is not configured; continue with verified OpenAI sources.');
+              const previous=key ? await fcStore.webRead(researchJob,key) : null;
+              await log(id,`Firecrawl สำรอง: ${host(url)} · จองงบก่อนส่งคำขอ`);
+              try {
+                const result=await fc.request(researchJob,'/v2/scrape',{url},{webAttempted:!!previous,reason:String(u.input?.fallback_reason || '')});
+                const data=result.payload.data, metadata=data.metadata || {};
+                const sourceUrls=result.source_urls;
+                for (const sourceUrl of sourceUrls) seen.set(normUrl(sourceUrl),{url:sourceUrl,title:metadata.title,published_hint:pubHint(metadata),collected:result.collected_at,via:'read'});
+                research.push({kind:'read',url,source_urls:sourceUrls,at:result.collected_at,title:metadata.title,published:pubHint(metadata),markdown:data.markdown,cache_hit:result.cache_hit,fallback_reason:String(u.input?.fallback_reason || '')});
+                results.push({type:'tool_result',tool_use_id:u.id,content:`${metadata.title || ''}\nURLs: ${sourceUrls.join(', ')}\nPublished: ${pubHint(metadata) || 'unknown'}\n---\n${data.markdown.slice(0,14000)}`});
+              } finally { await syncFcBudget(); }
             }
           } else if (u.name === 'plan_story') {
             const plan = Storyboard.safeParse({...u.input,...(storyMode === 'general' ? {story_mode:storyMode} : {})});
@@ -1242,6 +1200,13 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
           }
         } catch (e) {
           const msg = e instanceof Error ? `${e.message}${e.cause ? ` (${networkCode(e)})` : ''}` : String(e);
+          if (e instanceof ResearchBudgetError) {
+            if ((e as any).fcDown) active.fc=false;
+            await syncFcBudget();
+            await log(id,`Firecrawl หยุด: ${e.message.slice(0,220)}`);
+            results.push({type:'tool_result',tool_use_id:u.id,is_error:true,content:e.message+' Use only verified OpenAI evidence. Mark unsupported facts as unverified; never invent numbers or citations. Budget increases require explicit owner approval outside the model tools.'});
+            continue;
+          }
           if ((e as any)?.fcDown) {   // Firecrawl is out of credits: carry on with OpenAI web search alone
             active.fc = false;
             await log(id, active.ws ? 'Firecrawl ใช้ไม่ได้ (เครดิตหมด) ใช้ web search ของ OpenAI ต่อ' : 'Firecrawl ใช้ไม่ได้ (เครดิตหมด) และไม่มี web search สำรอง');
@@ -1255,7 +1220,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
         }
       }
       conv.results(results.map((r: any) => ({ id: r.tool_use_id, content: r.content, is_error: r.is_error })),
-        !mustSubmit && !active.ws && (usage.firecrawl_calls >= MAX_FIRECRAWL || !active.fc) ? 'Research budget reached: write and submit now.' : undefined);
+        !mustSubmit && !active.ws && (!active.fc || fcBudget?.remaining === 0) ? 'Research budget reached: write and submit now.' : undefined);
       if (pendingImages) { conv.show(pendingImages.text, pendingImages.images); pendingImages = null; reviewedArt = pendingReview; pendingReview = ''; }
       await saveUsage();
     }
@@ -1468,7 +1433,21 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const dr = r.draft ? { ...r.draft } : null;
     if (dr) { delete dr.research_seen; if (Array.isArray(dr.cast)) dr.cast = dr.cast.map((x: any) => { const { backdrop, ...rest } = x; return { ...rest, has_backdrop: !!backdrop }; }); }
     return c.json({ ...summary(r), log: r.log, draft: dr, problems: r.problems, usage: r.usage, model: r.model, reasoning: r.reasoning, job_error: r.job_error ?? null,
-      research: r.research, story_mode: r.story_mode || 'name_story', source_text:r.source_text || '' });
+      research_budget: env.FIRECRAWL_API_KEY ? await new PgResearchBudget(pool).snapshot(r.research_job_id || r.id) : null, research: r.research, story_mode: r.story_mode || 'name_story', source_text:r.source_text || '' });
+  });
+
+  app.post('/app/api/studio/drafts/:id/research-budget',g,async(c)=>{
+    const id=c.req.param('id');
+    if (!isId(id)) return c.json({error:'not found'},404);
+    const row=(await pool.query('SELECT * FROM drafts WHERE id=$1',[id])).rows[0];
+    if (!row) return c.json({error:'not found'},404);
+    const b=await c.req.json().catch(()=>({}));
+    if (b.approved !== true || b.confirmation !== `APPROVE FIRECRAWL TOTAL ${b.limit}`) return c.json({error:'Explicit owner approval of the new total is required.'},422);
+    try {
+      const budget=await new PgResearchBudget(pool).approve(row.research_job_id || row.id,b.limit);
+      await log(id,`เจ้าของอนุมัติงบ Firecrawl รวม ${budget.limit} เครดิตสำหรับ Research Job นี้`);
+      return c.json({research_budget:budget});
+    } catch(e) {return c.json({error:e instanceof Error ? e.message : 'Budget approval failed'},409);}
   });
 
   // Owner-only diagnostics for responses already associated with this draft. Never returns keys or reference images.
@@ -1568,10 +1547,10 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     // a rewrite keeps the owner's style and music choice (the review may have changed them on the draft itself)
     const keepStyle = row.draft?.style && STYLES[row.draft.style] && row.style !== 'auto' ? row.draft.style : row.style || 'auto';
     const keepMusic = row.draft?.music_mode || row.music_mode || 'default';
-    const r = await pool.query('INSERT INTO drafts (topic, note, parent_id, auto_produce, model, reasoning, characters, source_type, community_id, style, music_mode, story_mode, source_text) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id',
+    const r = await pool.query('INSERT INTO drafts (topic, note, parent_id, auto_produce, model, reasoning, characters, source_type, community_id, style, music_mode, story_mode, source_text, research_job_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id',
       [row.topic, String(b.note ?? row.note ?? '').trim().slice(0, 1000) || null, row.id, row.source_type === 'community' ? false : !!b.auto_produce,
         typeof b.model === 'string' && MODEL_RE.test(b.model) ? b.model : row.model, REASONING_LEVELS.includes(b.reasoning) ? b.reasoning : row.reasoning,
-        JSON.stringify(row.characters ?? []), row.source_type || 'studio', row.community_id ?? null, keepStyle, keepMusic, row.story_mode || 'name_story', row.source_text || null]);
+        JSON.stringify(row.characters ?? []), row.source_type || 'studio', row.community_id ?? null, keepStyle, keepMusic, row.story_mode || 'name_story', row.source_text || null, row.research_job_id || row.id]);
     if (row.status === 'failed' && row.storyboard && (b.note === undefined || String(b.note).trim() === String(row.note || '').trim())) {
       await pool.query('UPDATE drafts SET storyboard=$2, artwork=$3, research=$4 WHERE id=$1', [r.rows[0].id,JSON.stringify(row.storyboard),JSON.stringify(row.artwork || emptyArtwork()),JSON.stringify(row.research || [])]);
     }
