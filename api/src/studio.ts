@@ -527,6 +527,8 @@ const Draft = z.object({
     name: z.string().min(1).max(20), hairstyle: z.string().optional(), hair_color: Colour.optional(), skin: Colour.optional(),
     top: z.string().optional(), top_color: Colour.optional(), bottom: z.string().optional(), bottom_color: Colour.optional(),
     glasses: z.string().optional(), accessories: z.array(z.string()).optional(), accessory_color: Colour.optional(),
+    inner_color: Colour.optional(), shoes_color: Colour.optional(), frame_color: Colour.optional(), pattern: z.string().optional(), pattern_color: Colour.optional(),
+    backdrop: z.string().max(220_000).optional(),   // photo background of a photo character, set by the server, never by the brain
   })).max(4).default([]),
   thumbnail: z.object({ seg: z.string().optional(), title: z.string().optional() }).optional(),
   cover: z.object({ name: z.string().max(20).optional(), line: z.string().max(40).optional() }).optional(),
@@ -767,15 +769,22 @@ type Deps = {
 
 // ---------------------------------------------------------------- characters from a photo
 // The photo is only ANALYSED (vision) into the parameters the code-drawn chibi engine understands; nothing is generated from it.
-type Look = { hairstyle: string; hair_color: number[]; skin: number[]; top: string; top_color: number[]; bottom: string; bottom_color: number[]; glasses: string; accessories: string[]; accessory_color: number[] };
+type Look = { hairstyle: string; hair_color: number[]; skin: number[]; top: string; top_color: number[]; inner_color?: number[]; bottom: string; bottom_color: number[]; shoes_color?: number[]; frame_color?: number[];
+  pattern?: string; pattern_color?: number[]; glasses: string; accessories: string[]; accessory_color: number[]; backdrop?: string };
+export type PhotoResult = { look: Look; person_box: number[] | null };
+const PATTERNS = ['none', 'stripes', 'plaid', 'dots'];
+const BOX4 = { type: 'array', items: { type: 'integer' }, minItems: 4, maxItems: 4 };
 const rgb = (v: any, d: number[]): number[] => (Array.isArray(v) && v.length >= 3 ? v.slice(0, 3).map((n) => Math.max(0, Math.min(255, Math.round(Number(n) || 0)))) : d);
 const pick = (v: any, list: string[], d: string) => (list.includes(v) ? v : d);
 const RGB3 = { type: 'array', items: { type: 'integer' }, minItems: 3, maxItems: 3 };
 const LOOK_SCHEMA = {
   type: 'object', additionalProperties: false,
-  required: ['person_visible', 'hairstyle', 'hair_color', 'skin', 'top', 'top_color', 'bottom', 'bottom_color', 'glasses', 'accessories', 'accessory_color'],
+  required: ['person_visible', 'hairstyle', 'hair_color', 'skin', 'top', 'top_color', 'inner_color', 'bottom', 'bottom_color', 'shoes_color', 'frame_color', 'pattern', 'pattern_color', 'glasses', 'accessories', 'accessory_color', 'boxes'],
   properties: {
     person_visible: { type: 'boolean' },
+    inner_color: RGB3, shoes_color: RGB3, frame_color: RGB3, pattern: { type: 'string', enum: PATTERNS }, pattern_color: RGB3,
+    boxes: { type: 'object', additionalProperties: false, required: ['person', 'head', 'hair', 'torso', 'legs', 'shoes'],
+      properties: { person: BOX4, head: BOX4, hair: BOX4, torso: BOX4, legs: BOX4, shoes: BOX4 } },
     hairstyle: { type: 'string', enum: HAIRSTYLES }, hair_color: RGB3, skin: RGB3,
     top: { type: 'string', enum: TOPS }, top_color: RGB3, bottom: { type: 'string', enum: BOTTOMS }, bottom_color: RGB3,
     glasses: { type: 'string', enum: ['round', 'square', 'none'] }, accessories: { type: 'array', items: { type: 'string', enum: ACCESSORIES } }, accessory_color: RGB3,
@@ -787,9 +796,36 @@ Do NOT identify the person or guess their name, age, ethnicity or health; descri
 - hair_color, skin, top_color, bottom_color, accessory_color: [r,g,b] 0-255 read from the picture as the colour of the lit surface (not the shadow). skin is the lit skin tone of the face.
 - top: blazer (jacket or suit), tshirt, hoodie, shirt (collared or buttoned), dress. bottom: pants, shorts or skirt (if only the upper body is visible, choose pants).
 - glasses: round, square or none. accessories: any of ${ACCESSORIES.join(', ')} that are clearly visible (cap for a hat or cap, mustache, beard, earrings, headband, bow, bag for a visible bag strap; lashes only when stylised makeup stands out).
+- inner_color: the shirt/turtleneck under a jacket (same as top_color when there is no outer layer). shoes_color: the shoes (grey when not visible). frame_color: the glasses frame colour (brown when no glasses).
+- pattern: stripes, plaid or dots when the top clearly has that print, else none; pattern_color is the colour of the print lines/dots.
+- boxes: where each part is in the picture as [x0, y0, x1, y1] integers 0-1000 (fractions of the image width/height, origin top-left). person = the whole visible body incl. hair; head = the face incl. forehead; hair = the visible hair mass only; torso = the top/jacket; legs = trousers/skirt/shorts; shoes = the shoes. Use [0,0,0,0] for a part that is not visible.
 - If there is no person in the picture set person_visible to false and fill the rest with neutral values.`;
 
-export async function analyzePhoto(dataUrl: string): Promise<Look> {
+// Sample the real colours from the photo itself: the browser sends a 96x96 RGB grid (base64) of the same picture, and the boxes
+// from the vision step say where to look. Pixel medians are more faithful than colours the model has to guess.
+const GRID = 96;
+export function sampleColour(grid: Buffer | null, box: any, mode: 'median' | 'lit', inner = 0.6): number[] | null {
+  if (!grid || grid.length < GRID * GRID * 3 || !Array.isArray(box) || box.length < 4) return null;
+  let [x0, y0, x1, y1] = box.map((v: number) => Math.max(0, Math.min(1000, Number(v) || 0)) / 1000);
+  if (x1 - x0 < 0.02 || y1 - y0 < 0.02) return null;
+  const mx = (x1 - x0) * (1 - inner) / 2, my = (y1 - y0) * (1 - inner) / 2;
+  x0 += mx; x1 -= mx; y0 += my; y1 -= my;
+  const px: number[][] = [];
+  for (let y = Math.floor(y0 * GRID); y <= Math.min(GRID - 1, Math.ceil(y1 * GRID)); y++) for (let x = Math.floor(x0 * GRID); x <= Math.min(GRID - 1, Math.ceil(x1 * GRID)); x++) {
+    const o = (y * GRID + x) * 3; px.push([grid[o], grid[o + 1], grid[o + 2]]);
+  }
+  if (px.length < 4) return null;
+  const lum = (p: number[]) => p[0] * 0.3 + p[1] * 0.59 + p[2] * 0.11;
+  let use = px;
+  if (mode === 'lit') { use = [...px].sort((a, b) => lum(b) - lum(a)).slice(0, Math.max(3, Math.ceil(px.length * 0.6))); }   // the lit surface, not the shadow
+  const med = (i: number) => { const v = use.map((p) => p[i]).sort((a, b) => a - b); return v[Math.floor(v.length / 2)]; };
+  return [med(0), med(1), med(2)];
+}
+const near = (a: number[], b: number[]) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+// use the sampled colour unless it is wildly different from what the model saw (a wrong box), then keep the model's
+export const prefer = (sampled: number[] | null, model: number[]) => (sampled && near(sampled, model) < 170 ? sampled : model);
+
+export async function analyzePhoto(dataUrl: string, gridB64?: string): Promise<PhotoResult> {
   const m = /^data:(image\/(?:jpeg|png|webp));base64,(.+)$/.exec(dataUrl);
   if (!m) throw new Error('รูปต้องเป็น JPG, PNG หรือ WebP');
   let raw: any;
@@ -807,12 +843,31 @@ export async function analyzePhoto(dataUrl: string): Promise<Look> {
     raw = JSON.parse(txt.slice(txt.indexOf('{'), txt.lastIndexOf('}') + 1));
   }
   if (raw.person_visible === false) throw new Error('ไม่เห็นคนในรูป ลองรูปที่เห็นหน้าและลำตัวชัดๆ');
-  return {
-    hairstyle: pick(raw.hairstyle, HAIRSTYLES, 'short'), hair_color: rgb(raw.hair_color, [24, 24, 34]), skin: rgb(raw.skin, [244, 207, 178]),
-    top: pick(raw.top, TOPS, 'tshirt'), top_color: rgb(raw.top_color, [116, 122, 136]), bottom: pick(raw.bottom, BOTTOMS, 'pants'), bottom_color: rgb(raw.bottom_color, [70, 100, 150]),
+  let grid: Buffer | null = null;
+  try { if (gridB64) { const b = Buffer.from(gridB64, 'base64'); if (b.length === GRID * GRID * 3) grid = b; } } catch { grid = null; }
+  const bx = raw.boxes || {};
+  const hairM = rgb(raw.hair_color, [24, 24, 34]), skinM = rgb(raw.skin, [244, 207, 178]), topM = rgb(raw.top_color, [116, 122, 136]), botM = rgb(raw.bottom_color, [70, 100, 150]);
+  // skin: the lower-middle of the face box avoids hair, brows and glasses
+  const faceBox = Array.isArray(bx.head) && bx.head.length === 4 ? [bx.head[0] + (bx.head[2] - bx.head[0]) * 0.2, bx.head[1] + (bx.head[3] - bx.head[1]) * 0.5, bx.head[2] - (bx.head[2] - bx.head[0]) * 0.2, bx.head[3] - (bx.head[3] - bx.head[1]) * 0.08] : null;
+  // hair: the top part of the hair box (the fringe/crown), where the hair is, not the forehead or the shoulders
+  const hairTop = Array.isArray(bx.hair) && bx.hair.length === 4 ? [bx.hair[0], bx.hair[1], bx.hair[2], bx.hair[1] + (bx.hair[3] - bx.hair[1]) * 0.5] : null;
+  const look: Look = {
+    hairstyle: pick(raw.hairstyle, HAIRSTYLES, 'short'),
+    hair_color: prefer(sampleColour(grid, hairTop, 'median', 0.7), hairM),
+    skin: prefer(sampleColour(grid, faceBox, 'lit', 0.8), skinM),
+    top: pick(raw.top, TOPS, 'tshirt'), top_color: prefer(sampleColour(grid, bx.torso, 'median', 0.5), topM),
+    inner_color: rgb(raw.inner_color, topM),
+    bottom: pick(raw.bottom, BOTTOMS, 'pants'), bottom_color: prefer(sampleColour(grid, bx.legs, 'median', 0.5), botM),
+    shoes_color: prefer(sampleColour(grid, bx.shoes, 'median', 0.7), rgb(raw.shoes_color, [150, 135, 125])),
+    frame_color: rgb(raw.frame_color, [120, 86, 60]),
+    pattern: pick(raw.pattern, PATTERNS, 'none'), pattern_color: rgb(raw.pattern_color, [250, 250, 248]),
     glasses: pick(raw.glasses, ['round', 'square', 'none'], 'none'), accessories: (Array.isArray(raw.accessories) ? raw.accessories : []).filter((a: string) => ACCESSORIES.includes(a)).slice(0, 3),
     accessory_color: rgb(raw.accessory_color, [230, 70, 90]),
   };
+  if (look.pattern === 'none') { delete look.pattern; delete look.pattern_color; }
+  const pb = bx.person;
+  const person_box = Array.isArray(pb) && pb.length === 4 && pb[2] - pb[0] > 30 && pb[3] - pb[1] > 30 ? pb.map((v: number) => Math.max(0, Math.min(1000, Math.round(Number(v) || 0)))) : null;
+  return { look, person_box };
 }
 
 // The owner's photo characters are forced into the draft's cast with exactly their stored look.
@@ -884,6 +939,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       userText += `\n\nRequired characters (the owner uploaded photos of them; their look is applied automatically, do not change it): ${reqChars.map((c) => `"${c.name}"`).join(', ')}. ` +
         `Make them the main cast of this episode: put them in "cast" by exactly these names, write them into the story (what they do, say and feel) and refer to them in scenes with "person": {"who": name}. ` +
         `Show them BIG so viewers recognise them: about a third of the scenes must be "scenario" scenes with one of them as "person". ` +
+        (reqChars.some((c) => (c.look as any)?.backdrop) ? `The background of their uploaded photo is drawn automatically behind their scenario scenes (and on the cover), so do NOT give those scenario scenes a "set" (leave "set" out); use "set" only on scenes about other places. ` : '') +
         `You may add at most ${Math.max(0, 4 - reqChars.length)} other characters.`;
     }
     const recent = await recentEpisodes(id);
@@ -1129,7 +1185,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
   app.get('/app/api/studio/styles', g, (c) => c.json({ styles: STYLE_NAMES.map((id) => ({ id, label: STYLES[id].th, about: STYLES[id].en, preview: previews[id] || null })) }));
 
   app.get('/app/api/studio/characters', g, async (c) => {
-    const r = await pool.query('SELECT id, name, look, thumb, created_at FROM characters ORDER BY created_at DESC LIMIT 60');
+    const r = await pool.query('SELECT id, name, look, thumb, created_at, (backdrop IS NOT NULL) AS has_backdrop FROM characters ORDER BY created_at DESC LIMIT 60');
     return c.json({ characters: r.rows });
   });
 
@@ -1141,11 +1197,22 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     if (!/^data:image\/(jpeg|png|webp);base64,/.test(image) || image.length > 2_500_000) return c.json({ error: 'รูปต้องเป็น JPG, PNG หรือ WebP ขนาดไม่เกินประมาณ 1.8 MB' }, 422);
     if (!configured().llm) return c.json({ error: `ยังไม่ได้ตั้งค่า ${configured().key_name} ใน Railway (motion-api)` }, 503);
     if ((await pool.query('SELECT 1 FROM characters WHERE lower(name)=lower($1)', [name])).rowCount) return c.json({ error: 'มีตัวละครชื่อนี้แล้ว' }, 409);
-    let look: Look;
-    try { look = await analyzePhoto(image); } catch (e) { return c.json({ error: e instanceof Error ? e.message : String(e) }, 422); }
+    let res: PhotoResult;
+    try { res = await analyzePhoto(image, typeof b.pixels === 'string' && b.pixels.length < 40_000 ? b.pixels : undefined); } catch (e) { return c.json({ error: e instanceof Error ? e.message : String(e) }, 422); }
     const thumb = typeof b.thumb === 'string' && /^data:image\/jpeg;base64,/.test(b.thumb) && b.thumb.length < 60_000 ? b.thumb : null;
-    const r = await pool.query('INSERT INTO characters (name, look, thumb) VALUES ($1,$2,$3) RETURNING id, name, look, thumb, created_at', [name, JSON.stringify(look), thumb]);
-    return c.json({ character: r.rows[0] }, 201);
+    const r = await pool.query('INSERT INTO characters (name, look, thumb) VALUES ($1,$2,$3) RETURNING id, name, look, thumb, created_at', [name, JSON.stringify(res.look), thumb]);
+    return c.json({ character: r.rows[0], person_box: res.person_box }, 201);
+  });
+
+  // the browser erases the person from the photo and sends back only the background (small JPEG)
+  app.put('/app/api/studio/characters/:id/backdrop', g, async (c) => {
+    const id = c.req.param('id');
+    if (!isId(id)) return c.json({ error: 'not found' }, 404);
+    const b = await c.req.json().catch(() => ({}));
+    const img = String(b.backdrop || '');
+    if (!/^data:image\/jpeg;base64,/.test(img) || img.length > 200_000) return c.json({ error: 'backdrop must be a JPEG data URL under ~150 KB' }, 422);
+    const r = await pool.query('UPDATE characters SET backdrop=$2 WHERE id=$1 RETURNING id', [id, img]);
+    return r.rowCount ? c.json({ ok: true }) : c.json({ error: 'not found' }, 404);
   });
 
   app.delete('/app/api/studio/characters/:id', g, async (c) => {
@@ -1169,7 +1236,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       LEFT JOIN jobs j ON j.id = d.job_id LEFT JOIN episodes e ON e.id = d.episode_id WHERE d.id=$1`, [id])).rows[0];
     if (!r) return c.json({ error: 'not found' }, 404);
     const dr = r.draft ? { ...r.draft } : null;
-    if (dr) delete dr.research_seen;
+    if (dr) { delete dr.research_seen; if (Array.isArray(dr.cast)) dr.cast = dr.cast.map((x: any) => { const { backdrop, ...rest } = x; return { ...rest, has_backdrop: !!backdrop }; }); }
     return c.json({ ...summary(r), log: r.log, draft: dr, problems: r.problems, usage: r.usage, model: r.model, reasoning: r.reasoning, job_error: r.job_error ?? null,
       research: r.research });
   });
@@ -1185,7 +1252,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const model = typeof b.model === 'string' && MODEL_RE.test(b.model) ? b.model : MODEL;
     const reasoning = REASONING_LEVELS.includes(b.reasoning) ? b.reasoning : REASONING;
     const ids: string[] = (Array.isArray(b.characters) ? b.characters : []).map(String).filter(isId).slice(0, 3);
-    const chars = ids.length ? (await pool.query('SELECT id, name, look FROM characters WHERE id = ANY($1::uuid[]) ORDER BY created_at', [ids])).rows : [];
+    const chars = ids.length ? (await pool.query('SELECT id, name, look, backdrop FROM characters WHERE id = ANY($1::uuid[]) ORDER BY created_at', [ids])).rows.map((x: any) => ({ id: x.id, name: x.name, look: x.backdrop ? { ...x.look, backdrop: x.backdrop } : x.look })) : [];
     const style = typeof b.style === 'string' && STYLES[b.style] ? b.style : 'auto';
     const musicMode = b.music_mode === 'ai' ? 'ai' : 'default';
     const r = await pool.query('INSERT INTO drafts (topic, note, auto_produce, model, reasoning, characters, style, music_mode) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id',

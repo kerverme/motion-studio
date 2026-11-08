@@ -58,6 +58,13 @@ def look_style(look):
         st['bottom'] = look['bottom']
     if look.get('bottom_color'):
         st['pants'] = _c(look['bottom_color'], CLOTH, DEFAULT_STYLE['pants'])
+    if look.get('shoes_color'):
+        st['shoes'] = _c(look['shoes_color'], CLOTH, DEFAULT_STYLE['shoes'])
+    if look.get('frame_color'):
+        st['frame'] = _c(look['frame_color'], CLOTH, DEFAULT_STYLE['frame'])
+    if look.get('pattern') in ('stripes', 'plaid', 'dots'):
+        st['pattern'] = look['pattern']
+        st['pattern_color'] = _c(look.get('pattern_color'), CLOTH, (250, 250, 248))
     if look.get('accessory_color'):
         st['acc'] = _c(look['accessory_color'], CLOTH, (230, 70, 90))
     acc = look.get('accessories') or []
@@ -182,6 +189,34 @@ def draw_person(base, cx, cy, S, t, style=None, pose='stand', mood='normal', tal
                 P([(sg * 0.02, 0.6), (sg * 0.2, 0.58), (sg * 0.13, 0.74)], WHITE, max(1, lw // 2))
         elif TOP in ('tshirt', 'dress'):
             d.arc((ox - 0.15 * s, oy + 0.5 * s, ox + 0.15 * s, oy + 0.72 * s), 0, 180, fill=NAVY_D + (255,), width=lw)
+
+    # ---- print on the top (stripes / plaid / dots read from the photo), clipped to the torso
+    PAT = st.get('pattern')
+    if PAT:
+        PC = tuple(st.get('pattern_color') or (250, 250, 248))
+        quad = [(-0.44, 0.62), (0.44, 0.62), (0.4, 1.08), (-0.4, 1.08)] if TOP != 'dress' else [(-0.38, 0.62), (0.38, 0.62), (0.36, 1.02), (-0.36, 1.02)]
+        mask = Image.new('L', lay.size, 0)
+        ImageDraw.Draw(mask).polygon([(ox + x * s, oy + y * s) for x, y in quad], fill=255)
+        pl = Image.new('RGBA', lay.size, (0, 0, 0, 0))
+        pd = ImageDraw.Draw(pl)
+        step = 0.13 * s
+        if PAT in ('stripes', 'plaid'):
+            yy = oy + 0.62 * s
+            while yy < oy + 1.1 * s:
+                pd.rectangle((ox - 0.5 * s, yy, ox + 0.5 * s, yy + step * 0.42), fill=PC + (255,))
+                yy += step
+        if PAT == 'plaid':
+            xx = ox - 0.5 * s
+            while xx < ox + 0.5 * s:
+                pd.rectangle((xx, oy + 0.6 * s, xx + step * 0.42, oy + 1.1 * s), fill=PC + (150,))
+                xx += step
+        if PAT == 'dots':
+            for ix in range(-4, 5):
+                for iy in range(0, 5):
+                    cx_, cy_ = ox + ix * 0.1 * s + (0.05 * s if iy % 2 else 0), oy + (0.7 + iy * 0.09) * s
+                    pd.ellipse((cx_ - 0.018 * s, cy_ - 0.018 * s, cx_ + 0.018 * s, cy_ + 0.018 * s), fill=PC + (255,))
+        pl.putalpha(Image.composite(pl.getchannel('A'), Image.new('L', lay.size, 0), mask))
+        lay.alpha_composite(pl)
 
     # ---- arms
     short_sleeve = TOP in ('tshirt', 'dress')

@@ -283,6 +283,9 @@ def make_cover(ctx, number, out):
     style = templates.person_style({'who': cv['who']}) if cv['who'] in cast else {}
     top, bot = templates.PALETTES[templates.PAL_ORDER[(int(number) * 5 + sum(map(ord, name))) % len(templates.PAL_ORDER)]]
     img = core.gradient(top, bot).copy()
+    bd = templates.photo_backdrop(cast[cv['who']].get('backdrop')) if cv['who'] in cast and cast[cv['who']].get('backdrop') else None
+    if bd is not None:   # the background of the uploaded photo (person already erased), flattened by code
+        img.alpha_composite(bd.crop(((bd.width - 1080) // 2, (bd.height - 1920) // 2, (bd.width - 1080) // 2 + 1080, (bd.height - 1920) // 2 + 1920)))
     d = ImageDraw.Draw(img, 'RGBA')
     # rays behind the character
     cx, cy = 540, 1060

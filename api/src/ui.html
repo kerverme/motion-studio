@@ -544,6 +544,45 @@ async function shrinkImage(file, max, q){
   const x = c.getContext('2d'); x.fillStyle='#fff'; x.fillRect(0,0,c.width,c.height); x.drawImage(bmp,0,0,c.width,c.height);
   return c.toDataURL('image/jpeg', q);
 }
+
+/* 96x96 RGB grid of the photo: the server reads real colours (hair, skin, clothes) from it at the places the vision step points to */
+async function pixelGrid(file){
+  const bmp = await createImageBitmap(file), c = document.createElement('canvas'); c.width = c.height = 96;
+  const x = c.getContext('2d', {willReadFrequently:true}); x.drawImage(bmp,0,0,96,96);
+  const d = x.getImageData(0,0,96,96).data, out = new Uint8Array(96*96*3);
+  for(let i=0,j=0;i<d.length;i+=4){ out[j++]=d[i]; out[j++]=d[i+1]; out[j++]=d[i+2]; }
+  let bin=''; for(let i=0;i<out.length;i+=0x8000) bin += String.fromCharCode.apply(null,out.subarray(i,i+0x8000));
+  return btoa(bin);
+}
+/* the photo's background for the clip: cover-fit to 540x960, the person (box from the vision step) painted out with a
+   left-to-right fill of the surroundings and blurred, saved as a small JPEG. The face never leaves the browser. */
+async function photoBackdrop(file, box){
+  const bmp = await createImageBitmap(file), W=540, H=960, k = Math.max(W/bmp.width, H/bmp.height);
+  const dw = bmp.width*k, dh = bmp.height*k, ox = (W-dw)/2, oy = (H-dh)/2;
+  const c = document.createElement('canvas'); c.width=W; c.height=H;
+  const x = c.getContext('2d', {willReadFrequently:true}); x.drawImage(bmp, ox, oy, dw, dh);
+  if(box){
+    const pad = 0.05;
+    let x0 = ox + Math.max(0,box[0]/1000-pad)*dw, x1 = ox + Math.min(1,box[2]/1000+pad)*dw, y0 = oy + Math.max(0,box[1]/1000-pad)*dh, y1 = oy + Math.min(1,box[3]/1000+pad)*dh;
+    x0 = Math.max(0,Math.floor(x0)); x1 = Math.min(W,Math.ceil(x1)); y0 = Math.max(0,Math.floor(y0)); y1 = Math.min(H,Math.ceil(y1));
+    if(x1-x0 > 8 && y1-y0 > 8){
+      const img = x.getImageData(0,0,W,H), p = img.data, at = (xx,yy)=>(yy*W+xx)*4;
+      const edge = (xx,yy,dir)=>{ let r=0,g=0,b=0,n=0; for(let i=0;i<6;i++){ const q=at(Math.max(0,Math.min(W-1,xx+i*dir)),yy); r+=p[q];g+=p[q+1];b+=p[q+2];n++; } return [r/n,g/n,b/n]; };
+      for(let yy=y0; yy<y1; yy++){
+        const L = x0>4 ? edge(x0-2,yy,-1) : null, R = x1<W-4 ? edge(x1+2,yy,1) : null;
+        for(let xx=x0; xx<x1; xx++){
+          const f = (xx-x0)/Math.max(1,x1-x0), q = at(xx,yy);
+          const a = L||R||[200,200,200], b = R||L||[200,200,200];
+          p[q]=a[0]*(1-f)+b[0]*f; p[q+1]=a[1]*(1-f)+b[1]*f; p[q+2]=a[2]*(1-f)+b[2]*f; p[q+3]=255;
+        }
+      }
+      x.putImageData(img,0,0);
+      const snap = document.createElement('canvas'); snap.width=W; snap.height=H; snap.getContext('2d').drawImage(c,0,0);
+      x.save(); x.beginPath(); x.rect(x0-14,y0-14,(x1-x0)+28,(y1-y0)+28); x.clip(); x.filter='blur(16px)'; x.drawImage(snap,0,0); x.restore(); x.filter='none';
+    }
+  }
+  return c.toDataURL('image/jpeg', .72);
+}
 const rgbCss = a => Array.isArray(a)&&a.length>=3 ? 'rgb('+a.slice(0,3).join(',')+')' : '#ccc';
 const HAIR_TH = {helmet:'ทรงบอบหน้าม้า',short:'ผมสั้น',spiky:'ผมตั้ง',side_part:'ผมแสกข้าง',curly:'ผมหยิก',bald:'ศีรษะล้าน',long:'ผมยาว',bob:'ผมบ๊อบ',ponytail:'ผมมัดหาง',bun:'ผมจุก'};
 const TOP_TH = {blazer:'สูท/เบลเซอร์',tshirt:'เสื้อยืด',hoodie:'ฮู้ด',shirt:'เสื้อเชิ้ต',dress:'ชุดเดรส'};
@@ -561,12 +600,12 @@ function characterPanel(){
       return h('div',{class:'char'+(on?' on':''),role:'checkbox','aria-checked':String(on),tabindex:'0',title:[HAIR_TH[l.hairstyle],TOP_TH[l.top],l.glasses&&l.glasses!=='none'?'แว่น':''].filter(Boolean).join(' · '),
           on:{click:()=>toggle(c.id),keydown:e=>{ if(e.key===' '||e.key==='Enter'){ e.preventDefault(); toggle(c.id); } }}},
         c.thumb ? h('img',{src:c.thumb,alt:''}) : h('div',{class:'ph'}),
-        h('div',{}, h('b',{},c.name), h('div',{class:'sw','aria-hidden':'true'}, [l.skin,l.hair_color,l.top_color,l.bottom_color].map(v=>h('i',{style:'background:'+rgbCss(v)})))),
+        h('div',{}, h('b',{},c.name+(c.has_backdrop?' · มีฉากหลัง':'')), h('div',{class:'sw','aria-hidden':'true'}, [l.skin,l.hair_color,l.top_color,l.bottom_color].map(v=>h('i',{style:'background:'+rgbCss(v)})))),
         h('button',{class:'x','aria-label':'ลบ '+c.name,on:{click:async e=>{ e.stopPropagation(); try{ await api('/app/api/studio/characters/'+c.id,{method:'DELETE'}); CHARS=CHARS.filter(x=>x.id!==c.id); setSelectedChars(selectedChars()); draw(); }catch(x){ toast(x.message); } }}},'ลบ'));
     })) : h('div',{class:'hint'},'ยังไม่มีตัวละคร อัปโหลดรูปคนที่ต้องการให้เป็นตัวละครในคลิป');
     const file = h('input',{type:'file',accept:'image/jpeg,image/png,image/webp',hidden:true,on:{change:async e=>{
       const f=e.target.files[0]; if(!f) return; err.textContent='';
-      try{ pend.image = await shrinkImage(f,1024,.85); pend.thumb = await shrinkImage(f,120,.8); if(!pend.name) pend.name=''; draw(); }catch(x){ err.textContent=x.message; } }}});
+      try{ pend.file = f; pend.image = await shrinkImage(f,1024,.85); pend.thumb = await shrinkImage(f,120,.8); pend.pixels = await pixelGrid(f); if(!pend.name) pend.name=''; draw(); }catch(x){ err.textContent=x.message; } }}});
     const err = h('div',{class:'err',role:'alert'});
     let nm, mk;
     const form = pend.image ? h('div',{class:'charnew'},
@@ -575,13 +614,16 @@ function characterPanel(){
       mk = h('button',{class:'btn primary',on:{click:async()=>{
         err.textContent=''; if(!(pend.name||'').trim()){ err.textContent='ตั้งชื่อตัวละครก่อน'; nm.focus(); return; }
         mk.disabled=true; mk.textContent='กำลังวิเคราะห์รูป…';
-        try{ const r=await api('/app/api/studio/characters',{method:'POST',body:JSON.stringify({name:pend.name,image:pend.image,thumb:pend.thumb})});
+        try{ const r=await api('/app/api/studio/characters',{method:'POST',body:JSON.stringify({name:pend.name,image:pend.image,thumb:pend.thumb,pixels:pend.pixels})});
+          mk.textContent='กำลังทำพื้นหลังจากรูป…';
+          try{ const bd = await photoBackdrop(pend.file, r.person_box); await api('/app/api/studio/characters/'+r.character.id+'/backdrop',{method:'PUT',body:JSON.stringify({backdrop:bd})}); r.character.has_backdrop = true; }
+          catch(e2){ toast('สร้างตัวละครแล้ว แต่ทำพื้นหลังจากรูปไม่สำเร็จ: '+e2.message); }
           CHARS=[r.character,...CHARS]; setSelectedChars([...selectedChars(),r.character.id].slice(-3)); S.charNew={}; Object.keys(pend).forEach(k=>delete pend[k]); toast('สร้างตัวละคร '+r.character.name+' แล้ว'); draw(); }
         catch(x){ err.textContent=x.message; mk.disabled=false; mk.textContent='สร้างตัวละคร'; } }}},'สร้างตัวละคร'),
       h('button',{class:'btn quiet',on:{click:()=>{ Object.keys(pend).forEach(k=>delete pend[k]); draw(); }}},'ยกเลิก'))
       : h('div',{class:'row',style:'justify-content:flex-start'}, h('button',{class:'btn',on:{click:()=>file.click()}},'+ อัปโหลดรูปเป็นตัวละคร'), file);
     put(wrap, h('h3',{},'ตัวละครจากรูป'),
-      h('div',{class:'hint'},'ระบบดูโครงจากรูป (ทรงผม สีผม สีผิว เสื้อผ้า แว่น เครื่องประดับ) แล้ววาดเป็นตัวการ์ตูนด้วยโค้ด ไม่ได้ใช้รูปจริงในคลิป และไม่ใช้ AI สร้างภาพ · เลือกได้สูงสุด 3 คนต่อคลิป'),
+      h('div',{class:'hint'},'ระบบอ่านทรงผม สีผม สีผิว เสื้อผ้า ลายเสื้อ แว่น รองเท้า เครื่องประดับ จากรูป แล้ววาดเป็นตัวการ์ตูนด้วยโค้ด และเอาพื้นหลังของรูปมาใช้เป็นฉากหลัง (ลบตัวคนออกก่อน ปรับเป็นภาพแบน หน้าคนจริงไม่ถูกส่งไปไหน ไม่ใช้ AI สร้างภาพ) · เลือกได้สูงสุด 3 คนต่อคลิป'),
       list, form, err);
   }
   function toggle(id){ let a=selectedChars(); a = a.includes(id) ? a.filter(x=>x!==id) : [...a,id].slice(-3); setSelectedChars(a); draw(); }

@@ -6,7 +6,7 @@ build_scenes(spec) turns it into the SCENES mapping engine.render expects. Every
 the exact token, then a spaces-free substring match across tokens, then the word's relative position in the segment
 text, so an edited or re-voiced script never crashes the render (misses are reported to QA)."""
 import math, random, re, sys, traceback
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 from . import core
 from .core import (W, H, SEG, clamp, lerp, eo, eio, eob, pop, fade, text_img, F, rrect,
                    talk_amount, arrow, confetti, rays, heart, comment_icon, stars)
@@ -262,7 +262,52 @@ def headline(img, t, seg, sp):
 
 
 CAST = {}  # name -> look, from the episode spec ("cast")
-LOOK_KEYS = ('hairstyle', 'hair_color', 'skin', 'top', 'top_color', 'inner_color', 'bottom', 'bottom_color', 'glasses', 'accessories', 'accessory_color')
+BACKDROP = {}  # cast name -> prepared photo background (1.06x of the frame, for a slow drift), see photo_backdrop()
+
+
+def photo_backdrop(data_url):
+    """The background of a character's uploaded photo (the person was already erased in the browser), flattened into a
+    simple poster-like backdrop by code: median-smoothed, reduced to a few colours, softened toward white so the cast and the
+    text stay readable. Returns a (1145 x 2035) RGBA image or None."""
+    import base64, io
+    try:
+        raw = base64.b64decode(str(data_url).split(',', 1)[1])
+        im = Image.open(io.BytesIO(raw)).convert('RGB')
+    except Exception:
+        return None
+    tw, th = int(W * 1.06), int(H * 1.06)
+    k = max(tw / im.width, th / im.height)
+    im = im.resize((max(tw, round(im.width * k)), max(th, round(im.height * k))), Image.LANCZOS)
+    l, t = (im.width - tw) // 2, (im.height - th) // 2
+    im = im.crop((l, t, l + tw, t + th))
+    small = im.resize((tw // 4, th // 4), Image.LANCZOS).filter(ImageFilter.MedianFilter(5)).filter(ImageFilter.GaussianBlur(1.2))
+    small = small.quantize(colors=16, method=Image.MEDIANCUT, dither=Image.NONE).convert('RGB')
+    flat = small.resize((tw, th), Image.BICUBIC).filter(ImageFilter.GaussianBlur(2.2))
+    soft = Image.blend(flat, Image.new('RGB', flat.size, (255, 250, 242)), 0.16)
+    return soft.convert('RGBA')
+
+
+def backdrop_for(sp):
+    """The photo background to use for a scene: a scenario scene whose person has one, unless the script picked a set
+    (the opening scene always uses it)."""
+    if not BACKDROP or sp.get('type') != 'scenario':
+        return None
+    if sp.get('set') not in (None, '', 'photo') and sp.get('_i') != 0:
+        return None
+    for k in ('person', 'person2'):
+        p = sp.get(k)
+        if isinstance(p, dict) and p.get('who') in BACKDROP:
+            return BACKDROP[p['who']]
+    if not sp.get('person') and CAST:
+        return BACKDROP.get(next(iter(CAST)))
+    return None
+
+
+def draw_backdrop(img, bg, t):
+    ox = int((bg.width - W) / 2 + math.sin(t * 0.35) * (bg.width - W) * 0.45)
+    oy = int((bg.height - H) / 2 + math.cos(t * 0.27) * (bg.height - H) * 0.45)
+    img.alpha_composite(bg.crop((ox, oy, ox + W, oy + H)))
+LOOK_KEYS = ('hairstyle', 'hair_color', 'skin', 'top', 'top_color', 'inner_color', 'bottom', 'bottom_color', 'glasses', 'accessories', 'accessory_color', 'shoes_color', 'frame_color', 'pattern', 'pattern_color')
 
 
 def person_style(p):
@@ -962,7 +1007,12 @@ def _scene(seg, sp, seed):
             d.draw = Image.core.draw(img.im, 1)
         except Exception:
             pass
-        has_set = bool(sp.get('set')) and draw_set(sp.get('set'), img, d, t)
+        photo = backdrop_for(sp)
+        if photo is not None:
+            draw_backdrop(img, photo, t)
+            has_set = True
+        else:
+            has_set = bool(sp.get('set')) and draw_set(sp.get('set'), img, d, t)
         if not has_set:
             decor(d, t, seed)
         try:
@@ -990,6 +1040,12 @@ def build_scenes(spec):
         cast = {str(c.get('name')): c for c in cast if isinstance(c, dict) and c.get('name')}
     CAST.clear()
     CAST.update({k: v for k, v in cast.items() if isinstance(v, dict)})
+    BACKDROP.clear()
+    for k, v in CAST.items():
+        if v.get('backdrop'):
+            bd = photo_backdrop(v['backdrop'])
+            if bd is not None:
+                BACKDROP[k] = bd
     out = {}
     for i, sp in enumerate(spec.get('scenes') or []):
         seg = sp.get('seg')
