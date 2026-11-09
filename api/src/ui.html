@@ -83,7 +83,7 @@ main{padding:36px 40px 80px;min-width:0;max-width:1180px}
 .frame img{width:100%;height:100%;object-fit:cover;display:block;transition:transform .35s ease}
 .clip:hover .frame img{transform:scale(1.025)}
 .frame .ep{position:absolute;left:10px;top:10px;padding:2px 8px;border-radius:999px;background:rgba(15,20,18,.62);color:#F2F4EF;font-size:12.5px;font-weight:500;backdrop-filter:blur(6px)}
-.clip h3{margin:0;font-family:var(--serif);font-weight:600;font-size:16.5px;line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.clip h3{margin:0;font-family:var(--serif);font-weight:600;font-size:16.5px;line-height:1.45;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}
 .marks{display:flex;gap:6px;flex-wrap:wrap;min-height:22px}
 .mark{display:inline-flex;align-items:center;gap:5px;font-size:12.5px;color:var(--ink-2);padding:1px 8px;border:1px solid var(--line);border-radius:999px}
 .mark i{width:7px;height:7px;border-radius:50%;background:var(--ink-3)}
@@ -104,7 +104,7 @@ main{padding:36px 40px 80px;min-width:0;max-width:1180px}
 .d-body{padding:20px 22px 40px;display:flex;flex-direction:column;gap:18px}
 .d-video{display:flex;justify-content:center;background:#101513;border-radius:var(--r-lg);overflow:hidden}
 .d-video video{width:100%;max-height:52vh;aspect-ratio:9/16;background:#101513}
-.d-title{font-family:var(--serif);font-weight:600;font-size:22px;line-height:1.4;margin:0}
+.d-title{font-family:var(--serif);font-weight:600;font-size:22px;line-height:1.4;margin:0;overflow-wrap:anywhere}
 .facts{display:grid;grid-template-columns:auto 1fr;gap:4px 16px;font-size:14px;margin:0}
 .facts dt{color:var(--ink-3)} .facts dd{margin:0}
 .actions{display:flex;gap:8px;flex-wrap:wrap}
@@ -394,6 +394,14 @@ async function load(){
 }
 
 /* ---------- clips ---------- */
+const GENERATION_MODEL_LABELS = {'gpt-6.1-sol':'GPT-6.1 Sol','gpt-6.1-terra':'GPT-6.1 Terra','gpt-6-astra':'GPT-6 Astra','gpt-6-sol':'GPT-6 Sol','gpt-6-luna':'GPT-6 Luna','claude-opus-5-5':'Claude Opus 5.5','claude-sonnet-5-5':'Claude Sonnet 5.5'};
+function clipDisplayTitle(ep){
+  const model=typeof ep.generation_model==='string'&&ep.generation_model?ep.generation_model:null;
+  const label=model?(Object.hasOwn(GENERATION_MODEL_LABELS,model)?GENERATION_MODEL_LABELS[model]:model):'ไม่ทราบโมเดล';
+  const tag='['+label+']',title=String(ep.title||'');
+  // Display only: keep canonical titles and publishing captions unchanged.
+  return title.startsWith(tag)?tag+' '+title.slice(tag.length).trimStart():tag+' '+title;
+}
 function clips(){
   const ready = S.view==='ready';
   const head = h('div',{class:'head'}, h('div',{},
@@ -405,12 +413,13 @@ function clips(){
     return;
   }
   const grid = h('div',{class:'sheet-grid'}, S.eps.map(ep=>{
+    const displayTitle=clipDisplayTitle(ep);
     const by = latestByService(ep.publications);
     const views = ep.publications.filter(p=>p.metrics&&p.metrics.views!=null).reduce((n,p)=>n+p.metrics.views,0);
     const hasViews = ep.publications.some(p=>p.metrics&&p.metrics.views!=null);
-    return h('button',{class:'clip',on:{click:()=>detail(ep)},'aria-label':'เปิด '+ep.title},
+    return h('button',{class:'clip',on:{click:()=>detail(ep)},'aria-label':'เปิด '+displayTitle},
       h('div',{class:'frame'}, ep.thumbnail_url?h('img',{src:ep.thumbnail_url,alt:'',loading:'lazy'}):'', ep.number?h('span',{class:'ep'},'EP'+String(ep.number).padStart(3,'0')):''),
-      h('h3',{},ep.title),
+      h('h3',{},displayTitle),
       Object.keys(by).length ? h('div',{class:'marks'}, ORDER.filter(s=>by[s]).map(s=>{ const st=postState(by[s]); return h('span',{class:'mark '+st.cls,title:st.text},h('i',{'aria-hidden':'true'}),SVC[s]); }))
         : h('div',{class:'sub'},'ส่งมอบ '+fmtD(ep.delivered_at)),
       ep.produce_seconds>0 ? h('div',{class:'sub'},'ใช้เวลาผลิต '+fmtDur(ep.produce_seconds)) : '',
@@ -458,7 +467,7 @@ function detail(ep){
     });
     put(body,
       h('div',{class:'d-video'}, h('video',{controls:true,preload:'metadata',playsinline:true,poster:ep.thumbnail_url||false,src:ep.video_url})),
-      h('h2',{class:'d-title'}, ep.title),
+      h('h2',{class:'d-title'}, clipDisplayTitle(ep)),
       h('dl',{class:'facts'}, h('dt',{},'ส่งมอบ'), h('dd',{},fmtD(ep.delivered_at)), h('dt',{},'ขนาด'), h('dd',{}, ep.video_bytes?(ep.video_bytes/1048576).toFixed(1)+' MB':'—'),
         h('dt',{},'Notion'), h('dd',{}, ep.notion.url ? h('a',{href:ep.notion.url,target:'_blank',rel:'noopener'}, used?'บันทึกแล้ว · ติ๊กใช้แล้ว':'บันทึกแล้ว') : ep.notion.error ? h('span',{style:'color:var(--bad)'},'บันทึกไม่สำเร็จ') : 'รอซิงก์')),
       h('div',{class:'actions'},
