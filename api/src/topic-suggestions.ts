@@ -5,7 +5,7 @@ import {z} from 'zod';
 import {openaiResponse} from './openai-response.js';
 
 const Input = z.object({
-  model:z.string().default('gpt-6.1-sol'),
+  model:z.string().default('gpt-6.1-terra'),
   reasoning:z.enum(['low','medium','high']).default('low'),
   story_mode:z.enum(['general','name_story']).default('general'),
   topic:z.string().max(400).default(''),

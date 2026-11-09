@@ -790,11 +790,11 @@ function studio(st, drafts){
   const drawIdeas=()=>{
     const visible=ideaSet&&ideaSet.story_mode===modeSel.value;
     put(ideaList,visible?ideaSet.ideas.map(i=>h('button',{on:{click:()=>chooseIdea(i)}},i)):[]);
-    if(!suggesting)ideaStatus.textContent=visible?'ชุดนี้ใช้ '+ideaSet.model+' · เลือกหัวข้อเพื่อเติมลงช่องเรื่อง หรือกดสุ่มใหม่':'กดสุ่มชุดใหม่ แล้วเลือกหัวข้อที่ชอบ · ระบบจะตรวจข้อมูลตอนเริ่มเขียนบท';
+    if(!suggesting)ideaStatus.textContent=visible?'ชุดนี้ใช้ '+ideaSet.model+' · เลือกหัวข้อเพื่อเติมลงช่องเรื่อง หรือกดสุ่มใหม่':'สุ่มด้วย GPT-6.1 Terra · เลือกหัวข้อที่ชอบ · ระบบจะตรวจข้อมูลตอนเริ่มเขียนบท';
   };
   const suggestBtn=h('button',{class:'btn',type:'button',disabled:!st.ai_suggestions,on:{click:()=>{
     const previous=readIdeaStore(suggestionSlot,null);
-    const pending=previous||{request_id:crypto.randomUUID(),model:modelSel.value,reasoning:effSel?effSel.value:'low',story_mode:modeSel.value,topic:topic.value.trim(),source_text:modeSel.value==='general'?sourceText.value.slice(0,6000):'',note:note.value,hero:modeSel.value==='name_story'?heroName.value:'',exclude:[...new Set([...IDEAS,...readIdeaStore('ms.idea_history',[])])].slice(-60)};
+    const pending=previous||{request_id:crypto.randomUUID(),model:'gpt-6.1-terra',reasoning:effSel?effSel.value:'low',story_mode:modeSel.value,topic:topic.value.trim(),source_text:modeSel.value==='general'?sourceText.value.slice(0,6000):'',note:note.value,hero:modeSel.value==='name_story'?heroName.value:'',exclude:[...new Set([...IDEAS,...readIdeaStore('ms.idea_history',[])])].slice(-60)};
     saveIdeaStore(suggestionSlot,pending);void getIdeas(pending);
   }}},'AI สุ่มหัวข้อ');
   const suggestPanel=h('div',{'aria-label':'AI แนะนำเรื่อง',style:'display:flex;flex-direction:column;gap:8px'},h('div',{},suggestBtn),ideaStatus,ideaList,ideaError);

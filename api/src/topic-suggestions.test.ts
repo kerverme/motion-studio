@@ -75,7 +75,7 @@ test('provider disconnect fails visibly and is never silently replaced by canned
 test('accepted background IDs are checkpointed while polling',async()=>{
  const {app}=server(),id=randomUUID();queued=true;await post(app,{request_id:id});
  for(let i=0;i<100;i++){const row:any=(await db.query('SELECT * FROM topic_suggestions WHERE id=$1',[id])).rows[0];if(row.response_id)break;await new Promise(r=>setTimeout(r,10));}
- const row:any=(await db.query('SELECT * FROM topic_suggestions WHERE id=$1',[id])).rows[0];assert.match(row.response_id,/^resp_/);assert.equal(row.status,'running');queued=false;assert.equal((await done(id)).status,'done');assert.ok(calls.some(c=>c.method==='GET'&&c.url.endsWith('/'+row.response_id)));
+ const row:any=(await db.query('SELECT * FROM topic_suggestions WHERE id=$1',[id])).rows[0];assert.match(row.response_id,/^resp_/);assert.equal(row.status,'running');assert.equal(row.request.model,'gpt-6.1-terra');assert.equal(calls.filter(c=>c.method==='POST').at(-1)!.body.model,'gpt-6.1-terra');queued=false;assert.equal((await done(id)).status,'done');assert.ok(calls.some(c=>c.method==='GET'&&c.url.endsWith('/'+row.response_id)));
 });
 
 test('restart resumes saved response reads, and leaves ambiguous uncheckpointed creates failed',async()=>{
