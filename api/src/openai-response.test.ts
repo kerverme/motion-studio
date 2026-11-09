@@ -81,3 +81,11 @@ test('preserves completion racing cancellation and ignores progress persistence 
   const result = await openaiResponse({}, { ...h.options, timeoutMs: 1, onProgress: async () => { throw new Error('DB temporarily down'); } });
   assert.equal(result.status, 'completed');
 });
+
+test('resumes an accepted response with GET only and rejects invalid saved IDs',async()=>{
+  const h=harness([done]);
+  const result=await openaiResponse({model:'chosen-model'},{...h.options,responseId:'resp_test'});
+  assert.equal(result.status,'completed');assert.deepEqual(h.calls.map(c=>c.init?.method),['GET']);
+  await assert.rejects(openaiResponse({},{...h.options,responseId:'not/a/response'}),/invalid saved response/);
+  assert.equal(h.calls.length,1);
+});

@@ -8,6 +8,7 @@ type Options = {
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
   timeoutMs?: number;
+  responseId?: string; // Resume reads of an already accepted background response.
 };
 
 export function networkCode(error: unknown): string {
@@ -27,7 +28,8 @@ export async function openaiResponse(body: any, options: Options): Promise<any> 
   const deadline = started + (options.timeoutMs ?? 15 * 60_000);
   const base = options.baseUrl.replace(/\/$/, '') + '/v1/responses';
   const headers = { authorization: `Bearer ${options.apiKey}`, 'content-type': 'application/json' };
-  let responseId: string | undefined;
+  let responseId = options.responseId;
+  if (responseId && !/^resp_[a-zA-Z0-9_-]+$/.test(responseId)) throw new Error('OpenAI invalid saved response ID');
   // Progress persistence must not cause a successful creation to be retried.
   const progress = async (message: string) => {
     try { await options.onProgress?.(message); } catch { /* the response is still running */ }
@@ -63,7 +65,9 @@ export async function openaiResponse(body: any, options: Options): Promise<any> 
     }
   }
 
-  let response = await readJson(base, { method: 'POST', body: JSON.stringify({ ...body, background: true }) }, false);
+  let response = responseId
+    ? await readJson(`${base}/${responseId}`, {method:'GET'}, true)
+    : await readJson(base, { method: 'POST', body: JSON.stringify({ ...body, background: true }) }, false);
   if (typeof response.id === 'string' && /^resp_[a-zA-Z0-9_-]+$/.test(response.id)) responseId = response.id;
   let lastNotice = now();
   if (['queued', 'in_progress'].includes(response.status)) {

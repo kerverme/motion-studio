@@ -38,6 +38,7 @@ const MODEL_CHOICES: Record<string, { id: string; label: string }[]> = {
   ],
 };
 if (!MODEL_CHOICES[PROVIDER].some((m) => m.id === MODEL)) MODEL_CHOICES[PROVIDER].unshift({ id: MODEL, label: MODEL });
+export const OPENAI_MODELS=MODEL_CHOICES.openai.map(m=>m.id);
 const REASONING_LEVELS = ['low', 'medium', 'high'];
 const REASONING = REASONING_LEVELS.includes(String(env.MOTION_LLM_REASONING)) ? String(env.MOTION_LLM_REASONING) : 'high';
 const MODEL_RE = /^[a-z0-9][a-z0-9.\-]{2,60}$/;
@@ -1347,7 +1348,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
   app.get('/app/api/studio/status', g, async (c) => {
     const n = (await pool.query("SELECT count(*)::int AS n FROM drafts WHERE created_at > now() - interval '1 day'")).rows[0].n;
     return c.json({ ...configured(), formats: Object.fromEntries(Object.entries(FORMATS).map(([k, f]) => [k, f.th])), model: MODEL,
-      models: MODEL_CHOICES[PROVIDER], reasoning: PROVIDER === 'openai' ? REASONING : null, reasoning_levels: PROVIDER === 'openai' ? REASONING_LEVELS : [], drafts_today: n, daily_limit: DAILY_LIMIT, busy, max_credits: DRAFT_MAX_CREDITS });
+      models: MODEL_CHOICES[PROVIDER], reasoning: PROVIDER === 'openai' ? REASONING : null, reasoning_levels: PROVIDER === 'openai' ? REASONING_LEVELS : [], ai_suggestions:!!env.OPENAI_API_KEY, drafts_today: n, daily_limit: DAILY_LIMIT, busy, max_credits: DRAFT_MAX_CREDITS });
   });
 
   // ---- characters made from photos

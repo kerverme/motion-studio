@@ -779,10 +779,50 @@ function studio(st, drafts){
   const modeHint=h('div',{class:'sub'});
   const changeMode=()=>{const general=modeSel.value==='general';heroGroup.hidden=general;sourcePanel.hidden=!general;charChoice.hidden=!general;charsPanel.hidden=general&&!useChars.checked;topic.setAttribute('aria-label',general?'หัวข้อเรื่อง':'เรื่องที่จะเล่าต่อ');topic.placeholder=general?'หัวข้อหรือสิ่งที่อยากเล่า เช่น มอร์นิ่งรูทีนช่วยให้ตื่นสดชื่นอย่างไร':'เรื่องที่จะเล่าต่อจากคำถามชื่อ';modeHint.textContent=general?'เปิดเรื่องตามหัวข้อ วาดฉาก สิ่งของ หรือภาพอธิบายตามบท ไม่บังคับชื่อและตัวละคร':'เปิดด้วย “คนชื่อ … ในประเทศไทย มีกี่คน” และใช้ตัวเอกบนปก';try{sessionStorage.setItem('ms.story_mode',modeSel.value);}catch{}};
   modeSel.addEventListener('change',changeMode);useChars.addEventListener('change',changeMode);changeMode();
+  const chooseIdea=value=>{topic.value=value;topic.dispatchEvent(new Event('input'));topic.focus();};
+  const ideaStatus=h('div',{class:'sub',role:'status','aria-live':'polite'});
+  const ideaError=h('div',{class:'err',role:'alert'});
+  const ideaList=h('div',{class:'ideas','aria-label':'หัวข้อที่ AI แนะนำ'});
+  let ideaSet=null, suggesting=false;
+  const suggestionSlot='ms.idea_pending';
+  const readIdeaStore=(key,fallback)=>{try{return JSON.parse(sessionStorage.getItem(key)||'null')||fallback;}catch{return fallback;}};
+  const saveIdeaStore=(key,value)=>{try{if(value===null)sessionStorage.removeItem(key);else sessionStorage.setItem(key,JSON.stringify(value));}catch{}};
+  const drawIdeas=()=>{
+    const visible=ideaSet&&ideaSet.story_mode===modeSel.value;
+    put(ideaList,visible?ideaSet.ideas.map(i=>h('button',{on:{click:()=>chooseIdea(i)}},i)):[]);
+    if(!suggesting)ideaStatus.textContent=visible?'ชุดนี้ใช้ '+ideaSet.model+' · เลือกหัวข้อเพื่อเติมลงช่องเรื่อง หรือกดสุ่มใหม่':'กดสุ่มชุดใหม่ แล้วเลือกหัวข้อที่ชอบ · ระบบจะตรวจข้อมูลตอนเริ่มเขียนบท';
+  };
+  const suggestBtn=h('button',{class:'btn',type:'button',disabled:!st.ai_suggestions,on:{click:()=>{
+    const previous=readIdeaStore(suggestionSlot,null);
+    const pending=previous||{request_id:crypto.randomUUID(),model:modelSel.value,reasoning:effSel?effSel.value:'low',story_mode:modeSel.value,topic:topic.value.trim(),source_text:modeSel.value==='general'?sourceText.value.slice(0,6000):'',note:note.value,hero:modeSel.value==='name_story'?heroName.value:'',exclude:[...new Set([...IDEAS,...readIdeaStore('ms.idea_history',[])])].slice(-60)};
+    saveIdeaStore(suggestionSlot,pending);void getIdeas(pending);
+  }}},'AI สุ่มหัวข้อ');
+  const suggestPanel=h('div',{'aria-label':'AI แนะนำเรื่อง',style:'display:flex;flex-direction:column;gap:8px'},h('div',{},suggestBtn),ideaStatus,ideaList,ideaError);
+  async function getIdeas(pending){
+    if(suggesting)return;suggesting=true;suggestBtn.disabled=true;suggestBtn.textContent='กำลังคิดหัวข้อ…';ideaError.textContent='';ideaStatus.textContent='กำลังใช้ '+pending.model+' แนะนำเรื่อง รอผลคำขอเดิมได้แม้โหลดหน้าใหม่';
+    try{
+      let job;
+      try{job=await api('/app/api/studio/topic-suggestions/'+pending.request_id);}catch(e){if(e.status!==404)throw e;job=await api('/app/api/studio/topic-suggestions',{method:'POST',body:JSON.stringify(pending)});}
+      while(job.status==='queued'||job.status==='running'){
+        await new Promise(resolve=>setTimeout(resolve,1500));if(!suggestPanel.isConnected)return;
+        job=await api('/app/api/studio/topic-suggestions/'+pending.request_id);
+      }
+      if(!suggestPanel.isConnected)return;
+      saveIdeaStore(suggestionSlot,null);
+      if(job.status!=='done')throw new Error(job.error||'สุ่มหัวข้อไม่สำเร็จ ลองใหม่ได้');
+      ideaSet={ideas:job.ideas,model:job.model,story_mode:job.story_mode};saveIdeaStore('ms.idea_set',ideaSet);
+      saveIdeaStore('ms.idea_history',[...new Set([...readIdeaStore('ms.idea_history',[]),...job.ideas])].slice(-60));
+    }catch(e){if(e.status>=400&&e.status<500&&e.status!==408)saveIdeaStore(suggestionSlot,null);ideaError.textContent=e.message;}
+    finally{suggesting=false;suggestBtn.disabled=!st.ai_suggestions;suggestBtn.textContent='สุ่มหัวข้อใหม่';drawIdeas();}
+  }
+  ideaSet=readIdeaStore('ms.idea_set',null);drawIdeas();modeSel.addEventListener('change',drawIdeas);
+  const oldSuggestion=readIdeaStore(suggestionSlot,null);
+  if(oldSuggestion)setTimeout(()=>{if(suggestPanel.isConnected)void getIdeas(oldSuggestion);},0);
   const composer = h('div',{class:'composer'},
     !ready ? h('div',{class:'note'},'ยังเขียนอัตโนมัติไม่ได้: ตั้งค่า ', [!st.llm&&('ANTHROPIC_API_KEY หรือ OPENAI_API_KEY'), !st.web_search&&'OPENAI_API_KEY (Web Search)'].filter(Boolean).join(' และ '), ' ใน Railway → motion-api → Variables แล้วกด Deploy') : '',
     h('label',{class:'sub'},'โหมดการเล่าเรื่อง',modeSel), modeHint, heroGroup, topic, sourcePanel,
-    h('div',{class:'ideas'}, h('span',{class:'sub'},'ลองหัวข้อ:'), IDEAS.map(i=>h('button',{on:{click:()=>{ topic.value=i; topic.focus(); }}},i))),
+    h('div',{class:'ideas'}, h('span',{class:'sub'},'ลองหัวข้อ:'), IDEAS.map(i=>h('button',{on:{click:()=>chooseIdea(i)}},i))),
+    suggestPanel,
     h('details',{}, h('summary',{},'เพิ่มแนวทาง (ไม่บังคับ)'), h('div',{style:'margin-top:10px'},note)),
     stylePanel(),
     musicPanel(),
