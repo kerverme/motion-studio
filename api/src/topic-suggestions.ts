@@ -3,13 +3,14 @@ import type pg from 'pg';
 import {createHash} from 'node:crypto';
 import {z} from 'zod';
 import {openaiResponse} from './openai-response.js';
+import {SOURCE_TEXT_LIMIT} from './narration.js';
 
 const Input = z.object({
   model:z.string().default('gpt-6.1-terra'),
   reasoning:z.enum(['low','medium','high']).default('low'),
   story_mode:z.enum(['general','name_story']).default('general'),
   topic:z.string().max(400).default(''),
-  source_text:z.string().max(6000).default(''),
+  source_text:z.string().max(SOURCE_TEXT_LIMIT).default(''),
   note:z.string().max(1000).default(''),
   hero:z.string().max(20).default(''),
   exclude:z.array(z.string().max(400)).max(60).default([]),
@@ -74,6 +75,7 @@ Variation seed: ${row.id}. Context: ${JSON.stringify({...input,exclude})}`;
   })().catch(error=>{started=undefined;throw error;});
   app.post('/app/api/studio/topic-suggestions',options.guard,async c=>{
     const raw=await c.req.json().catch(()=>null);
+    if(typeof raw?.source_text==='string' && raw.source_text.length>SOURCE_TEXT_LIMIT)return c.json({error:`เนื้อหายาวเกิน ${SOURCE_TEXT_LIMIT.toLocaleString('en-US')} ตัวอักษร กรุณาแบ่งเอกสารก่อนสุ่มหัวข้อ ระบบไม่ได้ตัดข้อความ`},422);
     const id=z.string().uuid().safeParse(raw?.request_id);
     const parsed=Input.safeParse(raw);
     if(!id.success || !parsed.success)return c.json({error:'รูปแบบคำขอสุ่มหัวข้อไม่ถูกต้อง'},422);

@@ -14,6 +14,7 @@ import { alertSweep, retention } from './ops.js';
 import { syncPosts } from './metrics.js';
 import { registerStudio, configured as studioConfigured, OPENAI_MODELS } from './studio.js';
 import { registerTopicSuggestions } from './topic-suggestions.js';
+import { registerNarrationPreviews } from './narration-previews.js';
 import { registerCommunity } from './community.js';
 import * as notion from './notion.js';
 
@@ -406,6 +407,7 @@ app.get('/internal/google/access-token', async (c) => {
 
 const ui = registerUi(app, pool, { API_TOKEN, retryJob });
 const suggestions = registerTopicSuggestions(app,pool,{guard:ui.requireUi,models:OPENAI_MODELS});
+const narrationPreviews = registerNarrationPreviews(app,pool,{guard:ui.requireUi,models:OPENAI_MODELS});
 const studio = registerStudio(app, pool, { guard: ui.requireUi, createJob, estimateCredits: (p: unknown) => estimateCredits(Package.parse(p)), researchFreshness: (p: unknown) => researchFreshness(Package.parse(p)), validate: (p: unknown) => {
   const r = Package.safeParse(p);
   return r.success ? [] : r.error.issues.slice(0, 10).map((i) => `${i.path.join('.')}: ${i.message}`);
@@ -426,6 +428,7 @@ app.onError((err, c) => {
 
 await migrate();
 suggestions.start().catch(e=>console.error('topic suggestions startup', e instanceof Error ? e.message : 'failed'));
+narrationPreviews.start().catch(e=>console.error('narration previews startup', e instanceof Error ? e.message : 'failed'));
 // Buffer post status + metrics every 10 minutes; changed episodes are mirrored to Notion
 setInterval(() => {
   syncPosts(pool).then((r) => notion.syncLater(pool, r.changed)).catch((e) => console.error('post sync', e instanceof Error ? e.message : e));

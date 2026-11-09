@@ -44,12 +44,15 @@ test('authenticated requests use the selected OpenAI brain and persist varied re
  assert.equal((await app.request('/app/api/studio/topic-suggestions',{method:'POST'})).status,401);
  assert.equal((await post(app,{request_id:id,model:'claude-opus-5-5'})).status,422);
  assert.equal((await post(app,{request_id:'bad',model:'gpt-6.1-sol'})).status,422);
- assert.equal((await post(app,{request_id:id,source_text:'x'.repeat(6001)})).status,422);
+ assert.equal((await post(app,{request_id:id,source_text:'x'.repeat(100001)})).status,422);
  await db.query('INSERT INTO drafts(topic) VALUES($1)',['หัวข้อที่ทำไปแล้ว']);
- const input={request_id:id,model:'gpt-6.1-terra',reasoning:'medium',story_mode:'general',source_text:'บทความอ้างอิงที่ยังไม่ได้ตรวจ',exclude:['เรื่องเก่าที่เคยสุ่ม']};
- assert.equal((await post(app,input)).status,202);const row=await done(id);assert.equal(row.status,'done');assert.equal(row.ideas.length,5);
+ const sourceStart='  FIRST SOURCE ',sourceTail=' END SOURCE ไม่ตัดท้ายเอกสาร  ';
+ const fullSource=sourceStart+'ข'.repeat(100000-sourceStart.length-sourceTail.length)+sourceTail;
+ const input={request_id:id,model:'gpt-6.1-terra',reasoning:'medium',story_mode:'general',source_text:fullSource,exclude:['เรื่องเก่าที่เคยสุ่ม']};
+ assert.equal((await post(app,input)).status,202);const row=await done(id);assert.equal(row.status,'done');assert.equal(row.ideas.length,5);assert.equal(row.request.source_text,fullSource);assert.equal(fullSource.length,100000);
  const request=calls.filter(x=>x.method==='POST').at(-1)!.body;
  assert.equal(request.model,'gpt-6.1-terra');assert.equal(request.reasoning.effort,'medium');assert.equal(request.background,true);assert.equal(request.tools,undefined);assert.equal(request.text.format.type,'json_schema');
+ assert.ok(request.input[0].content.includes(sourceStart));assert.ok(request.input[0].content.includes(sourceTail));
  assert.ok(request.input[0].content.includes('หัวข้อที่ทำไปแล้ว'));assert.ok(request.input[0].content.includes(input.source_text));assert.ok(request.input[0].content.includes(input.exclude[0]));
  const result=await (await app.request('/app/api/studio/topic-suggestions/'+id,{headers})).json();assert.equal(result.model,'gpt-6.1-terra');assert.equal(result.story_mode,'general');assert.equal(result.ideas.length,5);assert.equal('request' in result,false);
  assert.equal((await db.query<{n:number}>('SELECT count(*)::int AS n FROM drafts')).rows[0].n,1);
