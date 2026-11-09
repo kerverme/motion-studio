@@ -36,13 +36,14 @@
 html,body{margin:0}
 body{background:var(--page);color:var(--ink);font:15px/1.6 var(--sans);-webkit-font-smoothing:antialiased}
 button,input,textarea,select{font:inherit;color:inherit}
-select.field{border:1px solid var(--line);border-radius:var(--r-md);background:var(--raised)}
+select.field{max-width:100%;border:1px solid var(--line);border-radius:var(--r-md);background:var(--raised)}
 a{color:var(--ink);text-underline-offset:3px}
 :focus-visible{outline:2px solid var(--focus);outline-offset:2px}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 
 /* frame */
 .app{display:grid;grid-template-columns:232px 1fr;min-height:100vh}
+.app > div{min-width:0}
 .rail{position:sticky;top:0;height:100vh;padding:28px 18px 20px;display:flex;flex-direction:column;gap:28px;border-right:1px solid var(--line)}
 .brand{font-family:var(--serif);font-weight:600;font-size:22px;line-height:1.2;letter-spacing:.2px;padding:0 10px}
 .brand small{display:block;font-family:var(--sans);font-weight:400;font-size:13px;color:var(--ink-3);margin-top:4px;letter-spacing:0}
