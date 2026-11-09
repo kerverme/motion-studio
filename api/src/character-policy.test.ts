@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync,readdirSync} from 'node:fs';
 import {PGlite} from '@electric-sql/pglite';
 import {Hono} from 'hono';
-import {parseRecurringCharacter,withCharacterPolicy,referencePresenterProblem,characterPolicyPrompt} from './character-policy.js';
+import {parseRecurringCharacter,parsePresenterKind,withCharacterPolicy,referencePresenterProblem,characterPolicyPrompt} from './character-policy.js';
 process.env.MOTION_LLM_PROVIDER='openai';process.env.OPENAI_API_KEY='mock-key';
 process.env.MOTION_OPENAI_WEB_SEARCH='true';delete process.env.FIRECRAWL_API_KEY;
 const {registerStudio,Draft,checkDraft}=await import('./studio.js');
@@ -25,6 +25,12 @@ test('stored recurring policy overrides model flags, requires first reference, a
   assert.match(referencePresenterProblem(plan,true,'first')!,/missing from: b/);assert.equal(referencePresenterProblem(plan,false,'first'),null);
   const prompt=characterPolicyPrompt(true);assert.match(prompt,/Invent ONE fictional/);assert.match(prompt,/without asking the owner for a name or photo/);assert.match(prompt,/opening frame zero/);assert.match(prompt,/EVERY shot/);assert.match(prompt,/named experts remain attribution/);
   assert.match(characterPolicyPrompt(true,'อ้างอิงแรก'),/first selected reference character "อ้างอิงแรก"/);
+  assert.equal(parsePresenterKind(undefined),'cat');assert.equal(parsePresenterKind(undefined,'legacy'),'legacy');
+  for(const bad of [null,'human',true,{}])assert.throws(()=>parsePresenterKind(bad));
+  assert.match(prompt,/orange tabby CAT/);assert.match(prompt,/cream muzzle/);assert.match(prompt,/whiskers, paws and tail/);assert.match(prompt,/SAME blue hoodie/);assert.match(prompt,/not a human with cat ears/);assert.match(prompt,/never substitute the generic c.cat/);
+  const legacy=characterPolicyPrompt(true,undefined,'legacy');assert.match(legacy,/Invent ONE fictional cartoon presenter suited to this topic/);assert.doesNotMatch(legacy,/orange tabby|blue hoodie/);
+  const reference=characterPolicyPrompt(true,'อ้างอิงแรก','cat');assert.match(reference,/first selected reference/);assert.doesNotMatch(reference,/orange tabby|blue hoodie/);
+  assert.doesNotMatch(characterPolicyPrompt(false,undefined,'cat'),/orange tabby|Invent ONE/);
 });
 
 test('final draft validation requires common presenter in cast and real direct drawing, while OFF accepts no people',()=>{
@@ -50,7 +56,7 @@ test('routes persist opt-in with no name/photo, preserve first reference order a
     const app=new Hono();registerStudio(app,pool as any,{guard:async(_c,next)=>next(),createJob:async()=>{jobs++;await db.query("INSERT INTO jobs(id) VALUES('10000000-0000-0000-0000-000000000099')");return{status:201,body:{id:'10000000-0000-0000-0000-000000000099'}}},estimateCredits:()=>100,validate:()=>[],researchFreshness:()=>[]});
     const path='/app/api/studio/drafts';
     const send=(url:string,body:any,key:string,method='POST')=>app.request(url,{method,headers:{'content-type':'application/json','idempotency-key':key},body:JSON.stringify(body)});
-    const body={topic:'นาฬิกาชีวิตกับแสง',story_mode:'general',source_text:'บทความยาวต้นฉบับยังต้องตรวจ',recurring_character:true,narration_style:'child_10',model:'gpt-6.1-sol',auto_produce:false,characters:[]};
+    const body={topic:'นาฬิกาชีวิตกับแสง',story_mode:'general',source_text:'บทความยาวต้นฉบับยังต้องตรวจ',recurring_character:true,presenter_kind:'legacy',narration_style:'child_10',model:'gpt-6.1-sol',auto_produce:false,characters:[]};
     const created=await send(path,body,'recurring-create-001');assert.equal(created.status,201,await created.clone().text());const {id}=await created.json();
     const stored:any=(await db.query('SELECT * FROM drafts WHERE id=$1',[id])).rows[0];assert.equal(stored.recurring_character,true);assert.deepEqual(stored.characters,[]);assert.equal(stored.style,'auto');
     const detail:any=await(await app.request(path+'/'+id)).json();assert.equal(detail.recurring_character,true);assert.equal(detail.narration_style,'child_10');assert.equal(detail.source_text,body.source_text);
@@ -92,4 +98,50 @@ test('routes persist opt-in with no name/photo, preserve first reference order a
     const saved:any=(await db.query('SELECT draft FROM drafts WHERE id=$1',[id])).rows[0];assert.equal(saved.draft.recurring_character,true);assert.equal(saved.draft.storyboard.recurring_character,true);
     assert.equal((await send(path+'/'+id+'/produce',{},'recurring-produce-valid')).status,201);assert.equal(jobs,1);
   }finally{globalThis.setTimeout=nativeTimeout;}
+});
+
+test('cat default applies only to new drafts or explicit changes, preserving migrated legacy presenter checkpoints',async()=>{
+  const oldDb=new PGlite();
+  const oldId='10000000-0000-0000-0000-000000000088';
+  const oldDraft=generalDraft(true),oldArt={art:oldDraft.art,cast:oldDraft.cast,scenes:oldDraft.scenes};
+  const dir=new URL('../migrations/',import.meta.url);
+  const nativeTimeout=globalThis.setTimeout;
+  globalThis.setTimeout=((fn:any,ms?:number,...args:any[])=>nativeTimeout(ms===8000?()=>{}:fn,ms===8000?0:ms,...args)) as typeof setTimeout;
+  try{
+    for(const file of readdirSync(dir).filter(f=>f.endsWith('.sql')).sort()){
+      if(file==='022_presenter_kind.sql')await oldDb.query("INSERT INTO drafts(id,topic,status,story_mode,recurring_character,storyboard,artwork,source_text) VALUES($1,'มินเล่าเรื่องเดิม','failed','general',true,$2,$3,'ต้นฉบับเดิม')",[oldId,JSON.stringify(oldDraft.storyboard),JSON.stringify(oldArt)]);
+      await oldDb.exec(readFileSync(new URL(file,dir),'utf8'));
+    }
+    await oldDb.exec(readFileSync(new URL('022_presenter_kind.sql',dir),'utf8'));
+    const migrated:any=(await oldDb.query('SELECT * FROM drafts WHERE id=$1',[oldId])).rows[0];assert.equal(migrated.presenter_kind,'legacy');assert.deepEqual(migrated.storyboard,oldDraft.storyboard);assert.deepEqual(migrated.artwork,oldArt);
+    const pool={query:async(sql:string,args:any[]=[])=>sql.startsWith("SELECT id FROM drafts WHERE status='queued'")?{rows:[]}:oldDb.query(sql,args)};
+    const app=new Hono();registerStudio(app,pool as any,{guard:async(_c,next)=>next(),createJob:async()=>{throw new Error('no production allowed')},estimateCredits:()=>100,validate:()=>[],researchFreshness:()=>[]});
+    const path='/app/api/studio/drafts';
+    const send=(url:string,body:any,key:string,method='POST')=>app.request(url,{method,headers:{'content-type':'application/json','idempotency-key':key},body:JSON.stringify(body)});
+    const retry=await send(path+'/'+oldId+'/rewrite',{},'legacy-min-retry');assert.equal(retry.status,201);const retryId=(await retry.json()).id;
+    const resumed:any=(await oldDb.query('SELECT * FROM drafts WHERE id=$1',[retryId])).rows[0];assert.equal(resumed.presenter_kind,'legacy');assert.deepEqual(resumed.storyboard,oldDraft.storyboard);assert.deepEqual(resumed.artwork,oldArt);assert.equal(resumed.source_text,'ต้นฉบับเดิม');
+    await oldDb.query("UPDATE drafts SET status='failed' WHERE id=$1",[retryId]);
+    const changed=await send(path+'/'+retryId+'/rewrite',{presenter_kind:'cat'},'legacy-min-to-cat');assert.equal(changed.status,201);const catId=(await changed.json()).id;
+    const cat:any=(await oldDb.query('SELECT * FROM drafts WHERE id=$1',[catId])).rows[0];assert.equal(cat.presenter_kind,'cat');assert.equal(cat.storyboard,null);assert.equal(cat.artwork,null);
+    const body={topic:'แมวอธิบายเรื่องแก้วน้ำ',story_mode:'general',recurring_character:true,characters:[],auto_produce:false};
+    const created=await send(path,body,'new-cat-default-001');assert.equal(created.status,201);const newId=(await created.json()).id;
+    const detail:any=await(await app.request(path+'/'+newId)).json();assert.equal(detail.presenter_kind,'cat');assert.equal(detail.has_character_reference,false);
+    const listing:any=await(await app.request(path)).json();assert.equal(listing.drafts.find((d:any)=>d.id===newId).presenter_kind,'cat');
+    assert.equal((await send(path,{...body,presenter_kind:'legacy'},'new-cat-default-001')).status,409);
+    assert.equal((await send(path,{...body,presenter_kind:'human'},'new-cat-invalid-001')).status,422);
+    assert.equal((await send(path+'/'+newId+'/rewrite',{presenter_kind:null},'cat-rewrite-invalid')).status,422);
+    // Turning recurring mode ON for an older character-free story adopts the current cat default.
+    const offId='10000000-0000-0000-0000-000000000087';
+    await oldDb.query("INSERT INTO drafts(id,topic,status,story_mode) VALUES($1,'เรื่องเก่าไม่มีตัวละคร','failed','general')",[offId]);
+    const enabled=await send(path+'/'+offId+'/rewrite',{recurring_character:true},'old-off-turns-on');assert.equal(enabled.status,201);const enabledId=(await enabled.json()).id;
+    const enabledRow:any=(await oldDb.query('SELECT * FROM drafts WHERE id=$1',[enabledId])).rows[0];assert.equal(enabledRow.presenter_kind,'cat');assert.equal(enabledRow.recurring_character,true);
+    const referenceId='20000000-0000-0000-0000-000000000087';await oldDb.query("INSERT INTO characters(id,name,look) VALUES($1,'รูปเจ้าของ','{}')",[referenceId]);
+    const refCreated=await send(path,{...body,characters:[referenceId]},'cat-reference-wins');assert.equal(refCreated.status,201);const refId=(await refCreated.json()).id;
+    const refDetail:any=await(await app.request(path+'/'+refId)).json();assert.equal(refDetail.presenter_kind,'cat');assert.equal(refDetail.has_character_reference,true);
+    await oldDb.query("UPDATE drafts SET status='ready',draft=$2 WHERE id=$1",[oldId,JSON.stringify(oldDraft)]);
+    assert.equal((await send(path+'/'+oldId,{presenter_kind:'cat'},'ready-kind-change','PATCH')).status,422);
+    assert.equal((await send(path+'/'+oldId,{presenter_kind:null},'ready-kind-invalid','PATCH')).status,422);
+    assert.equal((await send(path+'/'+oldId,{title_th:'ยังคงตัวละครเดิม'},'ready-kind-preserve','PATCH')).status,200);
+    const patched:any=(await oldDb.query('SELECT draft FROM drafts WHERE id=$1',[oldId])).rows[0];assert.equal(patched.draft.presenter_kind,'legacy');assert.deepEqual(patched.draft.cast,oldDraft.cast);
+  }finally{globalThis.setTimeout=nativeTimeout;await oldDb.close();}
 });

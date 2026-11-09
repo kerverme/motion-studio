@@ -139,3 +139,12 @@ test('partial repair cannot remove the recurring presenter and leaves the previo
   const revised=reviseStoryboard(p,{segments:[{seg:'market',text:'ตัวละครช่วยอธิบายด้วยถ้อยคำง่าย ๆ'}]});
   assert.equal(revised.recurring_character,true);assert.deepEqual(revised.shots,p.shots);
 });
+
+test('generic mascot cat calls cannot stand in for a named recurring cat presenter',()=>{
+  const p=Storyboard.parse({...plan(),story_mode:'general',recurring_character:true,shots:plan().shots.map(shot=>({...shot,characters:['น้องส้ม']}))});
+  const scenes=p.shots.map(shot=>({seg:shot.seg,type:'custom',code:'def draw(c,t,p):\n  c.cat(400,900,240)'}));
+  const errors=validateStoryboardDraft(p,{storyboard:p,recurring_character:true,script:p.script,cast:[{name:'น้องส้ม'}],scenes});
+  assert.equal(errors.filter(error=>error.includes('draw "น้องส้ม" with a direct c.person')).length,p.shots.length);
+  const named=scenes.map(scene=>({...scene,code:'def draw(c,t,p):\n  c.person("น้องส้ม",400,900,240)'}));
+  assert.deepEqual(validateStoryboardDraft(p,{storyboard:p,recurring_character:true,script:p.script,cast:[{name:'น้องส้ม'}],scenes:named}),[]);
+});

@@ -5,17 +5,22 @@ process.env.MOTION_LLM_PROVIDER='openai';process.env.OPENAI_API_KEY='mock-key';
 process.env.MOTION_OPENAI_WEB_SEARCH='true';delete process.env.FIRECRAWL_API_KEY;
 const {registerStudio}=await import('./studio.js');
 
-for(const reference of [false,true])test(reference
-  ? 'recurring pipeline uses the first reference in every shot and preserves an explicit visual style'
-  : 'recurring pipeline invents a presenter without name or photo and keeps the stored setting through the ready draft',async()=>{
-  const name=reference?'เบล':'น้องแสง';
+for(const scenario of [
+  {reference:false,kind:undefined,suffix:'091',title:'stored recurring draft without presenter kind keeps its legacy human presenter'},
+  {reference:false,kind:'cat' as const,suffix:'093',title:'cat presenter reaches ready with a stable named orange tabby and mandatory cat preview review'},
+  {reference:true,kind:'cat' as const,suffix:'092',title:'selected reference overrides the cat design and preserves an explicit visual style'},
+])test(scenario.title,async()=>{
+  const reference=scenario.reference,expectedKind=scenario.kind||'legacy',cat=expectedKind==='cat'&&!reference;
+  const name=reference?'เบล':cat?'น้องส้ม':'น้องแสง';
   const script=[{id:'hook',beat:'hook',text:'ทำไมตื่นแล้ว ยังรู้สึกไม่สดชื่น'},...['water','light','routine'].map(id=>({id,beat:'rehook',text:'ลองดูสิ่งที่เกิดขึ้นในตอนเช้า เราจะอธิบายทีละขั้นด้วยภาพแก้วน้ำและนาฬิกา โดยแยกคำแนะนำของผู้ให้สัมภาษณ์ออกจากหลักฐานที่ตรวจสอบได้ ข้อมูลบางส่วนอาจแตกต่างกันในแต่ละคน'})),{id:'end',beat:'cta',text:'คุณอยากเริ่มจากข้อไหน ลองเล่าในคอมเมนต์ให้ฟังหน่อย'}];
-  const plan={story_mode:'general',script,shots:script.map(s=>({seg:s.id,visual:'A cartoon presenter explains a clock beside a bright window',action:'The presenter points to the clock while speaking',camera:'Medium view with the presenter and diagram readable',characters:[name]})),character_notes:'The same fictional presenter keeps a blue shirt and dark short hair in every scene.'};
-  const portrait={name,portrait_code:'def draw(c,t,p):\n  c.ellipse(0,0,80,110,"tan")\n  c.rect(-70,100,140,230,"navy")',portrait_description:'A distinct cartoon presenter with dark short hair and a blue shirt.'};
+  const plan={story_mode:'general',script,shots:script.map(s=>({seg:s.id,visual:'A cartoon presenter explains a clock beside a bright window',action:'The presenter points to the clock while speaking',camera:'Medium view with the presenter and diagram readable',characters:[name]})),character_notes:cat?'The same orange tabby cat has a cream muzzle, triangular ears, whiskers, paws, tail and the same blue hoodie in every scene.':'The same fictional presenter keeps a blue shirt and dark short hair in every scene.'};
+  const portrait={name,portrait_code:cat
+    ? 'def draw(c,t,p):\n  c.line(60,230,130,130,"orange",30)\n  c.rect(-65,80,130,190,"navy")\n  c.poly([(-78,-35),(-75,-125),(-15,-60)],"orange")\n  c.poly([(78,-35),(75,-125),(15,-60)],"orange")\n  c.ellipse(0,0,90,85,"orange")\n  c.ellipse(0,30,55,35,"cream")\n  c.circle(-30,-10,10,"black")\n  c.circle(30,-10,10,"black")\n  c.poly([(-10,20),(10,20),(0,33)],"pink")\n  c.line(-40,25,-110,5,"black",3)\n  c.line(-40,40,-110,50,"black",3)\n  c.line(40,25,110,5,"black",3)\n  c.line(40,40,110,50,"black",3)\n  c.line(-20,-70,-12,-40,"brown",8)\n  c.line(20,-70,12,-40,"brown",8)\n  c.ellipse(-62,215,25,35,"orange")\n  c.ellipse(62,215,25,35,"orange")\n  c.ellipse(-38,290,30,24,"orange")\n  c.ellipse(38,290,30,24,"orange")'
+    : 'def draw(c,t,p):\n  c.ellipse(0,0,80,110,"tan")\n  c.rect(-70,100,140,230,"navy")',portrait_description:cat?'A recognisable orange tabby cat with a cream muzzle, triangular ears, whiskers, paws, a visible tail and the same blue hoodie.':'A distinct cartoon presenter with dark short hair and a blue shirt.'};
   const art='def ground(c):\n  c.rect(0,1200,1080,720,"cream")';
   const scenes=script.map(s=>({seg:s.id,type:'custom',code:`def draw(c,t,p):\n  c.grad("sky","cream")\n  ground(c)\n  c.person("${name}",400,700,260)`}));
-  const metadata={recurring_character:false,title_th:'เช้าที่สดชื่น เริ่มจากอะไร',format:'mystery',style:'comic',sources:[{url:'https://example.org/sleep',publisher:'Example',published:String(new Date().getUTCFullYear()),claim:'ข้อมูลการนอน'}],claims:[{text:'ตัวอย่างรูทีนที่เสนอให้ทดลอง',kind:'assumption',source_ids:[]}],captions:{facebook:'เช้าที่สดชื่น',instagram:'เช้าที่สดชื่น',tiktok:'เช้าที่สดชื่น',youtube:'เช้าที่สดชื่น',twitter:'เช้าที่สดชื่น'}};
-  const row={id:reference?'10000000-0000-0000-0000-000000000092':'10000000-0000-0000-0000-000000000091',topic:'อธิบายเรื่องนาฬิกาชีวิต',story_mode:'general',recurring_character:true,characters:reference?[{id:'20000000-0000-0000-0000-000000000092',name,look:{}}]:[],model:'gpt-6.1-sol',reasoning:'medium',style:reference?'paper_cutout':'auto',auto_produce:false};
+  const metadata={recurring_character:false,presenter_kind:expectedKind==='cat'?'legacy':'cat',title_th:'เช้าที่สดชื่น เริ่มจากอะไร',format:'mystery',style:'comic',sources:[{url:'https://example.org/sleep',publisher:'Example',published:String(new Date().getUTCFullYear()),claim:'ข้อมูลการนอน'}],claims:[{text:'ตัวอย่างรูทีนที่เสนอให้ทดลอง',kind:'assumption',source_ids:[]}],captions:{facebook:'เช้าที่สดชื่น',instagram:'เช้าที่สดชื่น',tiktok:'เช้าที่สดชื่น',youtube:'เช้าที่สดชื่น',twitter:'เช้าที่สดชื่น'}};
+  const row={id:'10000000-0000-0000-0000-000000000'+scenario.suffix,...(scenario.kind?{presenter_kind:scenario.kind}:{}),topic:'อธิบายเรื่องนาฬิกาชีวิต',story_mode:'general',recurring_character:true,characters:reference?[{id:'20000000-0000-0000-0000-000000000092',name,look:{}}]:[],model:'gpt-6.1-sol',reasoning:'medium',style:reference?'paper_cutout':'auto',auto_produce:false};
   const expectedStyle=reference?'paper_cutout':'classic';
   let status='queued',calls=0,planWrites=0,artWrites=0,previews=0,refReads=0,fetchError:unknown,savedPlan:any,artwork:any,finalDraft:any;
   let resolveDone!:()=>void;const done=new Promise<void>(r=>{resolveDone=r;});
@@ -81,6 +86,8 @@ for(const reference of [false,true])test(reference
   steps.push(()=>[tool('submit_episode',metadata,'preview')]);
   steps.push(body=>{
     assert.equal(status,'writing');assert.match(result(body,'preview'),/SAME main presenter.*EVERY sampled frame/);
+    if(cat)assert.match(result(body,'preview'),/CAT PRESENTER REVIEW:.*SAME recognisable orange tabby cat.*cream muzzle.*ears.*whiskers.*paws.*tail.*blue hoodie/);
+    else assert.equal(result(body,'preview').includes('CAT PRESENTER REVIEW'),false,'legacy and selected-reference presenters must not be judged as the automatic cat');
     const preview=body.input.find((item:any)=>item.role==='user'&&Array.isArray(item.content)&&item.content[0]?.text?.startsWith('Preview frames'));
     assert.ok(preview);assert.equal(preview.content.filter((part:any)=>part.type==='input_image').length,script.length*2+1);
     return[tool('submit_episode',metadata,'approved')];
@@ -94,6 +101,11 @@ for(const reference of [false,true])test(reference
       assert.match(body.instructions,/Reuse the identity and clothing/);
       assert.match(body.instructions,/Source authors, clinicians, researchers and named experts remain attribution/);
       if(reference)assert.match(body.instructions,/first selected reference character "เบล"/);else assert.match(body.instructions,/without asking the owner for a name or photo/);
+      if(cat){
+        assert.match(body.instructions,/Invent ONE fictional recognisable cartoon orange tabby CAT presenter/);
+        assert.match(body.instructions,/cream muzzle, visible triangular ears, whiskers, paws and tail/);assert.match(body.instructions,/SAME blue hoodie/);
+        assert.match(body.instructions,/actual cartoon cat, not a human with cat ears/);assert.match(body.instructions,/never substitute the generic c.cat mascot/);
+      }else assert.equal(body.instructions.includes('Invent ONE fictional recognisable cartoon orange tabby CAT presenter'),false,'a stored legacy kind or selected reference wins over the automatic cat design');
       assert.ok(body.input[0].content.includes(`set "style": "${expectedStyle}"`));
       const step=steps[calls-1];assert.ok(step,'unexpected extra model call');
       return Response.json({id:'resp_recurring_'+calls,status:'completed',output:step(body),usage:{input_tokens:10,output_tokens:10}});
@@ -104,8 +116,11 @@ for(const reference of [false,true])test(reference
     registerStudio(new Hono(),pool as any,{guard:async(_c,next)=>next(),createJob:async()=>{throw new Error('must not auto-produce')},estimateCredits:()=>100,validate:()=>[],researchFreshness:()=>[]});
     await done;if(fetchError)throw fetchError;
     assert.equal(status,'ready');assert.equal(calls,steps.length);assert.equal(planWrites,1);assert.equal(previews,2);assert.equal(refReads,reference?1:0);
+    assert.equal(finalDraft.presenter_kind,expectedKind,'the model cannot replace the stored presenter kind');
     assert.equal(finalDraft.recurring_character,true);assert.equal(finalDraft.storyboard.recurring_character,true);assert.equal(finalDraft.style,expectedStyle);assert.equal(finalDraft.cast[0].name,name);
     assert.deepEqual(finalDraft.storyboard,{...plan,recurring_character:true});assert.equal(finalDraft.scenes.length,script.length);
     assert.ok(finalDraft.scenes.every((scene:any)=>scene.code.includes(`c.person("${name}"`)));
+    assert.equal(finalDraft.cast[0].portrait_code,portrait.portrait_code);
+    if(cat)assert.match(finalDraft.cast[0].portrait_description,/orange tabby cat.*cream muzzle.*triangular ears.*whiskers.*paws.*tail.*blue hoodie/);
   }finally{clearTimeout(timeout);globalThis.fetch=nativeFetch;globalThis.setTimeout=nativeTimeout;}
 });

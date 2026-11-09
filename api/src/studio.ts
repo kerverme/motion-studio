@@ -16,7 +16,7 @@ import { extractWebEvidence, verifySources, searchWeb, sourceKey } from './sourc
 import { Storyboard, reviseStoryboard, validateStoryboardDraft, personCalls, type StoryboardT } from './storyboard.js';
 import { draftRequest } from './draft-request.js';
 import { NARRATION_STYLES, SOURCE_TEXT_LIMIT, SOURCE_READ_LIMIT, parseNarration, parseSourceText, narrationPrompt, sourceMaterialBlock, readSourceMaterial } from './narration.js';
-import { parseRecurringCharacter, withCharacterPolicy, referencePresenterProblem, characterPolicyPrompt } from './character-policy.js';
+import { parseRecurringCharacter, parsePresenterKind, withCharacterPolicy, referencePresenterProblem, characterPolicyPrompt, type PresenterKind } from './character-policy.js';
 
 const env = process.env;
 const ANTHROPIC_URL = (env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/$/, '');
@@ -534,6 +534,7 @@ const TOOLS = [
 const Colour = z.union([z.string(), z.array(z.number().int().min(0).max(255)).length(3)]);
 export const Draft = z.object({
   recurring_character: z.boolean().optional(),
+  presenter_kind: z.enum(['legacy','cat']).optional(),
   story_mode: z.enum(['name_story','general']).optional(),
   storyboard: Storyboard.optional(),
   title_th: z.string().min(4).max(90),
@@ -945,8 +946,8 @@ export function applyCast(d: DraftT, req: ReqChar[]): DraftT {
   return { ...d, cast: d.storyboard ? cast.map(({backdrop,...c}) => c) : cast } as DraftT;
 }
 
-function draftWithCharacterPolicy(d: Record<string, any>, enabled: boolean): Record<string, any> {
-  return {...withCharacterPolicy(d, enabled), ...(d.storyboard ? {storyboard:withCharacterPolicy(d.storyboard, enabled)} : {})};
+function draftWithCharacterPolicy(d: Record<string, any>, enabled: boolean, presenterKind: PresenterKind): Record<string, any> {
+  return {...withCharacterPolicy(d, enabled), presenter_kind:presenterKind, ...(d.storyboard ? {storyboard:withCharacterPolicy(d.storyboard, enabled)} : {})};
 }
 
 export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
@@ -1033,6 +1034,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
 
     const storyMode = row.story_mode === 'general' ? 'general' as const : 'name_story' as const;
     const recurringCharacter = row.recurring_character === true;
+    const presenterKind = parsePresenterKind(row.presenter_kind, 'legacy');
     let userText = `Story mode: ${storyMode}. Topic from the owner: ${row.topic}`;
     const sourceBlock = sourceText ? sourceMaterialBlock(sourceText) : '';
     if (sourceBlock) userText += '\n\n' + sourceBlock;
@@ -1063,7 +1065,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const model = row.model && MODEL_RE.test(row.model) ? row.model : MODEL;
     const effort = REASONING_LEVELS.includes(row.reasoning) ? row.reasoning : REASONING;
     const narration = parseNarration(row);
-    const system = systemPrompt(active, storyMode) + '\n\n## Owner-selected narration style\n' + narrationPrompt(narration) + '\n\n## Recurring character policy\n' + characterPolicyPrompt(recurringCharacter, reqChars[0]?.name) +
+    const system = systemPrompt(active, storyMode) + '\n\n## Owner-selected narration style\n' + narrationPrompt(narration) + '\n\n## Recurring character policy\n' + characterPolicyPrompt(recurringCharacter, reqChars[0]?.name, presenterKind) +
       (sourceText ? '\nThe complete owner source is supplied for planning. Identify the sections and claims relevant to the chosen topic and preserve their caveats in the angle, narration and source metadata. After plan_story succeeds the raw source is removed from repeated drawing requests; the full original remains available through read_source_material. Do not claim the entire pasted document has been verified.' : '');
     const conv = PROVIDER === 'openai' ? openaiConversation(system, userText, model, effort, active, (message) => log(id, message)) : anthropicConversation(system, userText, model, active);
     let sourceCompacted = false;
@@ -1195,7 +1197,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
               results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: 'The arguments were not valid JSON. Submit again with valid JSON.' });
               continue;
             }
-            const parsed = Draft.safeParse(draftWithCharacterPolicy({ ...mergeArtwork({script:storyboard.script,...u.input}, artwork), storyboard, ...(storyMode === 'general' ? {story_mode:storyMode} : {}) }, recurringCharacter));
+            const parsed = Draft.safeParse(draftWithCharacterPolicy({ ...mergeArtwork({script:storyboard.script,...u.input}, artwork), storyboard, ...(storyMode === 'general' ? {story_mode:storyMode} : {}) }, recurringCharacter, presenterKind));
             if (!parsed.success) {
               const issues = parsed.error.issues.slice(0, 15).map((i) => `${i.path.join('.')}: ${i.message}`);
               await pool.query('UPDATE drafts SET problems=$2 WHERE id=$1', [id,JSON.stringify(issues)]);
@@ -1234,6 +1236,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
               else if (ac.frames.length !== d.scenes.length) { problems.push('preview must include every scene before approval'); }
               else if (reviewedArt !== JSON.stringify({art:d.art,cast:d.cast,scenes:d.scenes,script:d.script,style:d.style})) {
                 pendingReview = JSON.stringify({art:d.art,cast:d.cast,scenes:d.scenes,script:d.script,style:d.style});
+                if (recurringCharacter && presenterKind === 'cat' && !reqChars.length) problems.push('CAT PRESENTER REVIEW: inspect every preview for the SAME recognisable orange tabby cat with a cream muzzle, visible cat ears, whiskers, paws and tail, and a blue hoodie. Reject a human with cat ears, a generic mascot substitution, inconsistent clothes or a different identity. Repair the named portrait or affected scene before accepting.');
                 problems.push('VISUAL REVIEW: the scene art compiled and rendered; its preview frames follow in the next message. The opening shot starts with an extra preview at exactly video time 0: verify the subject and headline are fully visible, readable and inside the crop-safe area; reject a blank or delayed entrance. Compare every face and body with the labelled original reference images, and every scene with the storyboard and narration. When recurring_character is enabled, verify the SAME main presenter is clearly visible in EVERY sampled frame including opening time zero, stays inside safe crop with a readable face, and makes meaningful gestures matching the narration; reject hidden/tiny decorative presenters, fade-outs, exits or identity changes. Inspect the final styled image for crushed facial details, merged eyes or mouth, doubled outlines, and Thai text strokes that merge or become unreadable; a successful render alone does not mean the image is acceptable. If something is wrong (the subject is unrecognisable, tiny, overlapping the text, off-topic, cut off, or loses detail after styling) fix the art and submit again; if all are good, submit the same episode again unchanged.');
                 showImages = { text: 'Preview frames of your custom scenes (opening shot: video time 0, early, late; other shots: early, late). Scene ids in order: ' + ac.frames.map((f) => `${f.seg} (${f.images.length} frames)`).join(', '), images: ac.frames.flatMap((f) => f.images) };
               }
@@ -1324,7 +1327,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       if (!cw || cw.rejected_at) return { status: 409, body: { error: 'เรื่อง Community นี้ถูกปฏิเสธแล้ว จึงส่งผลิตไม่ได้' } };
       if (cw.draft_id !== id) return { status: 409, body: { error: 'นี่ไม่ใช่ร่างล่าสุดของเรื่อง Community นี้' } };
     }
-    const parsed = Draft.safeParse(draftWithCharacterPolicy(row.draft, row.recurring_character === true));
+    const parsed = Draft.safeParse(draftWithCharacterPolicy(row.draft, row.recurring_character === true, parsePresenterKind(row.presenter_kind, 'legacy')));
     if (!parsed.success) return {status:422,body:{error:'draft does not pass the checks',problems:parsed.error.issues.slice(0,10).map(issue=>`${issue.path.join('.')}: ${issue.message}`)}};
     const d = parsed.data;
     const research: Seen[] = row.draft.research_seen || [];
@@ -1392,7 +1395,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
   const isId = (s: string) => /^[0-9a-f-]{36}$/.test(s);
   const summary = (r: any) => ({
     id: r.id, topic: r.topic, note: r.note, status: r.status, title: r.draft?.title_th ?? null, angle: r.draft?.angle ?? null, created_at: r.created_at,
-    recurring_character: r.recurring_character === true,
+    recurring_character: r.recurring_character === true, presenter_kind:parsePresenterKind(r.presenter_kind, 'legacy'), has_character_reference:Array.isArray(r.characters) && r.characters.length > 0,
     narration_style: r.narration_style || 'standard', narration_custom: r.narration_custom || '', source_text_characters: String(r.source_text || '').length,
     updated_at: r.updated_at, estimated_credits: r.estimated_credits, job_id: r.job_id, job_status: r.job_status ?? null, job_progress: r.job_progress ?? null,
     episode_number: r.episode_number ?? null, last: (r.log || []).slice(-1)[0]?.msg ?? null, error: r.error, auto_produce: r.auto_produce, source_type: r.source_type ?? 'studio', community_id: r.community_id ?? null,
@@ -1550,8 +1553,8 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       if (old) return old.request_hash === request.hash ? c.json({id:old.id},201) : c.json({error:'idempotency-key already used for different input'},409);
     }
     const storyMode = b.story_mode === 'general' ? 'general' : 'name_story';
-    let sourceText: string, narration: ReturnType<typeof parseNarration>, recurringCharacter: boolean;
-    try { sourceText = storyMode === 'general' ? parseSourceText(b.source_text) : ''; narration = parseNarration(b); recurringCharacter = parseRecurringCharacter(b.recurring_character); }
+    let sourceText: string, narration: ReturnType<typeof parseNarration>, recurringCharacter: boolean, presenterKind: PresenterKind;
+    try { sourceText = storyMode === 'general' ? parseSourceText(b.source_text) : ''; narration = parseNarration(b); recurringCharacter = parseRecurringCharacter(b.recurring_character); presenterKind = parsePresenterKind(b.presenter_kind); }
     catch (e) { return c.json({error:e instanceof Error ? e.message : 'invalid narration or source text'},422); }
     const topic = String(b.topic || sourceText.slice(0,120)).trim().slice(0, 400);
     if (topic.length < 4) return c.json({ error: 'พิมพ์หัวข้ออย่างน้อย 4 ตัวอักษร' }, 422);
@@ -1565,8 +1568,8 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const chars = ids.length ? (await pool.query('SELECT id, name, look, backdrop FROM characters WHERE id = ANY($1::uuid[]) ORDER BY array_position($1::uuid[], id)', [ids])).rows.map((x: any) => ({ id: x.id, name: x.name, look: x.backdrop ? { ...x.look, backdrop: x.backdrop } : x.look })) : [];
     const style = typeof b.style === 'string' && STYLES[b.style] ? b.style : 'auto';
     const musicMode = b.music_mode === 'ai' ? 'ai' : 'default';
-    const r = await pool.query('INSERT INTO drafts (topic, note, auto_produce, model, reasoning, characters, style, music_mode, story_mode, source_text, request_key, request_hash, narration_style, narration_custom, recurring_character) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) ON CONFLICT (request_key) DO NOTHING RETURNING id',
-      [topic, String(b.note || '').trim().slice(0, 1000) || null, !!b.auto_produce, model, PROVIDER === 'openai' ? reasoning : null, JSON.stringify(chars), style, musicMode, storyMode, sourceText || null, request.key, request.hash, narration.narration_style, narration.narration_custom, recurringCharacter]);
+    const r = await pool.query('INSERT INTO drafts (topic, note, auto_produce, model, reasoning, characters, style, music_mode, story_mode, source_text, request_key, request_hash, narration_style, narration_custom, recurring_character, presenter_kind) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT (request_key) DO NOTHING RETURNING id',
+      [topic, String(b.note || '').trim().slice(0, 1000) || null, !!b.auto_produce, model, PROVIDER === 'openai' ? reasoning : null, JSON.stringify(chars), style, musicMode, storyMode, sourceText || null, request.key, request.hash, narration.narration_style, narration.narration_custom, recurringCharacter, presenterKind]);
     if (!r.rows.length) {
       const old = (await pool.query('SELECT id, request_hash FROM drafts WHERE request_key=$1',[request.key])).rows[0];
       return old?.request_hash === request.hash ? c.json({id:old.id},201) : c.json({error:'idempotency-key already used for different input'},409);
@@ -1588,7 +1591,11 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       try { if (parseRecurringCharacter(b.recurring_character) !== (row.recurring_character === true)) return c.json({error:'ใช้เขียนใหม่เพื่อเปลี่ยนตัวเลือกตัวละครต่อเนื่อง ให้บทและภาพทุกฉากสอดคล้องกัน'},422); }
       catch(e) { return c.json({error:e instanceof Error ? e.message : 'invalid character option'},422); }
     }
-    const d = draftWithCharacterPolicy(row.draft, row.recurring_character === true);
+    if (b.presenter_kind !== undefined) {
+      try { if (parsePresenterKind(b.presenter_kind) !== parsePresenterKind(row.presenter_kind, 'legacy')) return c.json({error:'ใช้เขียนใหม่เพื่อเปลี่ยนรูปแบบผู้เล่า ให้ตัวละครและภาพทุกฉากสอดคล้องกัน'},422); }
+      catch(e) { return c.json({error:e instanceof Error ? e.message : 'invalid presenter kind'},422); }
+    }
+    const d = draftWithCharacterPolicy(row.draft, row.recurring_character === true, parsePresenterKind(row.presenter_kind, 'legacy'));
     if (typeof b.title_th === 'string' && b.title_th.trim()) d.title_th = b.title_th.trim().slice(0, 90);
     if (typeof b.style === 'string' && STYLES[b.style]) d.style = b.style;   // only changes how the clip is drawn; the script stays checked
     if (b.music_mode === 'default' || b.music_mode === 'ai') d.music_mode = b.music_mode;
@@ -1638,20 +1645,20 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     // a rewrite keeps the owner's style and music choice (the review may have changed them on the draft itself)
     const keepStyle = row.draft?.style && STYLES[row.draft.style] && row.style !== 'auto' ? row.draft.style : row.style || 'auto';
     const keepMusic = row.draft?.music_mode || row.music_mode || 'default';
-    let narration: ReturnType<typeof parseNarration>, recurringCharacter: boolean;
-    try { narration = parseNarration({narration_style:b.narration_style ?? row.narration_style, narration_custom:b.narration_custom ?? row.narration_custom}); recurringCharacter = b.recurring_character === undefined ? row.recurring_character === true : parseRecurringCharacter(b.recurring_character); }
+    let narration: ReturnType<typeof parseNarration>, recurringCharacter: boolean, presenterKind: PresenterKind;
+    try { narration = parseNarration({narration_style:b.narration_style ?? row.narration_style, narration_custom:b.narration_custom ?? row.narration_custom}); recurringCharacter = b.recurring_character === undefined ? row.recurring_character === true : parseRecurringCharacter(b.recurring_character); presenterKind = parsePresenterKind(b.presenter_kind, recurringCharacter && row.recurring_character !== true ? 'cat' : parsePresenterKind(row.presenter_kind, 'legacy')); }
     catch (e) { return c.json({error:e instanceof Error ? e.message : 'invalid narration'},422); }
     const previousNarration = parseNarration(row);
     const sameNarration = narration.narration_style === previousNarration.narration_style && narration.narration_custom === previousNarration.narration_custom;
-    const r = await pool.query('INSERT INTO drafts (topic, note, parent_id, auto_produce, model, reasoning, characters, source_type, community_id, style, music_mode, story_mode, source_text, research_job_id, request_key, request_hash, narration_style, narration_custom, recurring_character) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) ON CONFLICT (request_key) DO NOTHING RETURNING id',
+    const r = await pool.query('INSERT INTO drafts (topic, note, parent_id, auto_produce, model, reasoning, characters, source_type, community_id, style, music_mode, story_mode, source_text, research_job_id, request_key, request_hash, narration_style, narration_custom, recurring_character, presenter_kind) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) ON CONFLICT (request_key) DO NOTHING RETURNING id',
       [row.topic, String(b.note ?? row.note ?? '').trim().slice(0, 1000) || null, row.id, row.source_type === 'community' ? false : !!b.auto_produce,
         typeof b.model === 'string' && MODEL_RE.test(b.model) ? b.model : row.model, REASONING_LEVELS.includes(b.reasoning) ? b.reasoning : row.reasoning,
-        JSON.stringify(row.characters ?? []), row.source_type || 'studio', row.community_id ?? null, keepStyle, keepMusic, row.story_mode || 'name_story', row.source_text || null, row.research_job_id || row.id, request.key, request.hash, narration.narration_style, narration.narration_custom, recurringCharacter]);
+        JSON.stringify(row.characters ?? []), row.source_type || 'studio', row.community_id ?? null, keepStyle, keepMusic, row.story_mode || 'name_story', row.source_text || null, row.research_job_id || row.id, request.key, request.hash, narration.narration_style, narration.narration_custom, recurringCharacter, presenterKind]);
     if (!r.rows.length) {
       const old = (await pool.query('SELECT id, request_hash FROM drafts WHERE request_key=$1',[request.key])).rows[0];
       return old?.request_hash === request.hash ? c.json({id:old.id},201) : c.json({error:'idempotency-key already used for different input'},409);
     }
-    if (row.status === 'failed' && row.storyboard && sameNarration && recurringCharacter === (row.recurring_character === true) && (b.note === undefined || String(b.note).trim() === String(row.note || '').trim())) {
+    if (row.status === 'failed' && row.storyboard && sameNarration && recurringCharacter === (row.recurring_character === true) && presenterKind === parsePresenterKind(row.presenter_kind, 'legacy') && (b.note === undefined || String(b.note).trim() === String(row.note || '').trim())) {
       await pool.query('UPDATE drafts SET storyboard=$2, artwork=$3, research=$4 WHERE id=$1', [r.rows[0].id,JSON.stringify(row.storyboard),JSON.stringify(row.artwork || emptyArtwork()),JSON.stringify(row.research || [])]);
     }
     if (row.community_id) await pool.query('UPDATE community_winners SET draft_id=$2, updated_at=now() WHERE id=$1 AND draft_id=$3', [row.community_id, r.rows[0].id, id]);
