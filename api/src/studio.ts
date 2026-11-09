@@ -498,7 +498,7 @@ const TOOLS = [
           url: { type: 'string' }, title: { type: 'string' }, publisher: { type: 'string' }, published: { type: 'string', description: 'YYYY-MM-DD, YYYY-MM or YYYY of the data/publication' },
           claim: { type: 'string' }, methodology: { type: 'string' }, confidence: { type: 'string', enum: ['high', 'medium', 'low'] }, limitations: { type: 'string' },
           freshness_note: { type: 'string' } }, required: ['url', 'publisher', 'published', 'claim', 'confidence'] } },
-        claims: { type: 'array', items: { type: 'object', properties: { text: { type: 'string' }, source_ids: { type: 'array', items: { type: 'integer' } },
+        claims: { type: 'array', items: { type: 'object', properties: { text: { type: 'string' }, source_ids: { type: 'array', description: 'Zero-based indices into the sources array, not citation numbers. If sources has one entry, cite it with [0]. Only reference sources that support this claim.', items: { type: 'integer', minimum: 0 } },
           kind: { type: 'string', enum: ['fact', 'assumption', 'opinion'] } }, required: ['text', 'source_ids', 'kind'] } },
         captions: { type: 'object', properties: { facebook: { type: 'string' }, instagram: { type: 'string' }, tiktok: { type: 'string' }, youtube: { type: 'string' }, twitter: { type: 'string' } },
           required: ['facebook', 'instagram', 'tiktok', 'youtube', 'twitter'] },
@@ -744,7 +744,10 @@ export function checkDraft(d: DraftT, seen: Map<string, Seen> | null, recent: Re
     }
   });
   d.claims.forEach((c) => {
-    if (c.kind === 'fact' && (!c.source_ids.length || c.source_ids.some((k) => k >= d.sources.length))) problems.push(`fact without a valid source: "${c.text.slice(0, 80)}"`);
+    if (c.kind === 'fact' && (!c.source_ids.length || c.source_ids.some((k) => k >= d.sources.length))) {
+      const validRange = d.sources.length ? `0..${d.sources.length - 1}` : 'none (sources is empty)';
+      problems.push(`fact without a valid source: "${c.text.slice(0, 80)}"; source_ids=${JSON.stringify(c.source_ids)} must contain zero-based indices into sources[]; valid range: ${validRange}. With one source, use [0]. Correct the metadata references to sources supporting this fact, or remove an unsupported fact. This index error does not mean an already retrieved URL needs fetching again.`);
+    }
   });
   if (d.captions.twitter.length > 270) problems.push(`captions.twitter is ${d.captions.twitter.length} characters (max 270)`);
   return { problems: [...new Set(problems)], warnings: [...new Set(warnings)] };

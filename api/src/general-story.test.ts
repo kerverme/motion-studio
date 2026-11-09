@@ -17,6 +17,23 @@ test('general story accepts topical opener and fully character-free drawings',()
   const pkg=buildPackage('เล่าเรื่องเช้า',d,[]);assert.equal('cover' in pkg,false);
   assert.ok(pkg.scene_code.includes('strict_art'));assert.ok(!pkg.scene_code.includes('คนนี้ชื่อ'));
 });
+test('fact source references are zero-based and invalid indices return actionable metadata repair',()=>{
+  const d=general();
+  d.claims=[{text:'ข้อมูลการนอนจากต้นฉบับ',kind:'fact',source_ids:[0]}];
+  assert.deepEqual(checkDraft(d,null).problems,[]);
+  assert.ok(checkDraft(d,new Map()).problems.some(p=>p.includes('was not retrieved')),'valid indices must not bypass source evidence validation');
+  d.claims[0].source_ids=[1];
+  const problems=checkDraft(d,null).problems;
+  assert.equal(problems.length,1);
+  assert.match(problems[0],/source_ids=\[1\]/);
+  assert.match(problems[0],/zero-based indices into sources\[\]/);
+  assert.match(problems[0],/valid range: 0\.\.0/);
+  assert.match(problems[0],/With one source, use \[0\]/);
+  assert.match(problems[0],/does not mean an already retrieved URL needs fetching again/);
+  assert.deepEqual(d.claims[0].source_ids,[1],'validation must not silently change the cited source');
+  d.sources=[];
+  assert.ok(checkDraft(d,null).problems.some(p=>p.includes('valid range: none (sources is empty)')));
+});
 test('name-series validation stays enforced and modes cannot silently mismatch',()=>{
   const d=general();assert.equal(Storyboard.safeParse({...d.storyboard,story_mode:undefined}).success,false);
   assert.ok(checkDraft({...d,story_mode:'name_story'},null).problems.some(x=>x.includes('cast[0]')));
