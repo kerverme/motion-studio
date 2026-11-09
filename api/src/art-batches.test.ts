@@ -127,3 +127,21 @@ test('a changed cast removes obsolete portraits and dependent scenes, while a ne
   assert.deepEqual(unknownPlan.scenes, []);
   assert.deepEqual(unknownPlan.cast, state.cast);
 });
+
+test('targeted source correction retains five completed scenes with their exact timing code, portraits and helpers', async () => {
+  const {reviseStoryboard}=await import('./storyboard.js');
+  const six:StoryboardT={...plan,script:['question','schedule','light','dark','different','choice'].map(id=>({id,text:'เรื่องเล่าของเบล อิงข้อมูลที่ตรวจแล้ว',beat:'info'})),shots:['question','schedule','light','dark','different','choice'].map(seg=>({...plan.shots[0],seg}))};
+  let state=updateArtwork(emptyArtwork(),'draw_character',{character:character()},six);
+  state=updateArtwork(state,'save_art',{art:'def floor(c):\n    c.rect(0,1400,1080,520,"tan")'},six);
+  for(const shot of six.shots)state=updateArtwork(state,'draw_scene',{scene:scene(shot.seg,'def draw(c,t,p):\n    c.person("เบล",540,700,200)\n    if t>=c.cue("เรื่องเล่าของเบล"):\n        floor(c)')},six);
+  const old=structuredClone(state);
+  const corrected=reviseStoryboard(six,{segments:[{seg:'different',text:'แสงที่เจอในแต่ละวัน และอายุก็มีส่วน',action:'Replace an unsupported gene claim with light and age evidence',visual:'Two schedules beside a window and calendar, without gene symbols'}]});
+  const next=reconcileArtwork(six,corrected,state);
+  assert.deepEqual(next.scenes,state.scenes.filter(scene=>scene.seg!=='different'));
+  assert.equal(next.scenes.length,5);assert.deepEqual(next.cast,state.cast);assert.equal(next.art,state.art);assert.equal(next.art_saved,true);
+  assert.equal(artworkComplete(next,corrected),false);
+  assert.equal(artworkComplete(updateArtwork(next,'draw_scene',{scene:scene('different')},corrected),corrected),true);
+  assert.deepEqual(state,old);
+  const textOnly=reviseStoryboard(six,{segments:[{seg:'different',text:'แก้เฉพาะคำบรรยายให้ตรงหลักฐาน'}]});
+  assert.deepEqual(reconcileArtwork(six,textOnly,state).scenes,state.scenes.filter(scene=>scene.seg!=='different'),'narration-only correction invalidates that scene because cue timing may change');
+});

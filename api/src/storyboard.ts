@@ -35,6 +35,43 @@ export const Storyboard = z.object({
 });
 export type StoryboardT = z.infer<typeof Storyboard>;
 
+const SegmentRevision = z.object({
+  seg: Id,
+  text: z.string().min(3).max(500).optional(),
+  beat: z.enum(['hook', 'rehook', 'info', 'payoff', 'cta']).optional(),
+  visual: z.string().trim().min(10).max(1200).optional(),
+  action: z.string().trim().min(3).max(600).optional(),
+  camera: z.string().trim().min(3).max(300).optional(),
+  characters: z.array(Name).max(4).optional(),
+}).strict().refine(change => Object.keys(change).length > 1, 'include at least one changed narration or shot field');
+const StoryRevision = z.object({segments:z.array(SegmentRevision).min(1).max(14)}).strict();
+
+/** Partial repairs retain the canonical text and shot details for every omitted segment.
+ * Full plan_story remains necessary for adding, removing or reordering segments.
+ */
+export function reviseStoryboard(saved: StoryboardT, input: unknown): StoryboardT {
+  const revision = StoryRevision.parse(input);
+  const ids = revision.segments.map(change => change.seg);
+  if (new Set(ids).size !== ids.length) throw new Error('revise_story segment ids must be unique');
+  for (const seg of ids) if (!saved.script.some(line => line.id === seg) || !saved.shots.some(shot => shot.seg === seg)) {
+    throw new Error(`revise_story segment ${seg} is not in the saved storyboard; use plan_story for structural changes`);
+  }
+  const changes = new Map(revision.segments.map(change => [change.seg, change]));
+  return Storyboard.parse({
+    ...saved,
+    script: saved.script.map(line => {
+      const change = changes.get(line.id);
+      return change ? {...line,...(change.text !== undefined ? {text:change.text} : {}),...(change.beat !== undefined ? {beat:change.beat} : {})} : line;
+    }),
+    shots: saved.shots.map(shot => {
+      const change = changes.get(shot.seg);
+      if (!change) return shot;
+      const {seg,text,beat,...fields} = change;
+      return {...shot,...fields};
+    }),
+  });
+}
+
 type Token = { kind: 'word' | 'string' | 'punct'; value: string };
 
 /** Only direct literal calls count. Text inside comments/docstrings cannot fake a cast appearance.

@@ -75,3 +75,32 @@ test('decoded Unicode names match cast and JSON property order is immaterial', (
   const swapped = { character_notes: d.storyboard.character_notes, shots: d.storyboard.shots, script: d.storyboard.script };
   assert.deepEqual(validateStoryboardDraft(d.storyboard, { ...d, storyboard: swapped }), []);
 });
+
+test('partial story revision changes only named fields and keeps omitted text, cues, shot order and metadata exact', async () => {
+  const {reviseStoryboard}=await import('./storyboard.js');
+  const original=plan(),snapshot=structuredClone(original);
+  const next=reviseStoryboard(original,{segments:[{seg:'reveal',text:'เรื่องใหม่ที่ตรวจต้นฉบับแล้ว',visual:'A revised drawing grounded in the verified source'}]});
+  assert.equal(next.script[2].text,'เรื่องใหม่ที่ตรวจต้นฉบับแล้ว');
+  assert.equal(next.shots[2].visual,'A revised drawing grounded in the verified source');
+  assert.equal(next.shots[2].action,original.shots[2].action);
+  assert.equal(next.character_notes,original.character_notes);
+  for(const i of [0,1,3]){assert.deepEqual(next.script[i],original.script[i]);assert.deepEqual(next.shots[i],original.shots[i]);}
+  next.shots[0].characters[0]='edited';
+  assert.deepEqual(original,snapshot,'new plan must not alias or mutate the saved plan');
+});
+
+test('partial story revision rejects unknown, duplicate, empty, structural and invalid cast edits without mutation', async () => {
+  const {reviseStoryboard}=await import('./storyboard.js');
+  const original=plan(),snapshot=structuredClone(original);
+  for(const input of [
+    {segments:[{seg:'unknown',text:'ไม่ใช่ฉากเดิม'}]},
+    {segments:[{seg:'reveal',text:'แก้ครั้งแรก'},{seg:'reveal',text:'แก้อีกครั้ง'}]},
+    {segments:[{seg:'reveal'}]},
+    {segments:[]},
+    {segments:[{seg:'reveal',id:'renamed',text:'เปลี่ยนชื่อฉาก'}]},
+    {segments:[{seg:'reveal',characters:[]}]},
+    {segments:[{seg:'reveal',characters:['เบล','เบล']}]},
+    {segments:[{seg:'reveal',action:'x'.repeat(601)}]},
+    {segments:[{seg:'reveal',text:'แก้บท'}],story_mode:'general'},
+  ]){assert.throws(()=>reviseStoryboard(original,input));assert.deepEqual(original,snapshot);}
+});

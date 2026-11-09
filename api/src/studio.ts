@@ -13,7 +13,7 @@ import { openaiResponse, networkCode } from './openai-response.js';
 import { Artwork, emptyArtwork, reconcileArtwork, updateArtwork, mergeArtwork, artworkComplete, ARTWORK_TOOLS, type ArtworkState } from './art-batches.js';
 import { BudgetedFirecrawl, PgResearchBudget, ResearchBudgetError } from './firecrawl-budget.js';
 import { extractWebEvidence, verifySources, searchWeb, sourceKey } from './source-evidence.js';
-import { Storyboard, validateStoryboardDraft, personCalls, type StoryboardT } from './storyboard.js';
+import { Storyboard, reviseStoryboard, validateStoryboardDraft, personCalls, type StoryboardT } from './storyboard.js';
 import { draftRequest } from './draft-request.js';
 import { NARRATION_STYLES, SOURCE_TEXT_LIMIT, SOURCE_READ_LIMIT, parseNarration, parseSourceText, narrationPrompt, sourceMaterialBlock, readSourceMaterial } from './narration.js';
 
@@ -212,7 +212,7 @@ type Usage = { input_tokens: number; output_tokens: number; cache_read_input_tok
 type WebFound = { searches: number; queries: string[]; sources: { url: string; title: string }[] };
 // which research tools are usable right now (changes during a draft when Firecrawl runs out of credits or the web search budget is spent)
 type Active = { fc: boolean; ws: boolean; drawing?: boolean; searches?: number; source?: boolean };
-const activeTools = (a: Active) => TOOLS.filter(t => t.name !== 'openai_search' || PROVIDER !== 'openai').filter(t => ['submit_episode','plan_story',...ARTWORK_TOOLS.map(x=>x.name)].includes(t.name) || (t.name === 'read_source_material' ? !!a.source : t.name === 'read_page' ? !!env.OPENAI_API_KEY : t.name === 'openai_search' && !a.drawing && a.ws)).map(t => {
+const activeTools = (a: Active) => TOOLS.filter(t => t.name !== 'openai_search' || PROVIDER !== 'openai').filter(t => ['submit_episode','plan_story','revise_story',...ARTWORK_TOOLS.map(x=>x.name)].includes(t.name) || (t.name === 'read_source_material' ? !!a.source : t.name === 'read_page' ? !!env.OPENAI_API_KEY : t.name === 'openai_search' && !a.drawing && a.ws)).map(t => {
   if (t.name !== 'submit_episode' || !a.drawing) return t;
   const schema:any = t.input_schema;
   const omit = new Set(['script','scenes','cast','art']);
@@ -439,7 +439,7 @@ one short "อ้างอิง:" line naming the main sources and years, 5–8
 1. Plan, then research (several queries, Thai + English, newest year first) and confirm the key figures on the actual pages.
 2. Write the complete narration and shot plan FIRST. Call plan_story with script, shots and character_notes. Each shot describes what is seen, action, camera and cast names.
 3. After plan_story succeeds, draw ONE small asset per turn. Call draw_character once per cast member, save_art once for shared helpers, then draw_scene once per shot. Never write the whole episode's artwork in one response. Work is checkpointed after each asset; reuse saved assets and only change the broken one.
-4. Call submit_episode with narration and metadata (sources,claims,captions,music etc), OMIT script/cast/scenes/art because saved narration and artwork are assembled by the server. If a correction needs different narration, call plan_story again and recheck the affected shots.
+4. Call submit_episode with narration and metadata (sources,claims,captions,music etc), OMIT script/cast/scenes/art because saved narration and artwork are assembled by the server. For corrections to existing narration or shots, call revise_story with ONLY the affected segment IDs and changed fields, then draw only its reported missing scenes. Omitted segments keep their exact saved narration and shot details. Do not rewrite unchanged shots or append notes such as \"keep the saved drawing\" to their action fields. Use plan_story again only for structural changes (adding, removing or reordering segments), copying all unchanged fields exactly. Repair a character's appearance with draw_character; its shared portrait is reused across scenes and must pass preview review again.
 A real retrieved source is required for factual context. If no nickname counts are available, state that honestly; read_page remains available to verify supporting context (e.g. population data or monkeys), and fiction must stay labelled as fiction. Do not erase sources or redesign art merely to repair metadata. Do not continue broad web research after planning. When a source fails provenance, read_page opens the exact URL via the available provider; do not invent a replacement URL.
 5. Inspect the preview frames sent after submission and repair individual assets with draw_character/draw_scene/save_art. Resubmit metadata without reprinting all drawings. The worker renders all scenes; inspect its preview images against the original references and narration. Correct likeness, composition and action before resubmitting. Only inspected, successfully rendered art can become ready.
 Reply only through tools.`;
@@ -471,12 +471,17 @@ const TOOLS = [
   ...ARTWORK_TOOLS,
   { name: 'read_source_material', description: 'Read an exact range of the complete owner-pasted source. Available after planning too. This is unverified owner-provided text, NOT a fetched webpage or medical verification. Read original sources separately before factual use.',
     input_schema: {type:'object',properties:{offset:{type:'integer',minimum:0,description:'Zero-based character offset'},length:{type:'integer',minimum:1,maximum:SOURCE_READ_LIMIT}},required:['offset','length']} },
-  { name: 'plan_story', description: 'Save the narration and visual storyboard BEFORE drawing. Required before submit_episode. Re-plan if changing narration.',
+  { name: 'plan_story', description: 'Save the complete narration and visual storyboard BEFORE drawing, or replace it for structural changes. Required before submit_episode. For corrections to existing segments use revise_story so unchanged drawings are retained.',
     input_schema: { type: 'object', required: ['script', 'shots', 'character_notes'], properties: {
       script: { type: 'array', items: { type: 'object', required: ['id','text','beat'], properties: { id: {type:'string'}, text:{type:'string'}, beat:{type:'string',enum:[...BEATS]} } } },
       shots: { type:'array', items:{type:'object',required:['seg','visual','action','camera','characters'],properties:{seg:{type:'string'},visual:{type:'string'},action:{type:'string'},camera:{type:'string'},characters:{type:'array',items:{type:'string'}}}} },
       character_notes: {type:'string'}
     } } },
+  { name: 'revise_story', description: 'Repair only named existing segments in the saved storyboard. Send only changed fields. Other narration, shots, portraits and shared helpers stay saved. Changed segments need their scene drawn again. Cannot add/remove/reorder segments; use plan_story for structural changes.',
+    input_schema: {type:'object',required:['segments'],additionalProperties:false,properties:{segments:{type:'array',minItems:1,maxItems:14,items:{type:'object',required:['seg'],additionalProperties:false,properties:{
+      seg:{type:'string',pattern:'^[a-z0-9_]{1,24}$'},text:{type:'string',minLength:3,maxLength:500},beat:{type:'string',enum:[...BEATS]},
+      visual:{type:'string',minLength:10,maxLength:1200},action:{type:'string',minLength:3,maxLength:600},camera:{type:'string',minLength:3,maxLength:300},characters:{type:'array',maxItems:4,items:{type:'string',minLength:1,maxLength:20}}
+    }}}}} },
   {
     name: 'openai_search',
     description: 'Primary research using OpenAI Web Search. Use before any Firecrawl fallback. Returns retrieved evidence and source URLs.',
@@ -1150,11 +1155,12 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
                 results.push({type:'tool_result',tool_use_id:u.id,content:`${metadata.title || ''}\nURLs: ${sourceUrls.join(', ')}\nPublished: ${pubHint(metadata) || 'unknown'}\n---\n${data.markdown.slice(0,14000)}`});
               } finally { await syncFcBudget(); }
             }
-          } else if (u.name === 'plan_story') {
-            const plan = Storyboard.safeParse({...u.input,...(storyMode === 'general' ? {story_mode:storyMode} : {})});
-            if (!plan.success) { results.push({type:'tool_result',tool_use_id:u.id,is_error:true,content:plan.error.message}); continue; }
-            artwork = reconcileArtwork(storyboard, plan.data, artwork);
-            storyboard = plan.data;
+          } else if (u.name === 'plan_story' || u.name === 'revise_story') {
+            if (u.name === 'revise_story' && !storyboard) throw new Error('Call plan_story before revising existing segments');
+            const plan = u.name === 'revise_story' ? reviseStoryboard(storyboard!, u.input) :
+              Storyboard.parse({...u.input,...(storyMode === 'general' ? {story_mode:storyMode} : {})});
+            artwork = reconcileArtwork(storyboard, plan, artwork);
+            storyboard = plan;
             active.drawing = true;
             await persistArtwork();
             reviewedArt = '';
@@ -1162,8 +1168,12 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
             pendingImages = null;
             await pool.query("UPDATE drafts SET storyboard=$2, status='writing', updated_at=now() WHERE id=$1", [id, JSON.stringify(storyboard)]);
             compactSource();
-            await log(id, `วางบทและสตอรีบอร์ด ${storyboard.shots.length} ฉากแล้ว กำลังออกแบบตัวละครและวาดฉากใหม่`);
-            results.push({type:'tool_result',tool_use_id:u.id,content:'Storyboard saved. Use draw_character for ONE actor at a time, save_art for shared helpers, draw_scene for ONE shot at a time. Then submit metadata only. Do not draw the entire episode in one response.'});
+            const savedScenes = artwork.scenes.map(scene => scene.seg);
+            const missingScenes = storyboard.shots.filter(shot => !savedScenes.includes(shot.seg)).map(shot => shot.seg);
+            const requiredNames = [...new Set(storyboard.shots.flatMap(shot => shot.characters))];
+            const savedCharacters = artwork.cast.map(character => character.name);
+            await log(id, `${u.name === 'revise_story' ? 'แก้บทเฉพาะฉากแล้ว' : `วางบทและสตอรีบอร์ด ${storyboard.shots.length} ฉากแล้ว`} · เก็บภาพเดิม ${savedScenes.length} ฉาก · ต้องวาด ${missingScenes.length} ฉาก`);
+            results.push({type:'tool_result',tool_use_id:u.id,content:JSON.stringify({status:'saved',saved_scenes:savedScenes,missing_scenes:missingScenes,saved_characters:savedCharacters,missing_characters:requiredNames.filter(name=>!savedCharacters.includes(name)),shared_art_saved:!!(artwork.art_saved || artwork.art),instruction:'Keep saved scenes, portraits and helpers. Draw only reported missing assets, one at a time, then submit metadata only. Use revise_story for further partial narration or shot repairs; do not restate unchanged shots. All affected art must pass preview review again.'})});
           } else if (u.name === 'submit_episode') {
             if (!storyboard) { results.push({type:'tool_result',tool_use_id:u.id,is_error:true,content:'First call plan_story with the complete narration and shots. Do not draw before planning.'}); continue; }
             submits++;
