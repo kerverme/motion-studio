@@ -770,6 +770,13 @@ function studio(st, drafts){
   const useChars=h('input',{type:'checkbox','aria-label':'ใช้ตัวละครจากรูปในเรื่องทั่วไป'});
   const charChoice=h('label',{class:'check'},useChars,h('span',{},'ใช้ตัวละครจากรูป (ไม่บังคับ)'));
   const charsPanel=characterPanel();
+  const recurringCharacter=h('input',{type:'checkbox',checked:true,'aria-label':'มีตัวละครการ์ตูนช่วยเล่าทุกฉาก'});
+  try{recurringCharacter.checked=localStorage.getItem('ms.recurring_character')!=='false';}catch{}
+  recurringCharacter.addEventListener('change',()=>{try{localStorage.setItem('ms.recurring_character',String(recurringCharacter.checked));}catch{}});
+  const recurringPanel=h('div',{class:'chars','aria-label':'ตัวละครการ์ตูนช่วยเล่า'},
+    h('label',{class:'check'},recurringCharacter,h('span',{},'มีตัวละครการ์ตูนช่วยเล่าทุกฉาก')),
+    h('div',{class:'hint'},'ถ้าไม่ได้ใช้รูปอ้างอิง AI จะออกแบบตัวละครการ์ตูนสมมติให้ ไม่ต้องกรอกชื่อหรืออัปโหลดรูป ใช้ตัวเดิมทำกิจกรรมและสาธิตให้เข้ากับเนื้อหาในแต่ละฉาก'),
+    h('div',{class:'hint'},'เมื่อเปิดตัวเลือกนี้และให้ AI เลือกสไตล์ภาพ ระบบจะใช้การ์ตูนเส้นเรียบ คุณยังเลือกสไตล์ภาพอื่นเองได้'));
   const heroName = h('input',{class:'field',maxlength:14,'aria-label':'ชื่อตัวเอก',placeholder:'เช่น แบงค์ (ว่างไว้ให้ AI เลือกชื่อ)',style:'max-width:260px'});
   try{ heroName.value = sessionStorage.getItem('ms.hero')||''; }catch{}
   heroName.addEventListener('input',()=>{ try{ sessionStorage.setItem('ms.hero',heroName.value); }catch{} });
@@ -803,12 +810,12 @@ function studio(st, drafts){
   const go = h('button',{class:'btn primary',disabled:!ready,on:{click:async()=>{
     err.textContent=inputProblem();if(err.textContent)return; const general=modeSel.value==='general'; const t=general?(topic.value.trim()||sourceText.value.trim().slice(0,120)):openerTopic(heroName.value.trim(), topic.value.trim()); if (t.length<4){ err.textContent=general?'พิมพ์หัวข้อหรือเนื้อหาอย่างน้อย 4 ตัวอักษร':'ใส่ชื่อตัวเอก หรือพิมพ์เรื่องที่จะเล่าอย่างน้อย 4 ตัวอักษร'; topic.focus(); return; }
     go.disabled=true; go.textContent='กำลังส่ง…';
-    try{ const r=await draftPost('/app/api/studio/drafts',{topic:t,story_mode:modeSel.value,source_text:general?sourceText.value:'',narration_style:narrationSel.value,narration_custom:narrationSel.value==='custom'?narrationCustom.value.trim():'',note:note.value,auto_produce:auto.checked,model:modelSel.value,reasoning:effSel?effSel.value:undefined,characters:general&&!useChars.checked?[]:selectedChars(),style:selectedStyle(),music_mode:selectedMusic()});
+    try{ const r=await draftPost('/app/api/studio/drafts',{topic:t,story_mode:modeSel.value,source_text:general?sourceText.value:'',narration_style:narrationSel.value,narration_custom:narrationSel.value==='custom'?narrationCustom.value.trim():'',recurring_character:general&&recurringCharacter.checked,note:note.value,auto_produce:auto.checked,model:modelSel.value,reasoning:effSel?effSel.value:undefined,characters:general&&!useChars.checked?[]:selectedChars(),style:selectedStyle(),music_mode:selectedMusic()});
       try{ sessionStorage.removeItem('ms.topic'); sessionStorage.removeItem('ms.hero'); sessionStorage.removeItem('ms.source_text'); sessionStorage.removeItem('ms.note'); }catch{} toast('เริ่มค้นข้อมูลแล้ว'); await load(); openDraft(r.id); }
     catch(x){ err.textContent=x.message; go.disabled=false; go.textContent='เริ่มค้นและเขียน'; } }}},'เริ่มค้นและเขียน');
   const heroGroup=h('label',{class:'sub'},'ชื่อตัวเอก ',heroName);
   const modeHint=h('div',{class:'sub'});
-  const changeMode=()=>{const general=modeSel.value==='general';heroGroup.hidden=general;sourcePanel.hidden=!general;charChoice.hidden=!general;charsPanel.hidden=general&&!useChars.checked;topic.setAttribute('aria-label',general?'หัวข้อเรื่อง':'เรื่องที่จะเล่าต่อ');topic.placeholder=general?'หัวข้อหรือสิ่งที่อยากเล่า เช่น มอร์นิ่งรูทีนช่วยให้ตื่นสดชื่นอย่างไร':'เรื่องที่จะเล่าต่อจากคำถามชื่อ';modeHint.textContent=general?'เปิดเรื่องตามหัวข้อ วาดฉาก สิ่งของ หรือภาพอธิบายตามบท ไม่บังคับชื่อและตัวละคร':'เปิดด้วย “คนชื่อ … ในประเทศไทย มีกี่คน” และใช้ตัวเอกบนปก';try{sessionStorage.setItem('ms.story_mode',modeSel.value);}catch{}};
+  const changeMode=()=>{const general=modeSel.value==='general';heroGroup.hidden=general;sourcePanel.hidden=!general;charChoice.hidden=!general;recurringPanel.hidden=!general;charsPanel.hidden=general&&!useChars.checked;topic.setAttribute('aria-label',general?'หัวข้อเรื่อง':'เรื่องที่จะเล่าต่อ');topic.placeholder=general?'หัวข้อหรือสิ่งที่อยากเล่า เช่น มอร์นิ่งรูทีนช่วยให้ตื่นสดชื่นอย่างไร':'เรื่องที่จะเล่าต่อจากคำถามชื่อ';modeHint.textContent=general?'เปิดเรื่องตามหัวข้อ วาดฉาก สิ่งของ หรือภาพอธิบายตามบท ไม่ต้องกรอกชื่อตัวเอก':'เปิดด้วย “คนชื่อ … ในประเทศไทย มีกี่คน” และใช้ตัวเอกบนปก';try{sessionStorage.setItem('ms.story_mode',modeSel.value);}catch{}};
   modeSel.addEventListener('change',changeMode);useChars.addEventListener('change',changeMode);changeMode();
   const chooseIdea=value=>{topic.value=value;topic.dispatchEvent(new Event('input'));topic.focus();};
   const ideaStatus=h('div',{class:'sub',role:'status','aria-live':'polite'});
@@ -908,6 +915,7 @@ function studio(st, drafts){
     h('details',{}, h('summary',{},'เพิ่มแนวทาง (ไม่บังคับ)'), h('div',{style:'margin-top:10px'},note)),
     h('div',{class:'row',style:'justify-content:flex-start;gap:8px'}, h('span',{class:'sub'},'สมอง'), modelSel, effSel),
     narrationPanel,
+    recurringPanel,
     stylePanel(),
     musicPanel(),
     charChoice, charsPanel,
@@ -958,7 +966,7 @@ function openDraft(id){
     }
     function render(d){
       const dr = d.draft;
-      const head = [h('p',{class:'sub',style:'margin:0'},'หัวข้อ: '+d.topic+(d.note?' · แนวทาง: '+d.note:'')),h('p',{class:'sub',style:'margin:0'},'สไตล์การเล่า: '+narrationLabel(d.narration_style||'standard')+(d.narration_style==='custom'&&d.narration_custom?' · '+d.narration_custom:'')),d.source_text?h('details',{},h('summary',{},'เนื้อหาต้นทางที่เก็บไว้ ('+d.source_text.length.toLocaleString('th-TH')+' ตัวอักษร)'),h('pre',{style:'white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto;font:inherit;font-size:13px'},d.source_text)):'' ];
+      const head = [h('p',{class:'sub',style:'margin:0'},'หัวข้อ: '+d.topic+(d.note?' · แนวทาง: '+d.note:'')),h('p',{class:'sub',style:'margin:0'},'สไตล์การเล่า: '+narrationLabel(d.narration_style||'standard')+(d.narration_style==='custom'&&d.narration_custom?' · '+d.narration_custom:'')),d.story_mode==='general'?h('p',{class:'sub',style:'margin:0'},'ตัวละครการ์ตูนช่วยเล่าทุกฉาก: '+(d.recurring_character?'เปิด':'ปิด')):'',d.source_text?h('details',{},h('summary',{},'เนื้อหาต้นทางที่เก็บไว้ ('+d.source_text.length.toLocaleString('th-TH')+' ตัวอักษร)'),h('pre',{style:'white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto;font:inherit;font-size:13px'},d.source_text)):'' ];
       if (!dr || ['failed','queued','researching','writing'].includes(d.status)){
         put(body, head, h('h2',{class:'d-title'}, d.status==='failed'?'เขียนไม่สำเร็จ':'กำลังทำงาน…'),
           d.error?h('div',{class:'err'},d.error):'', d.problems&&d.problems.length&&d.status==='failed'?h('ul',{class:'probl'},d.problems.map(p=>h('li',{},p))):'',

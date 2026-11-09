@@ -6,6 +6,7 @@ const Name = z.string().trim().min(1).max(20);
 /** The story is agreed before artwork is generated. Legacy drafts have no plan. */
 export const Storyboard = z.object({
   story_mode: z.enum(['name_story','general']).optional(),
+  recurring_character: z.boolean().optional(),
   script: z.array(z.object({
     id: Id, text: z.string().min(3).max(500),
     beat: z.enum(['hook', 'rehook', 'info', 'payoff', 'cta']),
@@ -25,6 +26,9 @@ export const Storyboard = z.object({
   if (new Set(shots).size !== shots.length) ctx.addIssue({ code: 'custom', path: ['shots'], message: 'shot ids must be unique' });
   if (ids.length !== shots.length || ids.some((id, i) => shots[i] !== id)) {
     ctx.addIssue({ code: 'custom', path: ['shots'], message: 'one shot per narration segment, in narration order' });
+  }
+  if (plan.recurring_character && !plan.shots[0]?.characters.some(name => plan.shots.every(shot => shot.characters.includes(name)))) {
+    ctx.addIssue({code:'custom',path:['shots'],message:'recurring character mode requires the same character in every shot'});
   }
   plan.shots.forEach((shot, i) => {
     if (plan.story_mode !== 'general' && !shot.characters.length) ctx.addIssue({code:'custom',path:['shots',i,'characters'],message:'name stories require a character in every shot'});
@@ -123,6 +127,7 @@ export function validateStoryboardDraft(plan: StoryboardT, draft: {
   scenes: { seg: string; type: string; code?: string }[];
   cast: { name: string }[];
   storyboard?: unknown;
+  recurring_character?: boolean;
 }): string[] {
   const errors: string[] = [];
   const parsed = Storyboard.safeParse(plan);
@@ -135,6 +140,7 @@ export function validateStoryboardDraft(plan: StoryboardT, draft: {
     const actual = draft.script[i];
     return !actual || actual.id !== s.id || actual.text !== s.text || actual.beat !== s.beat;
   })) errors.push('script must match the saved storyboard exactly, including narration order and beats');
+  if (!!draft.recurring_character !== !!parsed.data.recurring_character) errors.push('recurring character setting must match the saved storyboard');
   const names = new Set(draft.cast.map(c => c.name));
   if (names.size !== draft.cast.length) errors.push('cast names must be unique');
   if (draft.scenes.length !== plan.shots.length || new Set(draft.scenes.map(s => s.seg)).size !== draft.scenes.length) {

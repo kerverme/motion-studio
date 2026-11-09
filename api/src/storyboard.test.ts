@@ -104,3 +104,38 @@ test('partial story revision rejects unknown, duplicate, empty, structural and i
     {segments:[{seg:'reveal',text:'แก้บท'}],story_mode:'general'},
   ]){assert.throws(()=>reviseStoryboard(original,input));assert.deepEqual(original,snapshot);}
 });
+
+
+test('recurring cartoon mode requires one common presenter across every shot, not rotating unrelated cast',()=>{
+  const recurring={...plan(),story_mode:'general' as const,recurring_character:true};
+  assert.equal(Storyboard.safeParse(recurring).success,true);
+  assert.equal(Storyboard.safeParse({...recurring,shots:[]}).success,false,'malformed empty plans must return validation errors');
+  const empty=structuredClone(recurring);empty.shots[2].characters=[];
+  assert.equal(Storyboard.safeParse(empty).success,false);
+  const rotating=structuredClone(recurring);rotating.shots[2].characters=['คนอื่น'];
+  assert.equal(Storyboard.safeParse(rotating).success,false);
+  const supporting=structuredClone(recurring);supporting.shots[2].characters.push('เพื่อน');
+  assert.equal(Storyboard.safeParse(supporting).success,true);
+  const optional=structuredClone(empty);optional.recurring_character=false;
+  assert.equal(Storyboard.safeParse(optional).success,true,'general stories without this rule still permit empty character shots');
+});
+
+test('recurring presenter must exist in cast and be drawn in every scene; draft cannot drop its policy',()=>{
+  const d={...draft(),recurring_character:true};d.storyboard=Storyboard.parse({...d.storyboard,story_mode:'general',recurring_character:true});
+  assert.deepEqual(validateStoryboardDraft(d.storyboard,d),[]);
+  assert.ok(validateStoryboardDraft(d.storyboard,{...d,recurring_character:false}).some(e=>e.includes('recurring character setting')));
+  const missing=structuredClone(d);missing.scenes[1].code='def draw(c,t,p):\n  c.text(10,10,"only an explanation")';
+  assert.ok(validateStoryboardDraft(missing.storyboard,missing).some(e=>e.includes('draw "เบล"')));
+  const noCast=structuredClone(d);noCast.cast=[];
+  assert.ok(validateStoryboardDraft(noCast.storyboard,noCast).some(e=>e.includes('is not in cast')));
+});
+
+test('partial repair cannot remove the recurring presenter and leaves the previous plan intact',async()=>{
+  const {reviseStoryboard}=await import('./storyboard.js');
+  const p=Storyboard.parse({...plan(),story_mode:'general',recurring_character:true}),original=structuredClone(p);
+  assert.throws(()=>reviseStoryboard(p,{segments:[{seg:'market',characters:[]}]}));
+  assert.throws(()=>reviseStoryboard(p,{segments:[{seg:'market',characters:['อีกคน']}]}));
+  assert.deepEqual(p,original);
+  const revised=reviseStoryboard(p,{segments:[{seg:'market',text:'ตัวละครช่วยอธิบายด้วยถ้อยคำง่าย ๆ'}]});
+  assert.equal(revised.recurring_character,true);assert.deepEqual(revised.shots,p.shots);
+});
