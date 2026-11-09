@@ -185,3 +185,7 @@ Validation: `cd api && npm run typecheck && node --import tsx --test src/*.test.
 New Studio-generated drafts carry `cover_mode: opening_frame`. Their first custom shot starts at video time zero, with the subject and Thai headline already visible and motion beginning immediately. Narration and subsequent scene timing are unchanged; no still intro or extra second is inserted. Visual review includes the exact opening frame in addition to early/late previews. An almost blank opening fails preflight.
 
 Produced packages retain this choice in `thumbnail.mode`. The worker extracts the PNG directly from the first decoded frame of the final delivered MP4; it adds no separate cover layout. Buffer receives `thumbnailOffset: 0` for supported services (including Instagram and TikTok). Facebook/Twitter retain their existing API restrictions. Legacy drafts/packages keep their old cover behavior and 1500ms Buffer selection. Existing published posts are not modified. Deploy worker before API.
+
+### Browser submission recovery
+
+`016_draft_requests.sql` gives draft creation and rewrite requests a durable unique key and input hash. The UI stores the key before sending; a lost response or page reload reuses it for the same input. Concurrent requests and retries return the original draft ID, and reusing a key with different input returns HTTP 409. Older clients without a key remain compatible. Production submission still uses the existing `draft:<id>` job idempotency key. Normal pending work and artwork/source checkpoints are unchanged.

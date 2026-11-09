@@ -14,6 +14,7 @@ import { Artwork, emptyArtwork, reconcileArtwork, updateArtwork, mergeArtwork, a
 import { BudgetedFirecrawl, PgResearchBudget, ResearchBudgetError } from './firecrawl-budget.js';
 import { extractWebEvidence, verifySources, searchWeb, sourceKey } from './source-evidence.js';
 import { Storyboard, validateStoryboardDraft, personCalls, type StoryboardT } from './storyboard.js';
+import { draftRequest } from './draft-request.js';
 
 const env = process.env;
 const ANTHROPIC_URL = (env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/$/, '');
@@ -1487,6 +1488,13 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
 
   app.post('/app/api/studio/drafts', g, async (c) => {
     const b = await c.req.json().catch(() => ({}));
+    let request;
+    try { request = draftRequest(c.req.header('idempotency-key'), 'create', b); }
+    catch { return c.json({error:'invalid idempotency-key'},422); }
+    if (request.key) {
+      const old = (await pool.query('SELECT id, request_hash FROM drafts WHERE request_key=$1',[request.key])).rows[0];
+      if (old) return old.request_hash === request.hash ? c.json({id:old.id},201) : c.json({error:'idempotency-key already used for different input'},409);
+    }
     const storyMode = b.story_mode === 'general' ? 'general' : 'name_story';
     const sourceText = storyMode === 'general' ? String(b.source_text || '').trim().slice(0,20000) : '';
     const topic = String(b.topic || sourceText.slice(0,120)).trim().slice(0, 400);
@@ -1501,8 +1509,12 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const chars = ids.length ? (await pool.query('SELECT id, name, look, backdrop FROM characters WHERE id = ANY($1::uuid[]) ORDER BY created_at', [ids])).rows.map((x: any) => ({ id: x.id, name: x.name, look: x.backdrop ? { ...x.look, backdrop: x.backdrop } : x.look })) : [];
     const style = typeof b.style === 'string' && STYLES[b.style] ? b.style : 'auto';
     const musicMode = b.music_mode === 'ai' ? 'ai' : 'default';
-    const r = await pool.query('INSERT INTO drafts (topic, note, auto_produce, model, reasoning, characters, style, music_mode, story_mode, source_text) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id',
-      [topic, String(b.note || '').trim().slice(0, 1000) || null, !!b.auto_produce, model, PROVIDER === 'openai' ? reasoning : null, JSON.stringify(chars), style, musicMode, storyMode, sourceText || null]);
+    const r = await pool.query('INSERT INTO drafts (topic, note, auto_produce, model, reasoning, characters, style, music_mode, story_mode, source_text, request_key, request_hash) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (request_key) DO NOTHING RETURNING id',
+      [topic, String(b.note || '').trim().slice(0, 1000) || null, !!b.auto_produce, model, PROVIDER === 'openai' ? reasoning : null, JSON.stringify(chars), style, musicMode, storyMode, sourceText || null, request.key, request.hash]);
+    if (!r.rows.length) {
+      const old = (await pool.query('SELECT id, request_hash FROM drafts WHERE request_key=$1',[request.key])).rows[0];
+      return old?.request_hash === request.hash ? c.json({id:old.id},201) : c.json({error:'idempotency-key already used for different input'},409);
+    }
     await log(r.rows[0].id, 'รับหัวข้อแล้ว รอคิว');
     pump();
     return c.json({ id: r.rows[0].id }, 201);
@@ -1554,15 +1566,26 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const row = (await pool.query('SELECT * FROM drafts WHERE id=$1', [id])).rows[0];
     if (!row) return c.json({ error: 'not found' }, 404);
     const b = await c.req.json().catch(() => ({}));
+    let request;
+    try { request = draftRequest(c.req.header('idempotency-key'), 'rewrite:'+id, b); }
+    catch { return c.json({error:'invalid idempotency-key'},422); }
+    if (request.key) {
+      const old = (await pool.query('SELECT id, request_hash FROM drafts WHERE request_key=$1',[request.key])).rows[0];
+      if (old) return old.request_hash === request.hash ? c.json({id:old.id},201) : c.json({error:'idempotency-key already used for different input'},409);
+    }
     const cf = configured();
     if (!researchReady(cf)) return c.json({ error: 'ยังไม่ได้ตั้งค่า API key ใน Railway' }, 503);
     // a rewrite keeps the owner's style and music choice (the review may have changed them on the draft itself)
     const keepStyle = row.draft?.style && STYLES[row.draft.style] && row.style !== 'auto' ? row.draft.style : row.style || 'auto';
     const keepMusic = row.draft?.music_mode || row.music_mode || 'default';
-    const r = await pool.query('INSERT INTO drafts (topic, note, parent_id, auto_produce, model, reasoning, characters, source_type, community_id, style, music_mode, story_mode, source_text, research_job_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id',
+    const r = await pool.query('INSERT INTO drafts (topic, note, parent_id, auto_produce, model, reasoning, characters, source_type, community_id, style, music_mode, story_mode, source_text, research_job_id, request_key, request_hash) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT (request_key) DO NOTHING RETURNING id',
       [row.topic, String(b.note ?? row.note ?? '').trim().slice(0, 1000) || null, row.id, row.source_type === 'community' ? false : !!b.auto_produce,
         typeof b.model === 'string' && MODEL_RE.test(b.model) ? b.model : row.model, REASONING_LEVELS.includes(b.reasoning) ? b.reasoning : row.reasoning,
-        JSON.stringify(row.characters ?? []), row.source_type || 'studio', row.community_id ?? null, keepStyle, keepMusic, row.story_mode || 'name_story', row.source_text || null, row.research_job_id || row.id]);
+        JSON.stringify(row.characters ?? []), row.source_type || 'studio', row.community_id ?? null, keepStyle, keepMusic, row.story_mode || 'name_story', row.source_text || null, row.research_job_id || row.id, request.key, request.hash]);
+    if (!r.rows.length) {
+      const old = (await pool.query('SELECT id, request_hash FROM drafts WHERE request_key=$1',[request.key])).rows[0];
+      return old?.request_hash === request.hash ? c.json({id:old.id},201) : c.json({error:'idempotency-key already used for different input'},409);
+    }
     if (row.status === 'failed' && row.storyboard && (b.note === undefined || String(b.note).trim() === String(row.note || '').trim())) {
       await pool.query('UPDATE drafts SET storyboard=$2, artwork=$3, research=$4 WHERE id=$1', [r.rows[0].id,JSON.stringify(row.storyboard),JSON.stringify(row.artwork || emptyArtwork()),JSON.stringify(row.research || [])]);
     }

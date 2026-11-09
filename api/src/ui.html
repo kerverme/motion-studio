@@ -32,6 +32,7 @@
   --data:#43A877; --ok:#43A877; --warn:#D9A93F; --bad:#E07A62; --focus:#7FB2E8; color-scheme: dark;
 }
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 html,body{margin:0}
 body{background:var(--page);color:var(--ink);font:15px/1.6 var(--sans);-webkit-font-smoothing:antialiased}
 button,input,textarea,select{font:inherit;color:inherit}
@@ -307,8 +308,24 @@ async function api(path, opts={}){
   const r = await fetch(path, {credentials:'same-origin', ...opts, headers:{'x-motion-ui':'1','content-type':'application/json',...(opts.headers||{})}});
   let j=null; try{ j=await r.json(); }catch{}
   if (r.status===401 && !path.endsWith('/login')) { login(); throw new Error('unauthorized'); }
-  if (!r.ok){ const e=new Error((j&&j.error)||('HTTP '+r.status)); e.body=j; throw e; }
+  if (!r.ok){ const e=new Error((j&&j.error)||('HTTP '+r.status)); e.body=j; e.status=r.status; throw e; }
   return j;
+}
+// Persist before POST. A lost response or reload must reuse the original request.
+const draftRequests = new Map();
+async function draftPost(path, payload){
+  const body=JSON.stringify(payload), slot='ms.request:'+path;
+  let pending=draftRequests.get(slot);
+  try{pending=JSON.parse(sessionStorage.getItem(slot)||'null')||pending;}catch{}
+  if (!pending) pending={body,key:crypto.randomUUID()};
+  else toast('กำลังตรวจคำขอเดิมที่ยังไม่ทราบผล เพื่อป้องกันสร้างงานซ้ำ');
+  draftRequests.set(slot,pending);
+  try{sessionStorage.setItem(slot,JSON.stringify(pending));}catch{}
+  const clear=()=>{draftRequests.delete(slot);try{sessionStorage.removeItem(slot);}catch{}};
+  try{
+    const result=await api(path,{method:'POST',headers:{'idempotency-key':pending.key},body:pending.body});
+    clear();return result;
+  }catch(e){if(e.status>=400&&e.status<500&&e.status!==408)clear();throw e;}
 }
 function toast(msg){ const t=h('div',{class:'toast',role:'status'},msg); document.body.append(t); setTimeout(()=>t.remove(),3200); }
 
@@ -745,7 +762,7 @@ function studio(st, drafts){
   const go = h('button',{class:'btn primary',disabled:!ready,on:{click:async()=>{
     err.textContent=''; const general=modeSel.value==='general'; const t=general?(topic.value.trim()||sourceText.value.trim().slice(0,120)):openerTopic(heroName.value.trim(), topic.value.trim()); if (t.length<4){ err.textContent=general?'พิมพ์หัวข้อหรือเนื้อหาอย่างน้อย 4 ตัวอักษร':'ใส่ชื่อตัวเอก หรือพิมพ์เรื่องที่จะเล่าอย่างน้อย 4 ตัวอักษร'; topic.focus(); return; }
     go.disabled=true; go.textContent='กำลังส่ง…';
-    try{ const r=await api('/app/api/studio/drafts',{method:'POST',body:JSON.stringify({topic:t,story_mode:modeSel.value,source_text:general?sourceText.value:'',note:note.value,auto_produce:auto.checked,model:modelSel.value,reasoning:effSel?effSel.value:undefined,characters:general&&!useChars.checked?[]:selectedChars(),style:selectedStyle(),music_mode:selectedMusic()})});
+    try{ const r=await draftPost('/app/api/studio/drafts',{topic:t,story_mode:modeSel.value,source_text:general?sourceText.value:'',note:note.value,auto_produce:auto.checked,model:modelSel.value,reasoning:effSel?effSel.value:undefined,characters:general&&!useChars.checked?[]:selectedChars(),style:selectedStyle(),music_mode:selectedMusic()});
       try{ sessionStorage.removeItem('ms.topic'); sessionStorage.removeItem('ms.hero'); sessionStorage.removeItem('ms.source_text'); }catch{} toast('เริ่มค้นข้อมูลแล้ว'); await load(); openDraft(r.id); }
     catch(x){ err.textContent=x.message; go.disabled=false; go.textContent='เริ่มค้นและเขียน'; } }}},'เริ่มค้นและเขียน');
   const heroGroup=h('label',{class:'sub'},'ชื่อตัวเอก ',heroName);
@@ -895,7 +912,8 @@ function openDraft(id){
         err,
         editable ? h('div',{class:'d-sticky'}, h('button',{class:'btn quiet',on:{click:()=>discard(d)}},'ทิ้ง'), save, produce) : '');
     }
-    async function rewrite(d, note){ try{ const r=await api('/app/api/studio/drafts/'+d.id+'/rewrite',{method:'POST',body:JSON.stringify({note})}); toast('เริ่มเขียนใหม่'); close(true); openDraft(r.id); }catch(x){ toast(x.message); } }
+    let rewriting=false;
+    async function rewrite(d, note){ if(rewriting)return; rewriting=true; try{ const r=await draftPost('/app/api/studio/drafts/'+d.id+'/rewrite',{note}); toast('เริ่มเขียนใหม่'); close(true); openDraft(r.id); }catch(x){ toast(x.message); }finally{rewriting=false;} }
     async function discard(d){ try{ await api('/app/api/studio/drafts/'+d.id+'/discard',{method:'POST',body:'{}'}); toast('ทิ้งร่างแล้ว'); close(true); }catch(x){ toast(x.message); } }
     put(body, h('div',{class:'sub'},'กำลังโหลด…'));
     refresh();
