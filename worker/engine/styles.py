@@ -109,16 +109,23 @@ def _dots():
     for j, y in enumerate(range(0, H + step, step)):
         off = step // 2 if j % 2 else 0
         for x in range(-step, W + step, step):
-            d.ellipse((x + off - 3.6, y - 3.6, x + off + 3.6, y + 3.6), fill=150)
+            d.ellipse((x + off - 3.6, y - 3.6, x + off + 3.6, y + 3.6), fill=224)
     return Image.merge('RGB', (im, im, im))
 
 
 def comic(img, t):
+    """Print colour and halftone over existing line art without re-inking it.
+
+    Artkit drawings already contain outlines, facial features and sometimes text.
+    Growing a second edge mask over them filled eye whites and letter counters,
+    especially on small characters. Keep the original geometry and protect detail
+    neighbourhoods from the texture as well.
+    """
     rgb = _rgb(img)
-    flat = ImageOps.posterize(ImageEnhance.Color(rgb).enhance(1.4), 3)
-    shade = rgb.convert('L').point(lambda v: 255 if v < 150 else 0)
-    flat = Image.composite(ImageChops.multiply(flat, _once('dots', _dots)), flat, shade)
-    return Image.composite(Image.new('RGB', (W, H), (18, 14, 26)), flat, _edges(rgb, 24, 3))
+    flat = Image.blend(rgb, ImageOps.posterize(ImageEnhance.Color(rgb).enhance(1.08), 4), 0.65)
+    shade = rgb.convert('L').point(lambda v: 255 if 60 < v < 170 else 0)
+    shade = ImageChops.subtract(shade, _edges(rgb, 24, 5))
+    return Image.composite(ImageChops.multiply(flat, _once('dots', _dots)), flat, shade)
 
 
 # ---------------------------------------------------------------- 04 brick mosaic

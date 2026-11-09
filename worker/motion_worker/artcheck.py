@@ -7,7 +7,9 @@ import base64, io, json, os, subprocess, sys, tempfile, threading, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 FRAMES = (0.3, 0.88)
-THUMB = (288, 512)
+# Keep eyes and thin Thai strokes legible to the visual reviewer. At most 29
+# frames for a 14-shot storyboard (opening frame plus two samples per shot).
+THUMB = (432, 768)
 
 
 def check(payload):
@@ -50,7 +52,7 @@ def check(payload):
                 small = im.resize(THUMB)
                 if f == FRAMES[0] and ImageStat.Stat(small.convert('L')).stddev[0] < 6:
                     res['errors'].append('the frame is almost blank: draw the scene (c.grad for the sky/wall first, then the subject)')
-                b = io.BytesIO(); small.save(b, 'JPEG', quality=62)
+                b = io.BytesIO(); small.save(b, 'JPEG', quality=80)
                 res['frames'].append(base64.b64encode(b.getvalue()).decode())
             res['ms'] = int((time.time() - t0) * 1000 / max(1, len(fractions)))
             res['errors'] += [e[1] for e in templates.ERRORS if e[0] == seg]
