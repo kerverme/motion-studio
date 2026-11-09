@@ -67,6 +67,7 @@ main{padding:36px 40px 80px;min-width:0;max-width:1180px}
 .btn.primary:hover{filter:brightness(1.06)}
 .btn.quiet{border-color:transparent;background:transparent;color:var(--ink-2)}
 .btn.quiet:hover{color:var(--ink);background:var(--line-2)}
+.btn.danger{color:var(--bad);border-color:var(--bad)}
 .btn:disabled{opacity:.5;cursor:not-allowed}
 .seg{display:inline-flex;border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden}
 .seg button{all:unset;cursor:pointer;padding:6px 12px;font-size:14px;color:var(--ink-2)}
@@ -437,6 +438,15 @@ function detail(ep){
   drawer(({body, titleEl, close})=>{
     titleEl.textContent = ep.number ? 'EP'+String(ep.number).padStart(3,'0') : '';
     const used = ep.ui_status==='used';
+    const remove = !used ? h('button',{class:'btn danger',on:{click:async()=>{
+      if(!confirm('ลบคลิป “'+ep.title+'” ออกจากพร้อมใช้?\nระบบจะตั้ง Status เป็น deleted และติ๊ก Deleted ใน Notion โดยเก็บหน้าและประวัติไว้'))return;
+      remove.disabled=true;remove.textContent='กำลังลบและอัปเดต Notion…';
+      try{
+        const r=await api('/app/api/episodes/'+ep.id,{method:'DELETE',body:JSON.stringify({confirm:true})});
+        toast(r.notion&&r.notion.ok?'ลบคลิปแล้ว · ติ๊ก Deleted ใน Notion แล้ว':'ลบคลิปแล้ว · Notion ยังไม่สำเร็จ ระบบจะลองซิงก์ใหม่ ตรวจสถานะได้ในสถิติ');
+        close(true);
+      }catch(x){toast(x.message);remove.disabled=false;remove.textContent='ลบคลิป';}
+    }}},'ลบคลิป') : null;
     const by = latestByService(ep.publications);
     const rows = ORDER.filter(s=>by[s]).map(s=>{
       const p = by[s], st = postState(p), m = p.metrics||{};
@@ -453,7 +463,7 @@ function detail(ep){
       h('div',{class:'actions'},
         h('button',{class:'btn primary',on:{click:()=>publish(ep, body, close)}},'โพสต์คลิปนี้'),
         h('button',{class:'btn',on:{click:async()=>{ try{ await navigator.clipboard.writeText(ep.video_url); toast('คัดลอกลิงก์วิดีโอแล้ว'); }catch{ prompt('ลิงก์วิดีโอ',ep.video_url); } }}},'คัดลอกลิงก์'),
-        h('button',{class:'btn quiet',on:{click:async()=>{ await api('/app/api/episodes/'+ep.id+'/used',{method:'POST',body:JSON.stringify({used:!used})}); toast(used?'ย้ายกลับไปพร้อมใช้แล้ว':'ย้ายไปเสร็จแล้ว'); close(true); }}}, used?'ย้ายกลับไปพร้อมใช้':'ย้ายไปเสร็จแล้ว')),
+        h('button',{class:'btn quiet',on:{click:async()=>{ await api('/app/api/episodes/'+ep.id+'/used',{method:'POST',body:JSON.stringify({used:!used})}); toast(used?'ย้ายกลับไปพร้อมใช้แล้ว':'ย้ายไปเสร็จแล้ว'); close(true); }}}, used?'ย้ายกลับไปพร้อมใช้':'ย้ายไปเสร็จแล้ว'), remove),
       rows.length ? h('div',{}, h('h4',{},'แต่ละแพลตฟอร์ม'), h('div',{class:'plat'}, rows)) : '');
   });
 }

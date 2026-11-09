@@ -33,6 +33,22 @@ const text = (s: string | null | undefined) => ({ rich_text: s ? [{ type: 'text'
 const num = (n: number | null | undefined) => ({ number: n == null || Number.isNaN(n) ? null : n });
 const date = (d: Date | string | null | undefined) => ({ date: d ? { start: new Date(d).toISOString() } : null });
 
+let deletionSchema: Promise<void> | null = null;
+async function ensureDeletionSchema() {
+  if (!deletionSchema) deletionSchema = (async () => {
+    const db = await call(`/v1/databases/${DB_ID}`, 'GET');
+    const fields = db.properties || {};
+    const patch: Record<string, unknown> = {};
+    if (fields.Deleted && fields.Deleted.type !== 'checkbox') throw new Error('Notion Deleted property must be a checkbox');
+    if (!fields.Deleted) patch.Deleted = { checkbox: {} };
+    if (fields.Status?.type !== 'select') throw new Error('Notion Status property must be a select');
+    const options = fields.Status.select.options;
+    if (!options.some((o: any) => o.name === 'deleted')) patch.Status = { select: { options: [...options.map((o: any) => ({id:o.id,name:o.name,color:o.color})), {name:'deleted',color:'gray'}] } };
+    if (Object.keys(patch).length) await call(`/v1/databases/${DB_ID}`, 'PATCH', {properties:patch});
+  })().catch(err => { deletionSchema = null; throw err; });
+  await deletionSchema;
+}
+
 async function properties(pool: pg.Pool, id: string) {
   const e = (await pool.query(`
     SELECT e.*, h.files, h.created_at AS delivered_at, h.folder_id, j.id AS job_id, j.used_credits, j.package->'voice'->>'voice_id' AS voice_id,
@@ -51,13 +67,15 @@ async function properties(pool: pg.Pool, id: string) {
   const lastMetrics = posts.map((p) => p.metrics_updated_at).filter(Boolean).sort().pop() ?? null;
   const links = posts.map((p) => `${LABEL[p.service] || p.service}: ${p.external_link || (p.post_status === 'sent' ? 'published' : `in Buffer (${p.post_status || p.mode})`)}`).join('\n');
   const used = e.ui_status === 'used';
+  const deleted = e.ui_status === 'deleted';
   const props: Record<string, unknown> = {
     Title: { title: [{ type: 'text', text: { content: String(e.title_th).slice(0, 1990) } }] },
     Episode: num(e.number),
     Topic: text(e.topic),
     Series: text(e.series_tag),
-    Status: { select: { name: posts.some((p) => p.post_status === 'sent') ? 'Posted' : 'Ready to post' } },
+    Status: { select: { name: deleted ? 'deleted' : posts.some((p) => p.post_status === 'sent') ? 'Posted' : 'Ready to post' } },
     Used: { checkbox: used },
+    Deleted: { checkbox: deleted },
     'Video URL': { url: video?.url ?? null },
     'Created At': date(e.delivered_at || e.created_at),
     'File Size (MB)': num(video?.bytes ? Math.round((video.bytes / 1048576) * 10) / 10 : null),
@@ -83,9 +101,10 @@ async function properties(pool: pg.Pool, id: string) {
   return { e, props };
 }
 
-export async function syncEpisode(pool: pg.Pool, id: string) {
+async function performSyncEpisode(pool: pg.Pool, id: string) {
   if (!configured()) return { ok: false, skipped: 'NOTION_TOKEN not set' };
   try {
+    await ensureDeletionSchema();
     const p = await properties(pool, id);
     if (!p) return { ok: false, error: 'episode not found' };
     let pageId: string | null = p.e.notion_page_id;
@@ -105,7 +124,8 @@ export async function syncEpisode(pool: pg.Pool, id: string) {
       const created = await call('/v1/pages', 'POST', { parent: { database_id: DB_ID }, icon: { type: 'emoji', emoji: '🎬' }, properties: p.props });
       pageId = created.id;
     }
-    await pool.query('UPDATE episodes SET notion_page_id=$2, notion_synced_at=now(), notion_error=NULL WHERE id=$1', [id, pageId]);
+    // An older in-flight sync must not acknowledge a deletion it has not sent.
+    await pool.query('UPDATE episodes SET notion_page_id=$2, notion_synced_at=now(), notion_error=NULL WHERE id=$1 AND ui_status=$3', [id, pageId, p.e.ui_status]);
     return { ok: true, page_id: pageId };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -117,9 +137,14 @@ export async function syncEpisode(pool: pg.Pool, id: string) {
 
 // queue so event-driven syncs never run in parallel (Notion allows ~3 requests/s)
 let chain: Promise<unknown> = Promise.resolve();
+export function syncEpisode(pool: pg.Pool, id: string) {
+  const result = chain.then(() => performSyncEpisode(pool, id));
+  chain = result.catch(() => {});
+  return result;
+}
 export function syncLater(pool: pg.Pool, ids: string[]) {
   if (!configured()) return;
-  for (const id of new Set(ids)) chain = chain.then(() => syncEpisode(pool, id)).catch(() => {});
+  for (const id of new Set(ids)) void syncEpisode(pool, id);
 }
 
 export async function syncAll(pool: pg.Pool) {

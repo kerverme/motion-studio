@@ -431,7 +431,7 @@ setInterval(() => {
 setInterval(async () => {
   if (!notion.configured()) return;
   const ids = (await pool.query(`SELECT DISTINCT h.episode_id FROM publication_handoffs h JOIN episodes e ON e.id = h.episode_id
-    WHERE e.notion_page_id IS NULL OR e.notion_error IS NOT NULL`).catch(() => ({ rows: [] }))).rows.map((r: any) => r.episode_id);
+    WHERE e.notion_page_id IS NULL OR e.notion_synced_at IS NULL OR e.notion_error IS NOT NULL`).catch(() => ({ rows: [] }))).rows.map((r: any) => r.episode_id);
   notion.syncLater(pool, ids);
 }, 5 * 60_000).unref();
 setInterval(() => { notion.syncAll(pool).catch(() => {}); }, 6 * 3600_000).unref();

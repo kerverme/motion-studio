@@ -149,10 +149,32 @@ export function registerUi(app: Hono, pool: pg.Pool, deps: { API_TOKEN: string; 
     if (!/^[0-9a-f-]{36}$/.test(id)) return c.json({ error: 'bad id' }, 400);
     const body = await c.req.json().catch(() => ({}));
     const used = body?.used !== false;
-    const r = await pool.query('UPDATE episodes SET ui_status=$2, used_at=CASE WHEN $2=\'used\' THEN now() ELSE NULL END WHERE id=$1 RETURNING id', [id, used ? 'used' : 'ready']);
+    const r = await pool.query('UPDATE episodes SET ui_status=$2, used_at=CASE WHEN $2=\'used\' THEN now() ELSE NULL END WHERE id=$1 AND ui_status <> \'deleted\' RETURNING id', [id, used ? 'used' : 'ready']);
     if (!r.rowCount) return c.json({ error: 'not found' }, 404);
     notion.syncLater(pool, [id]);
     return c.json({ ok: true, ui_status: used ? 'used' : 'ready' });
+  });
+
+  app.delete('/app/api/episodes/:id', requireUi, async (c) => {
+    const id = c.req.param('id');
+    if (!/^[0-9a-f-]{36}$/.test(id)) return c.json({error:'bad id'},400);
+    const body = await c.req.json().catch(() => ({}));
+    if (body.confirm !== true) return c.json({error:'confirmation required'},422);
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      // Shares the episode lock with publication reservation below.
+      const row = (await client.query('SELECT ui_status FROM episodes WHERE id=$1 FOR UPDATE',[id])).rows[0];
+      if (!row) { await client.query('ROLLBACK'); return c.json({error:'not found'},404); }
+      if (!['ready','deleted'].includes(row.ui_status)) { await client.query('ROLLBACK'); return c.json({error:'ลบได้เฉพาะคลิปในพร้อมใช้'},409); }
+      const posts = await client.query("SELECT 1 FROM publish_log WHERE episode_id=$1 AND status IN ('pending','sent') LIMIT 1",[id]);
+      if (row.ui_status !== 'deleted' && posts.rowCount) { await client.query('ROLLBACK'); return c.json({error:'คลิปนี้ส่งเข้า Buffer แล้ว ตรวจรายการโพสต์ก่อนลบ'},409); }
+      await client.query("UPDATE episodes SET ui_status='deleted', deleted_at=COALESCE(deleted_at,now()), notion_synced_at=NULL, notion_error=NULL, updated_at=now() WHERE id=$1",[id]);
+      await client.query('COMMIT');
+    } catch (err) { await client.query('ROLLBACK'); throw err; }
+    finally { client.release(); }
+    const sync = await notion.syncEpisode(pool,id);
+    return c.json({ok:true,ui_status:'deleted',notion:sync});
   });
 
   // ---- jobs in progress / failed
@@ -217,6 +239,7 @@ export function registerUi(app: Hono, pool: pg.Pool, deps: { API_TOKEN: string; 
     const r = await pool.query(`${CLIP_SQL} WHERE e.id = $1`, [id]);
     if (!r.rowCount) return c.json({ error: 'episode not found' }, 404);
     const ep = shape(r.rows[0]);
+    if (ep.ui_status === 'deleted') return c.json({error:'คลิปนี้ถูกลบแล้ว ไม่สามารถโพสต์ได้'},409);
     if (!ep.video_url || !ep.video_url.startsWith('https://') || !ep.video_url.startsWith(MEDIA_BASE + '/')) {
       return c.json({ error: 'video is not on the permanent public media domain', video_url: ep.video_url }, 422);
     }
@@ -255,7 +278,8 @@ export function registerUi(app: Hono, pool: pg.Pool, deps: { API_TOKEN: string; 
       const svc = buffer.normService(ch.service);
       const ins = await pool.query(
         `INSERT INTO publish_log (episode_id, channel_id, channel_name, service, mode, due_at, caption, status)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,'pending') ON CONFLICT DO NOTHING RETURNING id`,
+         SELECT e.id,$2,$3,$4,$5,$6,$7,'pending' FROM episodes e WHERE e.id=$1 AND e.ui_status <> 'deleted'
+         FOR UPDATE OF e ON CONFLICT DO NOTHING RETURNING id`,
         [id, ch.id, ch.displayName || ch.name, svc, body.mode, dueIso ?? null, text]);
       if (!ins.rowCount) { results.push({ channel_id: ch.id, service: svc, status: 'skipped', error: 'already published or pending for this channel' }); continue; }
       const logId = ins.rows[0].id;
@@ -271,7 +295,7 @@ export function registerUi(app: Hono, pool: pg.Pool, deps: { API_TOKEN: string; 
       await new Promise((res) => setTimeout(res, 400));
     }
     const anySent = results.some((x) => x.status === 'sent');
-    if (anySent) await pool.query("UPDATE episodes SET ui_status='used', used_at=COALESCE(used_at, now()) WHERE id=$1", [id]);
+    if (anySent) await pool.query("UPDATE episodes SET ui_status='used', used_at=COALESCE(used_at, now()) WHERE id=$1 AND ui_status <> 'deleted'", [id]);
     if (anySent) setTimeout(() => { syncPosts(pool, { limit: 10 }).then((x) => notion.syncLater(pool, [id, ...x.changed])).catch(() => notion.syncLater(pool, [id])); }, 5000);
     return c.json({ ok: results.every((x) => x.status !== 'failed'), moved_to_used: anySent, results });
   });

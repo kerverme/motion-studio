@@ -162,7 +162,7 @@ export async function reconcile(pool: pg.Pool, onlyEpisode?: string): Promise<st
       [ep.id, p.channelId, ch ? ch.displayName || ch.name : null, ch ? buffer.normService(ch.service) : null, p.id, p.status, p.createdAt]);
     if (ins.rowCount) {
       changed.push(ep.id);
-      await pool.query("UPDATE episodes SET ui_status='used', used_at=COALESCE(used_at, now()) WHERE id=$1", [ep.id]);
+      await pool.query("UPDATE episodes SET ui_status='used', used_at=COALESCE(used_at, now()) WHERE id=$1 AND ui_status <> 'deleted'", [ep.id]);
     }
   }
   return changed;

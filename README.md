@@ -189,3 +189,11 @@ Produced packages retain this choice in `thumbnail.mode`. The worker extracts th
 ### Browser submission recovery
 
 `016_draft_requests.sql` gives draft creation and rewrite requests a durable unique key and input hash. The UI stores the key before sending; a lost response or page reload reuses it for the same input. Concurrent requests and retries return the original draft ID, and reusing a key with different input returns HTTP 409. Older clients without a key remain compatible. Production submission still uses the existing `draft:<id>` job idempotency key. Normal pending work and artwork/source checkpoints are unchanged.
+
+### Removing unused clips
+
+Open a clip in **พร้อมใช้** and choose **ลบคลิป**, then confirm. `DELETE /app/api/episodes/:id` requires `{confirm:true}` and the normal UI authentication. It marks the episode `ui_status: deleted` with `deleted_at`; the clip disappears from ready/used lists. Media, episode history and the existing Notion page are retained. Used clips and clips already reserved/sent to Buffer cannot be removed here.
+
+Notion mirrors `Status: deleted` and `Deleted: true` on the same page, without archiving or trashing it. The integration adds the checkbox and select option if absent, preserving other properties/options. A failed sync leaves the local deletion intact and records a retryable error; unsynced rows are retried every five minutes and on startup. All Notion sync entry points share one queue, and stale syncs cannot acknowledge a newer local status. Repeated deletes are safe. Publishing from stale tabs and background Buffer reconciliation cannot restore a deleted clip.
+
+Migration: `017_deleted_episodes.sql`. Validation: TypeScript, API tests including real PostgreSQL deletion/publication reservations and mocked Notion failures, plus browser confirmation/cancel and sync-status checks. No media generation is needed to test this feature.
