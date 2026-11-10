@@ -2,6 +2,8 @@ import { z } from 'zod';
 
 const Id = z.string().regex(/^[a-z0-9_]{1,24}$/);
 const Name = z.string().trim().min(1).max(20);
+export const VisualSubject = z.object({id:Id,description:z.string().trim().min(8).max(300)}).strict();
+export const DepictedSubjects = z.array(Id).max(8);
 export const NarrativeDirection = z.object({
   premise:z.string().trim().min(10).max(400), central_question:z.string().trim().min(8).max(220),
   throughline:z.string().trim().min(10).max(400), payoff:z.string().trim().min(10).max(400),
@@ -16,6 +18,7 @@ export const Storyboard = z.object({
   story_mode: z.enum(['name_story','general']).optional(),
   recurring_character: z.boolean().optional(),
   direction_version:z.literal(1).optional(),
+  depiction_version:z.literal(1).optional(),
   narrative:NarrativeDirection.optional(),
   sound_policy:SoundPolicy.optional(),
   script: z.array(z.object({
@@ -30,6 +33,7 @@ export const Storyboard = z.object({
     characters: z.array(Name).max(4),
     continuity:ShotContinuity.optional(),
     motion_beats:z.array(MotionBeat).min(2).max(5).optional(),
+    subjects:z.array(VisualSubject).min(1).max(8).optional(),
   }).strict()).min(4).max(14),
   character_notes: z.string().trim().min(10).max(3000),
 }).strict().superRefine((plan, ctx) => {
@@ -55,6 +59,8 @@ export const Storyboard = z.object({
     });
   }
   plan.shots.forEach((shot, i) => {
+    if(plan.depiction_version===1 && !shot.subjects?.length)ctx.addIssue({code:'custom',path:['shots',i,'subjects'],message:'list the concrete people, animals, objects or processes that must actually appear in this shot'});
+    if(shot.subjects && new Set(shot.subjects.map(subject=>subject.id)).size!==shot.subjects.length)ctx.addIssue({code:'custom',path:['shots',i,'subjects'],message:'subject ids must be unique within a shot'});
     if (plan.story_mode !== 'general' && !shot.characters.length) ctx.addIssue({code:'custom',path:['shots',i,'characters'],message:'name stories require a character in every shot'});
     if (new Set(shot.characters).size !== shot.characters.length) {
       ctx.addIssue({ code: 'custom', path: ['shots', i, 'characters'], message: 'character names must be unique within a shot' });
@@ -62,6 +68,24 @@ export const Storyboard = z.object({
   });
 });
 export type StoryboardT = z.infer<typeof Storyboard>;
+
+/** Stored presenter policy controls the new contract; old checkpoint plans stay compatible. */
+export function withDepictionPolicy<T extends Record<string,any>>(plan:T,enabled:boolean):T {
+  const result={...plan};delete result.depiction_version;
+  return enabled?{...result,depiction_version:1}:result;
+}
+
+/** Drawing acknowledgements aid preview review; they do not prove semantic image contents. */
+export function depictionProblems(shot:StoryboardT['shots'][number],scene:{depicted_subjects?:unknown},enabled:boolean):string[]{
+  if(!enabled)return [];
+  const parsed=DepictedSubjects.safeParse(scene.depicted_subjects);
+  if(!parsed.success)return [`storyboard ${shot.seg}: draw every planned subject and provide depicted_subjects with its exact subject ids`];
+  const actual=parsed.data,expected=(shot.subjects||[]).map(subject=>subject.id),errors:string[]=[];
+  if(new Set(actual).size!==actual.length)errors.push(`storyboard ${shot.seg}: depicted_subjects must not contain duplicates`);
+  for(const id of expected)if(!actual.includes(id))errors.push(`storyboard ${shot.seg}: missing depicted subject ${id}; draw the actual example, not only its label`);
+  for(const id of actual)if(!expected.includes(id))errors.push(`storyboard ${shot.seg}: depicted subject ${id} is not in the saved shot`);
+  return errors;
+}
 
 const SegmentRevision = z.object({
   seg: Id,
@@ -73,6 +97,7 @@ const SegmentRevision = z.object({
   characters: z.array(Name).max(4).optional(),
   continuity:ShotContinuity.optional(),
   motion_beats:z.array(MotionBeat).min(2).max(5).optional(),
+  subjects:z.array(VisualSubject).min(1).max(8).optional(),
 }).strict().refine(change => Object.keys(change).length > 1, 'include at least one changed narration or shot field');
 const StoryRevision = z.object({segments:z.array(SegmentRevision).min(1).max(14)}).strict();
 
@@ -150,7 +175,7 @@ export function personCalls(code: string): string[] {
 
 export function validateStoryboardDraft(plan: StoryboardT, draft: {
   script: { id: string; text: string; beat?: string }[];
-  scenes: { seg: string; type: string; code?: string }[];
+  scenes: { seg: string; type: string; code?: string;depicted_subjects?:unknown }[];
   cast: { name: string }[];
   storyboard?: unknown;
   recurring_character?: boolean;
@@ -176,6 +201,7 @@ export function validateStoryboardDraft(plan: StoryboardT, draft: {
     const scene = draft.scenes.find(s => s.seg === shot.seg);
     if (!scene) { errors.push(`storyboard ${shot.seg}: missing scene`); continue; }
     if (scene.type !== 'custom') errors.push(`storyboard ${shot.seg}: every scene must be custom, including the opening`);
+    errors.push(...depictionProblems(shot,scene,plan.depiction_version===1));
     const drawn = personCalls(scene.code || '');
     for (const name of shot.characters) {
       if (!names.has(name)) errors.push(`storyboard ${shot.seg}: character "${name}" is not in cast`);

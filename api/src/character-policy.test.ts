@@ -6,7 +6,7 @@ import {Hono} from 'hono';
 import {parseRecurringCharacter,parsePresenterKind,withCharacterPolicy,referencePresenterProblem,characterPolicyPrompt} from './character-policy.js';
 process.env.MOTION_LLM_PROVIDER='openai';process.env.OPENAI_API_KEY='mock-key';
 process.env.MOTION_OPENAI_WEB_SEARCH='true';delete process.env.FIRECRAWL_API_KEY;
-const {registerStudio,Draft,checkDraft}=await import('./studio.js');
+const {registerStudio,Draft,checkDraft,systemPrompt}=await import('./studio.js');
 const db=new PGlite();after(()=>db.close());
 
 function generalDraft(recurring=false){
@@ -25,12 +25,24 @@ test('stored recurring policy overrides model flags, requires first reference, a
   assert.match(referencePresenterProblem(plan,true,'first')!,/missing from: b/);assert.equal(referencePresenterProblem(plan,false,'first'),null);
   const prompt=characterPolicyPrompt(true);assert.match(prompt,/Invent ONE fictional/);assert.match(prompt,/without asking the owner for a name or photo/);assert.match(prompt,/opening frame zero/);assert.match(prompt,/EVERY shot/);assert.match(prompt,/named experts remain attribution/);
   assert.match(characterPolicyPrompt(true,'อ้างอิงแรก'),/first selected reference character "อ้างอิงแรก"/);
-  assert.equal(parsePresenterKind(undefined),'cat');assert.equal(parsePresenterKind(undefined,'legacy'),'legacy');
+  assert.equal(parsePresenterKind(undefined),'context');assert.equal(parsePresenterKind('context'),'context');assert.equal(parsePresenterKind(undefined,'legacy'),'legacy');
   for(const bad of [null,'human',true,{}])assert.throws(()=>parsePresenterKind(bad));
-  assert.match(prompt,/orange tabby CAT/);assert.match(prompt,/cream muzzle/);assert.match(prompt,/whiskers, paws and tail/);assert.match(prompt,/SAME blue hoodie/);assert.match(prompt,/not a human with cat ears/);assert.match(prompt,/never substitute the generic c.cat/);
+  assert.match(prompt,/Choose a person or animal because it fits the story/);assert.doesNotMatch(prompt,/orange tabby|blue hoodie/);
+  const catPrompt=characterPolicyPrompt(true,undefined,'cat');assert.match(catPrompt,/orange tabby CAT/);assert.match(catPrompt,/cream muzzle/);assert.match(catPrompt,/whiskers, paws and tail/);assert.match(catPrompt,/SAME blue hoodie/);assert.match(catPrompt,/not a human with cat ears/);assert.match(catPrompt,/never substitute the generic c.cat/);
+  const context=characterPolicyPrompt(false);assert.match(context,/people, animals, objects or character-free/);assert.match(context,/Draw the example itself/);assert.match(context,/need not appear in unrelated scenes/);assert.doesNotMatch(context,/orange tabby|blue hoodie|Invent ONE/);
   const legacy=characterPolicyPrompt(true,undefined,'legacy');assert.match(legacy,/Invent ONE fictional cartoon presenter suited to this topic/);assert.doesNotMatch(legacy,/orange tabby|blue hoodie/);
   const reference=characterPolicyPrompt(true,'อ้างอิงแรก','cat');assert.match(reference,/first selected reference/);assert.doesNotMatch(reference,/orange tabby|blue hoodie/);
   assert.doesNotMatch(characterPolicyPrompt(false,undefined,'cat'),/orange tabby|Invent ONE/);
+});
+
+test('general direction cuts to concrete examples with relevant characters instead of requiring one fixed set or cat',()=>{
+  const prompt=systemPrompt({fc:false,ws:true},'general',1);
+  assert.match(prompt,/choose people, animals, objects, environments/);
+  assert.match(prompt,/Vary scene settings, framing, scale and relevant characters/);
+  assert.match(prompt,/Cut to the concrete example or demonstration/);
+  assert.match(prompt,/Do not lock the whole clip to one background/);
+  const nameSeries=systemPrompt({fc:false,ws:true},'name_story',1);assert.match(nameSeries,/whenever that character appears and show only characters relevant to that shot/);assert.doesNotMatch(nameSeries,/reuse each cast member's portrait_code in every shot/);
+  assert.doesNotMatch(prompt,/Every custom scene must actually draw at least one named cast member|Keep the background consistent across connected shots|Preserve the same identity throughout the episode; reuse each cast member's portrait_code in every shot/);
 });
 
 test('final draft validation requires common presenter in cast and real direct drawing, while OFF accepts no people',()=>{
@@ -100,7 +112,7 @@ test('routes persist opt-in with no name/photo, preserve first reference order a
   }finally{globalThis.setTimeout=nativeTimeout;}
 });
 
-test('cat default applies only to new drafts or explicit changes, preserving migrated legacy presenter checkpoints',async()=>{
+test('context default applies to new work while omitted retries preserve legacy and explicit cat checkpoints',async()=>{
   const oldDb=new PGlite();
   const oldId='10000000-0000-0000-0000-000000000088';
   const oldDraft=generalDraft(true),oldArt={art:oldDraft.art,cast:oldDraft.cast,scenes:oldDraft.scenes};
@@ -123,21 +135,29 @@ test('cat default applies only to new drafts or explicit changes, preserving mig
     await oldDb.query("UPDATE drafts SET status='failed' WHERE id=$1",[retryId]);
     const changed=await send(path+'/'+retryId+'/rewrite',{presenter_kind:'cat'},'legacy-min-to-cat');assert.equal(changed.status,201);const catId=(await changed.json()).id;
     const cat:any=(await oldDb.query('SELECT * FROM drafts WHERE id=$1',[catId])).rows[0];assert.equal(cat.presenter_kind,'cat');assert.equal(cat.storyboard,null);assert.equal(cat.artwork,null);
+    // An ordinary retry of an explicit cat checkpoint keeps its old art; opting into context clears that art.
+    await oldDb.query("UPDATE drafts SET status='failed',director_version=0,storyboard=$2,artwork=$3 WHERE id=$1",[catId,JSON.stringify(oldDraft.storyboard),JSON.stringify(oldArt)]);
+    const catRetry=await send(path+'/'+catId+'/rewrite',{},'saved-cat-retry-001');assert.equal(catRetry.status,201);const catRetryId=(await catRetry.json()).id;
+    const catResumed:any=(await oldDb.query('SELECT * FROM drafts WHERE id=$1',[catRetryId])).rows[0];assert.equal(catResumed.presenter_kind,'cat');assert.equal(catResumed.recurring_character,true);assert.deepEqual(catResumed.storyboard,oldDraft.storyboard);assert.deepEqual(catResumed.artwork,oldArt);
+    await oldDb.query("UPDATE drafts SET status='failed' WHERE id=$1",[catRetryId]);
+    const contextRewrite=await send(path+'/'+catRetryId+'/rewrite',{presenter_kind:'context',recurring_character:false},'cat-to-story-context');assert.equal(contextRewrite.status,201);const contextId=(await contextRewrite.json()).id;
+    const contextRow:any=(await oldDb.query('SELECT * FROM drafts WHERE id=$1',[contextId])).rows[0];assert.equal(contextRow.presenter_kind,'context');assert.equal(contextRow.recurring_character,false);assert.equal(contextRow.storyboard,null);assert.equal(contextRow.artwork,null);assert.equal(contextRow.source_text,'ต้นฉบับเดิม');
+    const noHost=await send(path,{topic:'ฝนตกเกิดจากอะไร',story_mode:'general'},'new-context-no-host');assert.equal(noHost.status,201);const noHostRow:any=(await oldDb.query('SELECT * FROM drafts WHERE id=$1',[(await noHost.json()).id])).rows[0];assert.equal(noHostRow.presenter_kind,'context');assert.equal(noHostRow.recurring_character,false);
     const body={topic:'แมวอธิบายเรื่องแก้วน้ำ',story_mode:'general',recurring_character:true,characters:[],auto_produce:false};
     const created=await send(path,body,'new-cat-default-001');assert.equal(created.status,201);const newId=(await created.json()).id;
-    const detail:any=await(await app.request(path+'/'+newId)).json();assert.equal(detail.presenter_kind,'cat');assert.equal(detail.has_character_reference,false);
-    const listing:any=await(await app.request(path)).json();assert.equal(listing.drafts.find((d:any)=>d.id===newId).presenter_kind,'cat');
+    const detail:any=await(await app.request(path+'/'+newId)).json();assert.equal(detail.presenter_kind,'context');assert.equal(detail.has_character_reference,false);
+    const listing:any=await(await app.request(path)).json();assert.equal(listing.drafts.find((d:any)=>d.id===newId).presenter_kind,'context');
     assert.equal((await send(path,{...body,presenter_kind:'legacy'},'new-cat-default-001')).status,409);
     assert.equal((await send(path,{...body,presenter_kind:'human'},'new-cat-invalid-001')).status,422);
     assert.equal((await send(path+'/'+newId+'/rewrite',{presenter_kind:null},'cat-rewrite-invalid')).status,422);
-    // Turning recurring mode ON for an older character-free story adopts the current cat default.
+    // Turning recurring mode ON for an older character-free story adopts the current context default.
     const offId='10000000-0000-0000-0000-000000000087';
     await oldDb.query("INSERT INTO drafts(id,topic,status,story_mode) VALUES($1,'เรื่องเก่าไม่มีตัวละคร','failed','general')",[offId]);
     const enabled=await send(path+'/'+offId+'/rewrite',{recurring_character:true},'old-off-turns-on');assert.equal(enabled.status,201);const enabledId=(await enabled.json()).id;
-    const enabledRow:any=(await oldDb.query('SELECT * FROM drafts WHERE id=$1',[enabledId])).rows[0];assert.equal(enabledRow.presenter_kind,'cat');assert.equal(enabledRow.recurring_character,true);
+    const enabledRow:any=(await oldDb.query('SELECT * FROM drafts WHERE id=$1',[enabledId])).rows[0];assert.equal(enabledRow.presenter_kind,'context');assert.equal(enabledRow.recurring_character,true);
     const referenceId='20000000-0000-0000-0000-000000000087';await oldDb.query("INSERT INTO characters(id,name,look) VALUES($1,'รูปเจ้าของ','{}')",[referenceId]);
     const refCreated=await send(path,{...body,characters:[referenceId]},'cat-reference-wins');assert.equal(refCreated.status,201);const refId=(await refCreated.json()).id;
-    const refDetail:any=await(await app.request(path+'/'+refId)).json();assert.equal(refDetail.presenter_kind,'cat');assert.equal(refDetail.has_character_reference,true);
+    const refDetail:any=await(await app.request(path+'/'+refId)).json();assert.equal(refDetail.presenter_kind,'context');assert.equal(refDetail.has_character_reference,true);
     await oldDb.query("UPDATE drafts SET status='ready',draft=$2 WHERE id=$1",[oldId,JSON.stringify(oldDraft)]);
     assert.equal((await send(path+'/'+oldId,{presenter_kind:'cat'},'ready-kind-change','PATCH')).status,422);
     assert.equal((await send(path+'/'+oldId,{presenter_kind:null},'ready-kind-invalid','PATCH')).status,422);

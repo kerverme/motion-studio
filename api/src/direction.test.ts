@@ -50,7 +50,7 @@ test('package preserves nth spoken cue and offset, exports direction review and 
   assert.ok(cues.some(cue=>cue.seg==='water'&&cue.n===1&&cue.offset===.25));
   assert.equal(pkg.direction?.version,1);assert.equal(pkg.direction?.motion_review,d.motion_review);assert.deepEqual(pkg.direction?.shots[0].motion_beats,d.storyboard!.shots[0].motion_beats);
   assert.equal(buildPackage('legacy',{...d,storyboard:{...d.storyboard!,direction_version:undefined}},[]).direction,undefined);
-  const prompt=systemPrompt({fc:false,ws:true},'general',1);assert.match(prompt,/one continuous causal story/);assert.match(prompt,/persistent setting/);assert.match(prompt,/two strong sources can be enough/);
+  const prompt=systemPrompt({fc:false,ws:true},'general',1);assert.match(prompt,/one continuous causal story/);assert.match(prompt,/varied scene changes/);assert.match(prompt,/two strong sources can be enough/);
   for(const old of ['Vary bg between consecutive scenes','a fresh fact, number or twist every few seconds','Prefer 3–7 strong sources'])assert.ok(!prompt.includes(old));
   assert.match(directionPrompt(),/Mouth motion, bobbing/);assert.match(directionPrompt(),/8–12/);
   assert.ok(!checkDraft(d,null,[{format:'mystery',types:['custom'],title:'Another story'}]).problems.some(p=>p.includes('choose a different format')));
@@ -76,7 +76,7 @@ test('persisted director version protects legacy checkpoints, upgrades new work 
     await db.query("UPDATE drafts SET status='failed' WHERE id=$1",[retryId]);
     const rewrite=await send(path+'/'+retryId+'/rewrite',{note:'เล่าเรื่องเดียวให้ต่อเนื่อง'},'new-direction-rewrite');assert.equal(rewrite.status,201);const rewriteId=(await rewrite.json()).id;
     const fresh:any=(await db.query('SELECT * FROM drafts WHERE id=$1',[rewriteId])).rows[0];assert.equal(fresh.director_version,1);assert.equal(fresh.storyboard,null);assert.equal(fresh.artwork,null);
-    const created=await send(path,{topic:'แก้วใบเดิมกับเงา',story_mode:'general',director_version:0},'new-direction-create');assert.equal(created.status,201);const id=(await created.json()).id;
+    const created=await send(path,{topic:'แก้วใบเดิมกับเงา',story_mode:'general',presenter_kind:'legacy',director_version:0},'new-direction-create');assert.equal(created.status,201);const id=(await created.json()).id;
     assert.equal((await(await app.request(path+'/'+id)).json()).director_version,1,'client cannot downgrade new work');
     await db.query("UPDATE drafts SET status='failed',storyboard=$2,artwork=$3 WHERE id=$1",[id,JSON.stringify(good.storyboard),JSON.stringify(oldArt)]);
     const matching=await send(path+'/'+id+'/rewrite',{},'new-direction-retry');assert.equal(matching.status,201);const matchingId=(await matching.json()).id;

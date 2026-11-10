@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { personCalls, type StoryboardT } from './storyboard.js';
+import { personCalls, DepictedSubjects, depictionProblems, type StoryboardT } from './storyboard.js';
 
 const Name = z.string().trim().min(1).max(20);
 const Id = z.string().regex(/^[a-z0-9_]{1,24}$/);
@@ -13,7 +13,7 @@ const Character = z.object({
   portrait_code: DrawingCode(9000),
   portrait_description: z.string().trim().min(1).max(2500),
 }).passthrough();
-const Scene = z.object({ seg: Id, type: z.literal('custom'), code: DrawingCode(6000) }).passthrough();
+const Scene = z.object({ seg: Id, type: z.literal('custom'), code: DrawingCode(6000),depicted_subjects:DepictedSubjects.optional() }).passthrough();
 export const Artwork = z.object({ art: z.string().max(9000), art_saved: z.boolean().optional(), cast: z.array(Character).max(4), scenes: z.array(Scene).max(14) });
 export type ArtworkState = z.infer<typeof Artwork>;
 
@@ -38,6 +38,7 @@ export const ARTWORK_TOOLS = [
     input_schema: { type: 'object', required: ['scene'], additionalProperties: false, properties: {
       scene: { type: 'object', required: ['seg', 'type', 'code'], properties: {
         seg: { type: 'string', maxLength: 24 }, type: { type: 'string', enum: ['custom'] }, code: { type: 'string', maxLength: 6000 },
+        depicted_subjects:{type:'array',maxItems:8,items:{type:'string',pattern:'^[a-z0-9_]{1,24}$'},description:'For a shot with subjects: exact ids of subjects actually drawn. A label or pointing presenter is insufficient. Check the rendered images before final approval.'},
       }, additionalProperties: true },
     } },
   },
@@ -51,6 +52,8 @@ function assertPlanReferences(state: ArtworkState, plan: StoryboardT) {
   for (const scene of state.scenes) {
     const shot = plan.shots.find(s => s.seg === scene.seg);
     if (!shot) throw new Error(`scene ${scene.seg} is not in the storyboard`);
+    const depictions=depictionProblems(shot,scene,plan.depiction_version===1);
+    if(depictions.length)throw new Error(depictions.join('; '));
     const drawn = personCalls(scene.code);
     for (const name of shot.characters) if (!drawn.includes(name)) throw new Error(`scene ${scene.seg}: draw planned character ${name} with a direct c.person call`);
     for (const name of drawn) if (!names.has(name)) throw new Error(`scene ${scene.seg}: unknown storyboard character ${name}`);
@@ -98,6 +101,10 @@ export function reconcileArtwork(oldPlan: StoryboardT | null, newPlan: Storyboar
     const oldLine = oldPlan?.script.find(line => line.id === seg);
     const newLine = newPlan.script.find(line => line.id === seg);
     return !!oldShot && !!newShot && !!oldLine && !!newLine &&
+      oldPlan?.depiction_version===newPlan.depiction_version &&
+      JSON.stringify(oldShot.subjects)===JSON.stringify(newShot.subjects) &&
+      JSON.stringify(oldShot.motion_beats)===JSON.stringify(newShot.motion_beats) &&
+      JSON.stringify(oldShot.continuity)===JSON.stringify(newShot.continuity) &&
       oldShot.visual === newShot.visual && oldShot.action === newShot.action && oldShot.camera === newShot.camera &&
       oldShot.characters.length === newShot.characters.length && oldShot.characters.every((name, i) => name === newShot.characters[i]) &&
       oldLine.text === newLine.text && oldLine.beat === newLine.beat;

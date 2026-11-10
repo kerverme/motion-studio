@@ -13,7 +13,7 @@ import { openaiResponse, networkCode } from './openai-response.js';
 import { Artwork, emptyArtwork, reconcileArtwork, updateArtwork, mergeArtwork, artworkComplete, ARTWORK_TOOLS, type ArtworkState } from './art-batches.js';
 import { BudgetedFirecrawl, PgResearchBudget, ResearchBudgetError } from './firecrawl-budget.js';
 import { extractWebEvidence, verifySources, searchWeb, sourceKey } from './source-evidence.js';
-import { Storyboard, reviseStoryboard, validateStoryboardDraft, personCalls, type StoryboardT } from './storyboard.js';
+import { Storyboard, reviseStoryboard, validateStoryboardDraft, personCalls, withDepictionPolicy, type StoryboardT } from './storyboard.js';
 import { draftRequest } from './draft-request.js';
 import { NARRATION_STYLES, SOURCE_TEXT_LIMIT, SOURCE_READ_LIMIT, parseNarration, parseSourceText, narrationPrompt, sourceMaterialBlock, readSourceMaterial } from './narration.js';
 import { parseRecurringCharacter, parsePresenterKind, withCharacterPolicy, referencePresenterProblem, characterPolicyPrompt, type PresenterKind } from './character-policy.js';
@@ -356,7 +356,7 @@ No fixed scene layouts or preset sets. Vary shot scale, framing, setting, blocki
 Define 1–4 people in "cast", each with "name", "portrait_description" and "portrait_code". Call c.person("name", x, y, size, mood, talk) in scenes.
 Draw a distinct face AND full body, not a generic chibi with different clothes. For uploaded people, study the labelled reference image: face silhouette, jaw/chin,
 relative eye spacing and shape, brows, nose, lips, ears, hairline, hair volume, glasses, body proportions, clothes, colours and visible distinguishing details.
-Preserve the same identity throughout the episode; reuse each cast member's portrait_code in every shot. Do not infer identity, ethnicity, health or hidden details.
+Preserve the same identity throughout the episode; reuse each cast member's portrait_code whenever that character appears and show only characters relevant to that shot. Do not infer identity, ethnicity, health or hidden details.
 Likeness is a stylised interpretation, not a guaranteed exact copy. Describe uncertainty where the reference is small or obscured.
 portrait_code (≤9000 chars) is standalone Python def draw(c,t,p): using the same canvas shapes below. Canonical head centre (0,0), head width about 200,
 full silhouette within x=-160..160, y=-140..370, feet near y=370. Draw on transparency (no background); c.person/c.cat/c.grad are forbidden inside portraits.
@@ -450,12 +450,13 @@ Reply only through tools.`;
     const end = prompt.indexOf('## Pace', start);
     prompt = prompt.slice(0,start) + `## General storytelling mode
 Open with a question, surprising supported fact or a problem about THIS topic. Never invent a person's nickname or ask how many people share it.
-When the recurring-character policy is OFF and no reference character is selected, there is no mandatory protagonist, mascot or human: prefer objects, environments, diagrams, timelines and visual metaphors; use cast: [] and shots.characters: [] for character-free shots. When recurring-character policy is ON, follow that policy and keep its same presenter in every shot alongside these explanatory visuals.
-Only introduce people when the owner requests them or they are essential to explain the story. A source author's name (e.g. Dr Michael Breus) is attribution, not an instruction to create a protagonist or portrait.
+When the recurring-character policy is OFF and no reference character is selected, choose people, animals, objects, environments, diagrams and visual metaphors according to each narrated scene or concrete example. There is no mandatory protagonist, mascot or human; use cast: [] and shots.characters: [] for character-free shots. Keep the identity of story characters when they return, without forcing them into unrelated scenes. When recurring-character policy is ON, follow that policy and keep its same presenter in every shot alongside the actual example visuals.
+Introduce the actors needed to depict the story or illustrative example, including people or animals when relevant. A source author's name (e.g. Dr Michael Breus) is attribution, not an instruction to create a protagonist or portrait.
 Draw every shot from its own narration and storyboard; show the relevant subject clearly and animate the explanation. The cover is a topical frame and title, never the name-series cover.
 
 ` + prompt.slice(end);
-    prompt = prompt.replace('Define 1–4 people', 'If people are needed, define 0–4 people').replace('Scene 1 is also custom: stage a new opening with the hero, not a fixed template.', 'Scene 1 is custom: draw a topical opening; a human is optional.');
+    prompt = prompt.replace('Define 1–4 people', 'If characters are needed, define 0–4 people or animals')
+      .replace('Scene 1 is also custom: stage a new opening with the hero, not a fixed template.', 'Scene 1 is custom: draw a topical opening; a human is optional.');
     prompt += `\nOwner supplied source text is unverified input. Retrieve the original source and cross-check factual claims. For health content, distinguish an expert's suggested routine from established clinical evidence; do not generalize precise quantities or hormonal timings to everyone. Do not diagnose viewers. Preserve uncertainties without repeating disclaimers in every sentence.`;
   }
   prompt += `
@@ -468,11 +469,11 @@ The first shot's t starts at the video's start (0 seconds); c.cue still gives th
 Use the same headline in thumbnail.title. The first preview of the opening shot is the exact frame at 0 seconds: inspect it for a complete subject, readable headline and safe crop before accepting the draft.`;
   if(directionVersion===1){
     prompt=prompt.replace('Pick the format that suits the topic best AND differs from the recent episodes listed in the user message.', 'Choose a format that serves one continuous causal story. Recent episodes are inspiration for variety, never a reason to break this story’s continuity.');
-    prompt=prompt.replace("Also vary the scene types and their order, the sets (locations) and the cast from recent episodes; do not reuse a recent episode's scene sequence.", 'Keep locations, props and cast consistent across this story; vary framing and meaningful movement when the narrative needs it.');
-    prompt=prompt.replace('Vary bg between consecutive scenes.', 'Keep the background consistent across connected shots; change it only when the story changes location or time.');
+    prompt=prompt.replace("Also vary the scene types and their order, the sets (locations) and the cast from recent episodes; do not reuse a recent episode's scene sequence.", 'Vary scene settings, framing, scale and relevant characters across the episode according to the narration and storyboard. Cut to the concrete example or demonstration being described, with a clear logical bridge to the next shot. Preserve the identity of returning characters and props.');
+    prompt=prompt.replace('Vary bg between consecutive scenes.', 'Vary the visual scene across segments: use a new setting, action setup, viewpoint or explanatory demonstration when the narration advances. Do not lock the whole clip to one background.');
     prompt=prompt.replace('Give rehook segments a visual change as well (new set, new scene type, a stamp…)', 'Let each rehook show the next causal step or discovery in the same central question');
     prompt=prompt.replace('repetition, a fresh fact, number or twist every few seconds.', 'repetition. Advance the same question with a consequence, attempt or discovery every few seconds; do not switch to unrelated facts or statistics.');
-    prompt=prompt.replace('Do not paste a static portrait on the same background throughout.', 'Keep the same setting when appropriate, but animate meaningful gestures and prop interactions instead of a static portrait.');
+    prompt=prompt.replace('Do not paste a static portrait on the same background throughout.', 'Draw the concrete example in its own setting and animate its relevant actors, props and actions. A standing presenter next to a card does not replace the narrated example.');
     prompt=prompt.replace('Sources may only be URLs you actually retrieved. Prefer 3–7 strong sources.', 'Sources may only be URLs you actually retrieved. Use the minimum credible original sources needed to support the factual claims; two strong sources can be enough. Do not pad references or read publication years aloud just to satisfy a quota. Clearly labelled fictional events in an example are hypothetical, not additional empirical claims requiring invented citations.');
     const soundStart=prompt.indexOf('## Sound\n'),soundEnd=prompt.indexOf('## Custom scene art',soundStart);
     prompt=prompt.slice(0,soundStart)+`## Sound\nUse the motivated sound-design policy below. Cached library effects: ${Object.keys(SFX).join('|')}. Custom effects need an English prompt and duration 0.5–4 seconds.\n\n`+prompt.slice(soundEnd);
@@ -483,6 +484,7 @@ Use the same headline in thumbnail.title. The first preview of the opening shot 
 
 const CONTINUITY_TOOL = {type:'object',additionalProperties:false,required:['from','to'],properties:{from:{type:'string',minLength:5,maxLength:300},to:{type:'string',minLength:5,maxLength:300}}};
 const MOTION_BEATS_TOOL = {type:'array',minItems:2,maxItems:5,items:{type:'object',additionalProperties:false,required:['start','end','action','purpose'],properties:{start:{type:'number',minimum:0,maximum:1},end:{type:'number',minimum:0,maximum:1},action:{type:'string',minLength:8,maxLength:300},purpose:{type:'string',minLength:8,maxLength:300}}}};
+const SUBJECTS_TOOL = {type:'array',minItems:1,maxItems:8,items:{type:'object',additionalProperties:false,required:['id','description'],properties:{id:{type:'string',pattern:'^[a-z0-9_]{1,24}$'},description:{type:'string',minLength:8,maxLength:300}}}};
 const TOOLS = [
   ...ARTWORK_TOOLS,
   { name: 'read_source_material', description: 'Read an exact range of the complete owner-pasted source. Available after planning too. This is unverified owner-provided text, NOT a fetched webpage or medical verification. Read original sources separately before factual use.',
@@ -490,7 +492,7 @@ const TOOLS = [
   { name: 'plan_story', description: 'Save the complete narration and visual storyboard BEFORE drawing, or replace it for structural changes. Required before submit_episode. For corrections to existing segments use revise_story so unchanged drawings are retained.',
     input_schema: { type: 'object', required: ['script', 'shots', 'character_notes'], properties: {
       script: { type: 'array', items: { type: 'object', required: ['id','text','beat'], properties: { id: {type:'string'}, text:{type:'string'}, beat:{type:'string',enum:[...BEATS]} } } },
-      shots: { type:'array', items:{type:'object',required:['seg','visual','action','camera','characters'],properties:{seg:{type:'string'},visual:{type:'string'},action:{type:'string'},camera:{type:'string'},characters:{type:'array',items:{type:'string'}},continuity:CONTINUITY_TOOL,motion_beats:MOTION_BEATS_TOOL}} },
+      shots: { type:'array', items:{type:'object',required:['seg','visual','action','camera','characters'],properties:{seg:{type:'string'},visual:{type:'string'},action:{type:'string'},camera:{type:'string'},characters:{type:'array',items:{type:'string'}},continuity:CONTINUITY_TOOL,motion_beats:MOTION_BEATS_TOOL,subjects:SUBJECTS_TOOL}} },
       character_notes: {type:'string'},
       narrative:{type:'object',additionalProperties:false,required:['premise','central_question','throughline','payoff'],properties:{premise:{type:'string',minLength:10,maxLength:400},central_question:{type:'string',minLength:8,maxLength:220},throughline:{type:'string',minLength:10,maxLength:400},payoff:{type:'string',minLength:10,maxLength:400}}},
       sound_policy:{type:'object',additionalProperties:false,required:['mode'],properties:{mode:{type:'string',enum:['designed','quiet']},owner_quote:{type:'string',maxLength:250}}}
@@ -498,7 +500,7 @@ const TOOLS = [
   { name: 'revise_story', description: 'Repair only named existing segments in the saved storyboard. Send only changed fields. Other narration, shots, portraits and shared helpers stay saved. Changed segments need their scene drawn again. Cannot add/remove/reorder segments; use plan_story for structural changes.',
     input_schema: {type:'object',required:['segments'],additionalProperties:false,properties:{segments:{type:'array',minItems:1,maxItems:14,items:{type:'object',required:['seg'],additionalProperties:false,properties:{
       seg:{type:'string',pattern:'^[a-z0-9_]{1,24}$'},text:{type:'string',minLength:3,maxLength:500},beat:{type:'string',enum:[...BEATS]},
-      visual:{type:'string',minLength:10,maxLength:1200},action:{type:'string',minLength:3,maxLength:600},camera:{type:'string',minLength:3,maxLength:300},characters:{type:'array',maxItems:4,items:{type:'string',minLength:1,maxLength:20}},continuity:CONTINUITY_TOOL,motion_beats:MOTION_BEATS_TOOL
+      visual:{type:'string',minLength:10,maxLength:1200},action:{type:'string',minLength:3,maxLength:600},camera:{type:'string',minLength:3,maxLength:300},characters:{type:'array',maxItems:4,items:{type:'string',minLength:1,maxLength:20}},continuity:CONTINUITY_TOOL,motion_beats:MOTION_BEATS_TOOL,subjects:SUBJECTS_TOOL
     }}}}} },
   {
     name: 'openai_search',
@@ -552,7 +554,7 @@ const TOOLS = [
 const Colour = z.union([z.string(), z.array(z.number().int().min(0).max(255)).length(3)]);
 export const Draft = z.object({
   recurring_character: z.boolean().optional(),
-  presenter_kind: z.enum(['legacy','cat']).optional(),
+  presenter_kind: z.enum(['legacy','cat','context']).optional(),
   story_mode: z.enum(['name_story','general']).optional(),
   storyboard: Storyboard.optional(),
   motion_review:z.string().trim().min(20).max(1500).optional(),
@@ -970,7 +972,7 @@ export function applyCast(d: DraftT, req: ReqChar[]): DraftT {
 
 function draftWithCharacterPolicy(d: Record<string, any>, enabled: boolean, presenterKind: PresenterKind, version:0|1=0, ownerNote=''): Record<string, any> {
   if(version===1 && !d.storyboard)throw new Error('directed draft requires a saved storyboard with narrative, continuity and motion beats');
-  return {...withCharacterPolicy(d, enabled), presenter_kind:presenterKind, ...(d.storyboard ? {storyboard:withDirectionPolicy(withCharacterPolicy(d.storyboard, enabled),version,ownerNote)} : {})};
+  return {...withCharacterPolicy(d, enabled), presenter_kind:presenterKind, ...(d.storyboard ? {storyboard:withDepictionPolicy(withDirectionPolicy(withCharacterPolicy(d.storyboard, enabled),version,ownerNote),presenterKind==='context')} : {})};
 }
 
 export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
@@ -1092,7 +1094,8 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const narration = parseNarration(row);
     const system = systemPrompt(active, storyMode, directionVersion) + '\n\n## Owner-selected narration style\n' + narrationPrompt(narration) + '\n\n## Recurring character policy\n' + characterPolicyPrompt(recurringCharacter, reqChars[0]?.name, presenterKind) +
       (sourceText ? '\nThe complete owner source is supplied for planning. Identify the sections and claims relevant to the chosen topic and preserve their caveats in the angle, narration and source metadata. After plan_story succeeds the raw source is removed from repeated drawing requests; the full original remains available through read_source_material. Do not claim the entire pasted document has been verified.' : '');
-    const conv = PROVIDER === 'openai' ? openaiConversation(system, userText, model, effort, active, (message) => log(id, message)) : anthropicConversation(system, userText, model, active);
+    const depictionInstructions = presenterKind==='context' ? '\n\n## Draw the storyboard examples\nEvery shot must list 1–8 concrete visual subjects in subjects [{id,description}]: include the people or animals, relevant objects, setting details, and the actual example or demonstration the narration describes. Give each a short unique ASCII id. Draw those subjects and actions visibly in the scene; labels, badges, a presenter pointing at a card, or a written description alone do not depict them. For a narrated example such as a child riding a bicycle, draw the child and bicycle in that situation. When draw_scene is complete, acknowledge only the subjects actually drawn in depicted_subjects using the exact planned ids. This acknowledgement is a checklist, not evidence: preview review must still confirm what the pictures show.' : '';
+    const conv = PROVIDER === 'openai' ? openaiConversation(system+depictionInstructions, userText, model, effort, active, (message) => log(id, message)) : anthropicConversation(system+depictionInstructions, userText, model, active);
     let sourceCompacted = false;
     const compactSource = () => {
       if (!sourceBlock || sourceCompacted) return;
@@ -1106,7 +1109,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       if (photo) conv.show(`Reference for ${c.name}. Use only as visual reference for their bespoke face and body. ${ref.reference_image ? '' : 'Only a small legacy thumbnail is available: likeness is limited; do not invent hidden details.'}`, [photo]);
       else await log(id, `ไม่มีรูปอ้างอิงของ ${c.name} แล้ว ใช้รายละเอียดลักษณะที่บันทึกไว้`);
     }
-    let storyboard: StoryboardT | null = row.storyboard ? Storyboard.parse(withDirectionPolicy(withCharacterPolicy(row.storyboard, recurringCharacter), directionVersion, row.note || '')) : null;
+    let storyboard: StoryboardT | null = row.storyboard ? Storyboard.parse(withDepictionPolicy(withDirectionPolicy(withCharacterPolicy(row.storyboard, recurringCharacter), directionVersion, row.note || ''),presenterKind==='context')) : null;
     if (storyboard) { const problem = referencePresenterProblem(storyboard, recurringCharacter, reqChars[0]?.name); if (problem) throw new Error(problem); }
     let artwork: ArtworkState = row.artwork || emptyArtwork();
     active.drawing = !!storyboard;
@@ -1195,7 +1198,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
           } else if (u.name === 'plan_story' || u.name === 'revise_story') {
             if (u.name === 'revise_story' && !storyboard) throw new Error('Call plan_story before revising existing segments');
             const plan = u.name === 'revise_story' ? reviseStoryboard(storyboard!, u.input) :
-              Storyboard.parse(withDirectionPolicy(withCharacterPolicy({...u.input,...(storyMode === 'general' ? {story_mode:storyMode} : {})}, recurringCharacter),directionVersion,row.note || ''));
+              Storyboard.parse(withDepictionPolicy(withDirectionPolicy(withCharacterPolicy({...u.input,...(storyMode === 'general' ? {story_mode:storyMode} : {})}, recurringCharacter),directionVersion,row.note || ''),presenterKind==='context'));
             const referenceProblem = referencePresenterProblem(plan, recurringCharacter, reqChars[0]?.name);
             if (referenceProblem) throw new Error(referenceProblem);
             artwork = reconcileArtwork(storyboard, plan, artwork);
@@ -1263,6 +1266,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
                 pendingReview = JSON.stringify({art:d.art,cast:d.cast,scenes:d.scenes,script:d.script,style:d.style});
                 if (recurringCharacter && presenterKind === 'cat' && !reqChars.length) problems.push('CAT PRESENTER REVIEW: inspect every preview for the SAME recognisable orange tabby cat with a cream muzzle, visible cat ears, whiskers, paws and tail, and a blue hoodie. Reject a human with cat ears, a generic mascot substitution, inconsistent clothes or a different identity. Repair the named portrait or affected scene before accepting.');
                 problems.push('VISUAL REVIEW: the scene art compiled and rendered; its preview frames follow in the next message. The opening shot starts with an extra preview at exactly video time 0: verify the subject and headline are fully visible, readable and inside the crop-safe area; reject a blank or delayed entrance. Compare every face and body with the labelled original reference images, and every scene with the storyboard and narration. When recurring_character is enabled, verify the SAME main presenter is clearly visible in EVERY sampled frame including opening time zero, stays inside safe crop with a readable face, and makes meaningful gestures matching the narration; reject hidden/tiny decorative presenters, fade-outs, exits or identity changes. Inspect the final styled image for crushed facial details, merged eyes or mouth, doubled outlines, and Thai text strokes that merge or become unreadable; a successful render alone does not mean the image is acceptable. If something is wrong (the subject is unrecognisable, tiny, overlapping the text, off-topic, cut off, or loses detail after styling) fix the art and submit again; if all are good, submit the same episode again unchanged.');
+                if(presenterKind==='context')problems.push('DEPICTION REVIEW: inspect every scene against its planned visual subjects: '+JSON.stringify(d.storyboard?.shots.map(({seg,subjects})=>({seg,subjects})))+'. Verify that the concrete actors, objects, example setting and described action are visibly drawn. A matching depicted_subjects list, text label, badge, pointing presenter, successful render or pixel activity is not proof. Repair only the specific scene or portrait that omits or substitutes the narrated example, then resubmit.');
                 if(directionVersion===1)problems.push('MOTION REVIEW: inspect the filmstrips and per-scene sampling diagnostics below. Check each planned movement and the handoff to the next shot; mouth/bobbing/camera-only motion is not enough. Static windows are diagnostics, not semantic proof. Repair specific missing beats or explain intentional reading holds, then submit motion_review naming concrete segments and movements. Reports: '+JSON.stringify(ac.frames.map(({seg,motion})=>({seg,motion}))));
                 showImages = { text: 'Preview frames of your custom scenes (opening shot: video time 0, early, late; other shots: early, late). Scene ids in order: ' + ac.frames.map((f) => `${f.seg} (${f.images.length} frames${directionVersion===1?' + motion strip':''})`).join(', '), images: ac.frames.flatMap((f) => directionVersion===1?[...f.images,f.motion_strip!]:f.images) };
               }
@@ -1679,7 +1683,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const keepStyle = row.draft?.style && STYLES[row.draft.style] && row.style !== 'auto' ? row.draft.style : row.style || 'auto';
     const keepMusic = row.draft?.music_mode || row.music_mode || 'default';
     let narration: ReturnType<typeof parseNarration>, recurringCharacter: boolean, presenterKind: PresenterKind;
-    try { narration = parseNarration({narration_style:b.narration_style ?? row.narration_style, narration_custom:b.narration_custom ?? row.narration_custom}); recurringCharacter = b.recurring_character === undefined ? row.recurring_character === true : parseRecurringCharacter(b.recurring_character); presenterKind = parsePresenterKind(b.presenter_kind, recurringCharacter && row.recurring_character !== true ? 'cat' : parsePresenterKind(row.presenter_kind, 'legacy')); }
+    try { narration = parseNarration({narration_style:b.narration_style ?? row.narration_style, narration_custom:b.narration_custom ?? row.narration_custom}); recurringCharacter = b.recurring_character === undefined ? row.recurring_character === true : parseRecurringCharacter(b.recurring_character); presenterKind = parsePresenterKind(b.presenter_kind, recurringCharacter && row.recurring_character !== true ? 'context' : parsePresenterKind(row.presenter_kind, 'legacy')); }
     catch (e) { return c.json({error:e instanceof Error ? e.message : 'invalid narration'},422); }
     const previousNarration = parseNarration(row);
     const sameNarration = narration.narration_style === previousNarration.narration_style && narration.narration_custom === previousNarration.narration_custom;

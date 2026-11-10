@@ -17,10 +17,10 @@ const motionReview='The clock hand and light marker move to explain the cause; t
 const tool=(name:string,input:unknown,id:string)=>({type:'function_call',name,call_id:id,arguments:JSON.stringify(input)});
 const result=(body:any,id:string)=>body.input.find((item:any)=>item.type==='function_call_output'&&item.call_id===id)?.output||'';
 
-for(const legacy of [false,true])test(legacy
+for(const kind of ['directed','context','legacy']){const legacy=kind==='legacy',context=kind==='context';const testPlan=context?{...directedPlan,shots:directedPlan.shots.map(shot=>({...shot,subjects:[{id:'clock',description:'นาฬิกาและเข็มที่กำลังเคลื่อนเพื่ออธิบายตัวอย่าง'},{id:'marker',description:'จุดแสงที่เลื่อนแสดงจังหวะเวลาในแผนภาพ'}]}))}:directedPlan;const testScenes=context?scenes.map(scene=>({...scene,depicted_subjects:['clock','marker']})):scenes;test(legacy
   ? 'a saved legacy storyboard resumes without imposing directed sound or motion review'
-  : 'new directed story requires sound design and delivers motion reports and strips before readiness',async()=>{
-  const row={id:legacy?'10000000-0000-0000-0000-000000000095':'10000000-0000-0000-0000-000000000094',director_version:legacy?0:1,topic:'เรื่องนาฬิกาชีวิต',note:'อยากให้เล่าเรื่องต่อเนื่องด้วยภาพเข้าใจง่าย',story_mode:'general',characters:[],model:'gpt-6.1-sol',reasoning:'medium',style:'classic',auto_produce:false,...(legacy?{storyboard:structuredClone(basePlan),artwork:{art,art_saved:true,cast:[],scenes:structuredClone(scenes)}}:{})};
+  : context?'contextual story carries actual planned subjects through saved drawings and preview review': 'new directed story requires sound design and delivers motion reports and strips before readiness',async()=>{
+  const row={id:legacy?'10000000-0000-0000-0000-000000000095':'10000000-0000-0000-0000-000000000094',director_version:legacy?0:1,...(context?{presenter_kind:'context'}:{}),topic:'เรื่องนาฬิกาชีวิต',note:'อยากให้เล่าเรื่องต่อเนื่องด้วยภาพเข้าใจง่าย',story_mode:'general',characters:[],model:'gpt-6.1-sol',reasoning:'medium',style:'classic',auto_produce:false,...(legacy?{storyboard:structuredClone(basePlan),artwork:{art,art_saved:true,cast:[],scenes:structuredClone(scenes)}}:{})};
   let status='queued',calls=0,planWrites=0,artWrites=0,previews=0,fetchError:unknown,finalDraft:any,savedPlan:any=legacy?structuredClone(basePlan):null,artwork:any=legacy?structuredClone(row.artwork):null;
   const previewPayloads:any[]=[];
   let resolveDone!:()=>void;const done=new Promise<void>(resolve=>{resolveDone=resolve;});
@@ -49,13 +49,13 @@ for(const legacy of [false,true])test(legacy
     steps.push(body=>{
       assert.equal(planWrites,0);assert.equal(artWrites,0);assert.match(result(body,'forged-quiet'),/quiet|owner|เจ้าของ|quote/i);
       // The server supplies version one and the default designed policy even when omitted by the model.
-      return[{type:'web_search_call',status:'completed',action:{type:'open_page',url:'https://example.org/sleep'}},tool('plan_story',directedPlan,'planned')];
+      return[{type:'web_search_call',status:'completed',action:{type:'open_page',url:'https://example.org/sleep'}},tool('plan_story',testPlan,'planned')];
     });
     steps.push(()=>{
-      assert.equal(planWrites,1);assert.equal(savedPlan.direction_version,1);assert.equal(savedPlan.sound_policy.mode,'designed');assert.deepEqual(savedPlan.narrative,narrative);
+      assert.equal(planWrites,1);assert.equal(savedPlan.direction_version,1);assert.equal(savedPlan.sound_policy.mode,'designed');assert.deepEqual(savedPlan.narrative,narrative);if(context)assert.equal(savedPlan.depiction_version,1);
       return[tool('save_art',{art},'helpers')];
     });
-    for(const scene of scenes)steps.push(()=>[tool('draw_scene',{scene},'scene-'+scene.seg)]);
+    for(const scene of testScenes)steps.push(()=>[tool('draw_scene',{scene},'scene-'+scene.seg)]);
     steps.push(()=>[tool('submit_episode',{...metadata,sfx:[]},'missing-sound')]);
     steps.push(body=>{
       assert.equal(previews,0,'missing sound design must be repaired before visual review');
@@ -77,7 +77,7 @@ for(const legacy of [false,true])test(legacy
     });
   }
   steps.push(body=>{
-    assert.equal(status,'writing');assert.equal(previews,legacy?1:2);assert.match(result(body,'preview'),/VISUAL REVIEW/);
+    assert.equal(status,'writing');assert.equal(previews,legacy?1:2);assert.match(result(body,'preview'),/VISUAL REVIEW/);if(context){assert.match(result(body,'preview'),/DEPICTION REVIEW/);assert.match(result(body,'preview'),/clock/);assert.match(result(body,'preview'),/marker/);}
     const shown=body.input.filter((item:any)=>item.role==='user'&&Array.isArray(item.content)&&item.content[0]?.text?.startsWith('Preview frames'));
     assert.equal(shown.length,1);
     const images=shown[0].content.filter((part:any)=>part.type==='input_image');
@@ -101,12 +101,13 @@ for(const legacy of [false,true])test(legacy
   };
   globalThis.setTimeout=((fn:any,ms?:number,...args:any[])=>nativeTimeout(ms===8000?()=>{}:fn,ms===8000||ms===1500?0:ms,...args)) as typeof setTimeout;
   try{
-    registerStudio(new Hono(),pool as any,{guard:async(_c,next)=>next(),createJob:async()=>{throw new Error('must not produce')},estimateCredits:()=>100,validate:()=>[],researchFreshness:()=>[]});
+    registerStudio(new Hono(),pool as any,{guard:async(_c,next)=>next(),createJob:async()=>{throw new Error('must not produce')},estimateCredits:()=>100,validate:(pkg:any)=>{if(context)assert.deepEqual(pkg.direction.shots[0].subjects,savedPlan.shots[0].subjects);return[];},researchFreshness:()=>[]});
     await done;if(fetchError)throw fetchError;
     assert.equal(status,'ready');assert.equal(calls,steps.length);assert.equal(previews,legacy?2:3);assert.equal(finalDraft.storyboard.direction_version,legacy?undefined:1);
-    assert.equal(finalDraft.sfx.length,legacy?0:6);
+    assert.equal(finalDraft.sfx.length,legacy?0:6);if(context){assert.equal(finalDraft.presenter_kind,'context');assert.equal(finalDraft.recurring_character,undefined);assert.equal(finalDraft.storyboard.depiction_version,1);assert.ok(finalDraft.scenes.every((scene:any)=>scene.depicted_subjects.length===2));}
     if(!legacy){assert.equal(finalDraft.motion_review,motionReview);assert.deepEqual(finalDraft.storyboard.sound_policy,{mode:'designed'});assert.equal(new Set(finalDraft.sfx.map((cue:any)=>cue.sfx)).size,3);}
     else assert.deepEqual(finalDraft.storyboard,basePlan);
     assert.ok(previewPayloads.every(payload=>(payload.motion_review===true)===!legacy));
   }finally{clearTimeout(timeout);globalThis.fetch=nativeFetch;globalThis.setTimeout=nativeTimeout;}
 });
+}

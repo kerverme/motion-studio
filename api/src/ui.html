@@ -779,14 +779,14 @@ function studio(st, drafts){
   const useChars=h('input',{type:'checkbox','aria-label':'ใช้ตัวละครจากรูปในเรื่องทั่วไป'});
   const charChoice=h('label',{class:'check'},useChars,h('span',{},'ใช้ตัวละครจากรูป (ไม่บังคับ)'));
   const charsPanel=characterPanel();
-  const recurringCharacter=h('input',{type:'checkbox',checked:true,'aria-label':'มีตัวละครการ์ตูนช่วยเล่าทุกฉาก','aria-describedby':'recurring-character-default'});
-  try{recurringCharacter.checked=localStorage.getItem('ms.recurring_character')!=='false';}catch{}
-  recurringCharacter.addEventListener('change',()=>{try{localStorage.setItem('ms.recurring_character',String(recurringCharacter.checked));}catch{}});
-  const recurringPanel=h('div',{class:'chars','aria-label':'ตัวละครการ์ตูนช่วยเล่า'},
-    h('label',{class:'check'},recurringCharacter,h('span',{},'มีตัวละครการ์ตูนช่วยเล่าทุกฉาก')),
-    h('div',{class:'hint',id:'recurring-character-default'},h('b',{},'ค่าเริ่มต้น: แมวการ์ตูน'),' · AI จะออกแบบแมวช่วยอธิบายให้ ไม่ต้องกรอกชื่อหรืออัปโหลดรูป ใช้แมวตัวเดิมทำกิจกรรมและสาธิตให้เข้ากับเนื้อหาในแต่ละฉาก'),
-    h('div',{class:'hint'},'หากเปิด “ใช้ตัวละครจากรูป” และเลือกตัวละคร ระบบจะใช้ตัวละครจากรูปที่เลือกแทนแมว'),
-    h('div',{class:'hint'},'เมื่อเปิดตัวเลือกนี้และให้ AI เลือกสไตล์ภาพ ระบบจะใช้การ์ตูนเส้นเรียบ คุณยังเลือกสไตล์ภาพอื่นเองได้'));
+  const recurringCharacter=h('input',{type:'checkbox','aria-label':'ใช้ตัวละครหลักเดียวกันทุกฉาก','aria-describedby':'recurring-character-default'});
+  try{recurringCharacter.checked=localStorage.getItem('ms.recurring_character_context')==='true';}catch{}
+  recurringCharacter.addEventListener('change',()=>{try{localStorage.setItem('ms.recurring_character_context',String(recurringCharacter.checked));}catch{}});
+  const recurringPanel=h('div',{class:'chars','aria-label':'ตัวละครตามเนื้อเรื่อง'},
+    h('div',{class:'hint',id:'recurring-character-default'},h('b',{},'ค่าเริ่มต้น: ตัวละครตามเนื้อเรื่อง'),' · AI เลือกคน สัตว์ สิ่งของ และสถานที่ให้ตรงกับบท เปลี่ยนฉากตามจังหวะเรื่อง และวาดเหตุการณ์หรือตัวอย่างที่ระบุใน storyboard ลงในภาพ'),
+    h('label',{class:'check'},recurringCharacter,h('span',{},'ใช้ตัวละครหลักเดียวกันทุกฉาก (ไม่บังคับ)')),
+    h('div',{class:'hint'},'หากเปิด “ใช้ตัวละครจากรูป” ระบบจะใช้รูปที่เลือกเป็นอ้างอิงสำหรับตัวละครที่เกี่ยวข้องในเรื่อง'),
+    h('div',{class:'hint'},'เมื่อเปิดใช้ตัวละครหลักเดียวกันทุกฉากและให้ AI เลือกสไตล์ภาพ ระบบจะใช้การ์ตูนเส้นเรียบ คุณยังเลือกสไตล์ภาพอื่นเองได้'));
   const heroName = h('input',{class:'field',maxlength:14,'aria-label':'ชื่อตัวเอก',placeholder:'เช่น แบงค์ (ว่างไว้ให้ AI เลือกชื่อ)',style:'max-width:260px'});
   try{ heroName.value = sessionStorage.getItem('ms.hero')||''; }catch{}
   heroName.addEventListener('input',()=>{ try{ sessionStorage.setItem('ms.hero',heroName.value); }catch{} });
@@ -820,7 +820,7 @@ function studio(st, drafts){
   const go = h('button',{class:'btn primary',disabled:!ready,on:{click:async()=>{
     err.textContent=inputProblem();if(err.textContent)return; const general=modeSel.value==='general'; const t=general?(topic.value.trim()||sourceText.value.trim().slice(0,120)):openerTopic(heroName.value.trim(), topic.value.trim()); if (t.length<4){ err.textContent=general?'พิมพ์หัวข้อหรือเนื้อหาอย่างน้อย 4 ตัวอักษร':'ใส่ชื่อตัวเอก หรือพิมพ์เรื่องที่จะเล่าอย่างน้อย 4 ตัวอักษร'; topic.focus(); return; }
     go.disabled=true; go.textContent='กำลังส่ง…';
-    try{ const r=await draftPost('/app/api/studio/drafts',{topic:t,story_mode:modeSel.value,source_text:general?sourceText.value:'',narration_style:narrationSel.value,narration_custom:narrationSel.value==='custom'?narrationCustom.value.trim():'',recurring_character:general&&recurringCharacter.checked,presenter_kind:'cat',note:note.value,auto_produce:auto.checked,model:modelSel.value,reasoning:effSel?effSel.value:undefined,characters:general&&!useChars.checked?[]:selectedChars(),style:selectedStyle(),music_mode:selectedMusic()});
+    try{ const r=await draftPost('/app/api/studio/drafts',{topic:t,story_mode:modeSel.value,source_text:general?sourceText.value:'',narration_style:narrationSel.value,narration_custom:narrationSel.value==='custom'?narrationCustom.value.trim():'',recurring_character:general&&recurringCharacter.checked,presenter_kind:'context',note:note.value,auto_produce:auto.checked,model:modelSel.value,reasoning:effSel?effSel.value:undefined,characters:general&&!useChars.checked?[]:selectedChars(),style:selectedStyle(),music_mode:selectedMusic()});
       try{ sessionStorage.removeItem('ms.topic'); sessionStorage.removeItem('ms.hero'); sessionStorage.removeItem('ms.source_text'); sessionStorage.removeItem('ms.note'); }catch{} toast('เริ่มค้นข้อมูลแล้ว'); await load(); openDraft(r.id); }
     catch(x){ err.textContent=x.message; go.disabled=false; go.textContent='เริ่มค้นและเขียน'; } }}},'เริ่มค้นและเขียน');
   const heroGroup=h('label',{class:'sub'},'ชื่อตัวเอก ',heroName);
@@ -976,20 +976,21 @@ function openDraft(id){
     }
     function render(d){
       const dr = d.draft;
-      const presenterLabel=d.has_character_reference?'ตัวละครจากรูปที่เลือก':d.presenter_kind==='cat'?'แมวการ์ตูน':'ตัวละครตามร่างเดิม';
-      const head = [h('p',{class:'sub',style:'margin:0'},'หัวข้อ: '+d.topic+(d.note?' · แนวทาง: '+d.note:'')),h('p',{class:'sub',style:'margin:0'},'สไตล์การเล่า: '+narrationLabel(d.narration_style||'standard')+(d.narration_style==='custom'&&d.narration_custom?' · '+d.narration_custom:'')),d.story_mode==='general'?h('p',{class:'sub',style:'margin:0'},'ตัวละครการ์ตูนช่วยเล่าทุกฉาก: '+(d.recurring_character?'เปิด · '+presenterLabel:'ปิด')):'',d.source_text?h('details',{},h('summary',{},'เนื้อหาต้นทางที่เก็บไว้ ('+d.source_text.length.toLocaleString('th-TH')+' ตัวอักษร)'),h('pre',{style:'white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto;font:inherit;font-size:13px'},d.source_text)):'' ];
+      const presenterLabel=d.has_character_reference?'ตัวละครจากรูปที่เลือก':d.presenter_kind==='context'?'ตัวละครตามเนื้อเรื่อง':d.presenter_kind==='cat'?'แมวการ์ตูน':'ตัวละครตามร่างเดิม';
+      const head = [h('p',{class:'sub',style:'margin:0'},'หัวข้อ: '+d.topic+(d.note?' · แนวทาง: '+d.note:'')),h('p',{class:'sub',style:'margin:0'},'สไตล์การเล่า: '+narrationLabel(d.narration_style||'standard')+(d.narration_style==='custom'&&d.narration_custom?' · '+d.narration_custom:'')),d.story_mode==='general'?h('p',{class:'sub',style:'margin:0'},d.recurring_character?'ตัวละครหลักเดียวกันทุกฉาก: เปิด · '+presenterLabel:'ตัวละคร: '+(d.has_character_reference?'ใช้รูปที่เลือกเป็นอ้างอิงตามบท':'ตามเนื้อเรื่อง · วาดตัวอย่างตาม storyboard')):'',d.source_text?h('details',{},h('summary',{},'เนื้อหาต้นทางที่เก็บไว้ ('+d.source_text.length.toLocaleString('th-TH')+' ตัวอักษร)'),h('pre',{style:'white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto;font:inherit;font-size:13px'},d.source_text)):'' ];
       if (!dr || ['failed','queued','researching','writing'].includes(d.status)){
         put(body, head, h('h2',{class:'d-title'}, d.status==='failed'?'เขียนไม่สำเร็จ':'กำลังทำงาน…'),
           d.error?h('div',{class:'err'},d.error):'', d.problems&&d.problems.length&&d.status==='failed'?h('ul',{class:'probl'},d.problems.map(p=>h('li',{},p))):'',
           logList(d), usage(d),
           d.status==='failed'||d.status==='queued' ? h('div',{class:'actions'},
-            d.status==='failed'?h('button',{class:'btn primary',on:{click:()=>rewrite(d,'')}},'ลองใหม่'):'',
+            d.status==='failed'?h('button',{class:'btn primary',on:{click:()=>rewrite(d,d.note||'')}},'ลองใหม่'):'',
             h('button',{class:'btn quiet',on:{click:()=>discard(d)}},'ทิ้ง')) : '');
         return;
       }
       const editable = d.status==='ready';
       const title = h('input',{class:'field',value:dr.title_th,disabled:!editable,'aria-label':'ชื่อคลิป',style:'font-family:var(--serif);font-size:19px;font-weight:600'});
       const scenes = Object.fromEntries((dr.scenes||[]).map(s=>[s.seg,s]));
+      const plannedShots=Object.fromEntries((dr.storyboard&&dr.storyboard.shots||[]).map(shot=>[shot.seg,shot]));
       const segAreas = {};
       const onscreen = sc => { if(!sc) return ''; const bits=[]; const t=x=>x&&(x.text||x); 
         if(sc.headline) bits.push(t(sc.headline)); (sc.lines||[]).forEach(l=>bits.push(t(l))); if(sc.question) bits.push(t(sc.question));
@@ -1006,9 +1007,10 @@ function openDraft(id){
         const ta = h('textarea',{rows:2,disabled:!editable,'aria-label':'บทพูด '+s.id}); ta.value=s.text; segAreas[s.id]=ta;
         ta.addEventListener('input',()=>{ dirty=true; updChars(); save.disabled=false; });
         const sc = scenes[s.id];
+        const subjects=(plannedShots[s.id]&&plannedShots[s.id].subjects||[]).map(subject=>subject.description).filter(Boolean);
         const hot = s.beat==='hook'||s.beat==='rehook'||s.beat==='cta';
         return h('div',{class:'segc'}, h('div',{class:'top'}, h('span',{}, '~'+mmss(T0[s.id])+' · ', h('b',{style:hot?'color:var(--accent)':''}, BEAT[s.beat]||s.beat||''), ' · '+s.id),
-          h('span',{}, sc?(TPL[sc.type]||sc.type)+(sc.set?' · ฉาก '+sc.set:''):'')), ta, sc?h('div',{class:'scr'},'บนจอ: '+onscreen(sc)):'');
+          h('span',{}, sc?(TPL[sc.type]||sc.type)+(sc.set?' · ฉาก '+sc.set:''):'')), ta, sc?h('div',{class:'scr'},'บนจอ: '+onscreen(sc)):'',subjects.length?h('div',{class:'scr'},'ภาพในฉาก: '+subjects.join(' · ')):'');
       }));
       updChars();
       title.addEventListener('input',()=>{ dirty=true; save.disabled=false; });
@@ -1043,8 +1045,11 @@ function openDraft(id){
           await api('/app/api/studio/drafts/'+id+'/produce',{method:'POST',body:'{}'}); toast('ส่งเข้าคิวผลิตแล้ว ดูความคืบหน้าที่แท็บ "กำลังทำ"'); close(true); }
         catch(x){ err.replaceChildren(x.message, x.body&&x.body.problems?h('ul',{class:'probl'},x.body.problems.map(p=>h('li',{},p))):''); produce.disabled=false; produce.textContent=isComm?'อนุมัติและส่งผลิต':'ผลิตคลิปนี้'; } }}},isComm?'อนุมัติและส่งผลิต':'ผลิตคลิปนี้');
       const noteBox = h('textarea',{class:'field',rows:3,placeholder:'อยากให้แก้อะไร เช่น "ฮุคให้แรงกว่านี้ ตัดเรื่องโลกออก เพิ่มตัวเลขไทยปีล่าสุด"'});
+      const useStoryCharacters=h('input',{type:'checkbox','aria-label':'เปลี่ยนเป็นตัวละครตามเนื้อเรื่อง'});
+      const canChangeCharacterPolicy=d.story_mode==='general'&&(d.presenter_kind!=='context'||d.recurring_character);
       const rewriteBox = h('details',{}, h('summary',{},'สั่งเขียนใหม่พร้อมคำแนะนำ'), h('div',{style:'margin-top:10px;display:flex;flex-direction:column;gap:8px'}, noteBox,
-        h('div',{}, h('button',{class:'btn',on:{click:()=>rewrite(d, noteBox.value)}},'เขียนใหม่'))));
+        canChangeCharacterPolicy?h('label',{class:'check'},useStoryCharacters,h('span',{},'เปลี่ยนเป็นตัวละครตามเนื้อเรื่อง · AI เลือกตัวละครและวาดตัวอย่างใหม่ตาม storyboard')):'',
+        h('div',{}, h('button',{class:'btn',on:{click:()=>rewrite(d, noteBox.value,canChangeCharacterPolicy&&useStoryCharacters.checked?{presenter_kind:'context',recurring_character:false}:{})}},'เขียนใหม่'))));
       put(body, head,
         isComm ? h('div',{class:'note'}, h('b',{},'เรื่องจากผู้ชนะโหวต Community'), ' · ร่างนี้เขียนจากเรื่องที่ผู้ชมส่งมา ตรวจว่าไม่มีข้อมูลส่วนตัวหรือเนื้อหาที่ไม่เหมาะ แล้วกด “อนุมัติและส่งผลิต” (ระบบไม่ผลิตและไม่โพสต์เอง)') : '',
         title, dr.angle?h('p',{class:'sub',style:'margin:0'}, dr.angle):'',
@@ -1065,7 +1070,7 @@ function openDraft(id){
         editable ? h('div',{class:'d-sticky'}, h('button',{class:'btn quiet',on:{click:()=>discard(d)}},'ทิ้ง'), save, produce) : '');
     }
     let rewriting=false;
-    async function rewrite(d, note){ if(rewriting)return; rewriting=true; try{ const r=await draftPost('/app/api/studio/drafts/'+d.id+'/rewrite',{note}); toast('เริ่มเขียนใหม่'); close(true); openDraft(r.id); }catch(x){ toast(x.message); }finally{rewriting=false;} }
+    async function rewrite(d, note, options={}){ if(rewriting)return; rewriting=true; try{ const r=await draftPost('/app/api/studio/drafts/'+d.id+'/rewrite',{note,...options}); toast('เริ่มเขียนใหม่'); close(true); openDraft(r.id); }catch(x){ toast(x.message); }finally{rewriting=false;} }
     async function discard(d){ try{ await api('/app/api/studio/drafts/'+d.id+'/discard',{method:'POST',body:'{}'}); toast('ทิ้งร่างแล้ว'); close(true); }catch(x){ toast(x.message); } }
     put(body, h('div',{class:'sub'},'กำลังโหลด…'));
     refresh();
