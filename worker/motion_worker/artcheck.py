@@ -15,6 +15,7 @@ THUMB = (432, 768)
 def check(payload):
     from PIL import Image, ImageStat
     from motion_worker.preview import fake_timeline, scene_code
+    from motion_worker.motion_metrics import capture_motion
     from engine import render, templates, artkit
     script = [{'id': s['id'], 'text': s['text']} for s in payload['script']]
     scenes = [s for s in payload.get('scenes', []) if s.get('type') == 'custom']
@@ -22,6 +23,7 @@ def check(payload):
     out = {'scenes': []}
     tl = fake_timeline(script)
     segs = {s['id']: s for s in tl}
+    check_started = time.monotonic()
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, 'scenes.py')
         with open(path, 'w') as f:
@@ -59,6 +61,17 @@ def check(payload):
             if res['ms'] > 1800:
                 res['errors'].append(f'drawing is slow ({res["ms"]} ms per frame); use fewer shapes or smaller loops')
             out['scenes'].append(res)
+        if payload.get('motion_review'):
+            # Finish normal visual checks first; reserve time for encoding within the 120s subprocess limit.
+            motion_deadline = min(check_started + 105.0, time.monotonic() + 60.0)
+            for res in out['scenes']:
+                if res['errors'] or res['seg'] not in segs:
+                    continue
+                seg, s = res['seg'], segs[res['seg']]
+                origin = 0.0 if payload.get('opening_frame_cover') and seg == script[0]['id'] else s['s']
+                res['motion'], res['motion_strip'] = capture_motion(render, mod, seg, origin, s['e'] + 0.3, motion_deadline)
+                if res['motion'].get('error', '').startswith('temporal render failed:'):
+                    res['errors'].append(res['motion']['error'])
     return out
 
 

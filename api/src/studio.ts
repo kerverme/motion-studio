@@ -17,6 +17,7 @@ import { Storyboard, reviseStoryboard, validateStoryboardDraft, personCalls, typ
 import { draftRequest } from './draft-request.js';
 import { NARRATION_STYLES, SOURCE_TEXT_LIMIT, SOURCE_READ_LIMIT, parseNarration, parseSourceText, narrationPrompt, sourceMaterialBlock, readSourceMaterial } from './narration.js';
 import { parseRecurringCharacter, parsePresenterKind, withCharacterPolicy, referencePresenterProblem, characterPolicyPrompt, type PresenterKind } from './character-policy.js';
+import { directorVersion, withDirectionPolicy, directionProblems, directionPrompt, exportedDirection } from './direction.js';
 
 const env = process.env;
 const ANTHROPIC_URL = (env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/$/, '');
@@ -299,7 +300,7 @@ function openaiConversation(system: string, first: string, model: string, effort
   };
 }
 
-export function systemPrompt(a: Active, mode: 'name_story' | 'general' = 'name_story') {
+export function systemPrompt(a: Active, mode: 'name_story' | 'general' = 'name_story', directionVersion:0|1=0) {
   const d = nowBkk();
   const ce = d.getUTCFullYear(), be = ce + 543;
   let prompt = `You are the head writer and researcher of a Thai short-video channel. Series tag: "${SERIES_TAG}".
@@ -465,9 +466,23 @@ Draw a short readable Thai headline from t=0 with c.text, within x=100..980 and 
 Do not gate the subject/headline on c.cue, p, or positive t; no fade-in, scale-from-zero, blank lead-in or one-second still. Start subtle motion immediately and let narration run on its normal timeline.
 The first shot's t starts at the video's start (0 seconds); c.cue still gives the matching narration time. Other scenes use their normal local narration time.
 Use the same headline in thumbnail.title. The first preview of the opening shot is the exact frame at 0 seconds: inspect it for a complete subject, readable headline and safe crop before accepting the draft.`;
+  if(directionVersion===1){
+    prompt=prompt.replace('Pick the format that suits the topic best AND differs from the recent episodes listed in the user message.', 'Choose a format that serves one continuous causal story. Recent episodes are inspiration for variety, never a reason to break this story’s continuity.');
+    prompt=prompt.replace("Also vary the scene types and their order, the sets (locations) and the cast from recent episodes; do not reuse a recent episode's scene sequence.", 'Keep locations, props and cast consistent across this story; vary framing and meaningful movement when the narrative needs it.');
+    prompt=prompt.replace('Vary bg between consecutive scenes.', 'Keep the background consistent across connected shots; change it only when the story changes location or time.');
+    prompt=prompt.replace('Give rehook segments a visual change as well (new set, new scene type, a stamp…)', 'Let each rehook show the next causal step or discovery in the same central question');
+    prompt=prompt.replace('repetition, a fresh fact, number or twist every few seconds.', 'repetition. Advance the same question with a consequence, attempt or discovery every few seconds; do not switch to unrelated facts or statistics.');
+    prompt=prompt.replace('Do not paste a static portrait on the same background throughout.', 'Keep the same setting when appropriate, but animate meaningful gestures and prop interactions instead of a static portrait.');
+    prompt=prompt.replace('Sources may only be URLs you actually retrieved. Prefer 3–7 strong sources.', 'Sources may only be URLs you actually retrieved. Use the minimum credible original sources needed to support the factual claims; two strong sources can be enough. Do not pad references or read publication years aloud just to satisfy a quota. Clearly labelled fictional events in an example are hypothetical, not additional empirical claims requiring invented citations.');
+    const soundStart=prompt.indexOf('## Sound\n'),soundEnd=prompt.indexOf('## Custom scene art',soundStart);
+    prompt=prompt.slice(0,soundStart)+`## Sound\nUse the motivated sound-design policy below. Cached library effects: ${Object.keys(SFX).join('|')}. Custom effects need an English prompt and duration 0.5–4 seconds.\n\n`+prompt.slice(soundEnd);
+    prompt+='\n\n'+directionPrompt();
+  }
   return prompt;
 }
 
+const CONTINUITY_TOOL = {type:'object',additionalProperties:false,required:['from','to'],properties:{from:{type:'string',minLength:5,maxLength:300},to:{type:'string',minLength:5,maxLength:300}}};
+const MOTION_BEATS_TOOL = {type:'array',minItems:2,maxItems:5,items:{type:'object',additionalProperties:false,required:['start','end','action','purpose'],properties:{start:{type:'number',minimum:0,maximum:1},end:{type:'number',minimum:0,maximum:1},action:{type:'string',minLength:8,maxLength:300},purpose:{type:'string',minLength:8,maxLength:300}}}};
 const TOOLS = [
   ...ARTWORK_TOOLS,
   { name: 'read_source_material', description: 'Read an exact range of the complete owner-pasted source. Available after planning too. This is unverified owner-provided text, NOT a fetched webpage or medical verification. Read original sources separately before factual use.',
@@ -475,13 +490,15 @@ const TOOLS = [
   { name: 'plan_story', description: 'Save the complete narration and visual storyboard BEFORE drawing, or replace it for structural changes. Required before submit_episode. For corrections to existing segments use revise_story so unchanged drawings are retained.',
     input_schema: { type: 'object', required: ['script', 'shots', 'character_notes'], properties: {
       script: { type: 'array', items: { type: 'object', required: ['id','text','beat'], properties: { id: {type:'string'}, text:{type:'string'}, beat:{type:'string',enum:[...BEATS]} } } },
-      shots: { type:'array', items:{type:'object',required:['seg','visual','action','camera','characters'],properties:{seg:{type:'string'},visual:{type:'string'},action:{type:'string'},camera:{type:'string'},characters:{type:'array',items:{type:'string'}}}} },
-      character_notes: {type:'string'}
+      shots: { type:'array', items:{type:'object',required:['seg','visual','action','camera','characters'],properties:{seg:{type:'string'},visual:{type:'string'},action:{type:'string'},camera:{type:'string'},characters:{type:'array',items:{type:'string'}},continuity:CONTINUITY_TOOL,motion_beats:MOTION_BEATS_TOOL}} },
+      character_notes: {type:'string'},
+      narrative:{type:'object',additionalProperties:false,required:['premise','central_question','throughline','payoff'],properties:{premise:{type:'string',minLength:10,maxLength:400},central_question:{type:'string',minLength:8,maxLength:220},throughline:{type:'string',minLength:10,maxLength:400},payoff:{type:'string',minLength:10,maxLength:400}}},
+      sound_policy:{type:'object',additionalProperties:false,required:['mode'],properties:{mode:{type:'string',enum:['designed','quiet']},owner_quote:{type:'string',maxLength:250}}}
     } } },
   { name: 'revise_story', description: 'Repair only named existing segments in the saved storyboard. Send only changed fields. Other narration, shots, portraits and shared helpers stay saved. Changed segments need their scene drawn again. Cannot add/remove/reorder segments; use plan_story for structural changes.',
     input_schema: {type:'object',required:['segments'],additionalProperties:false,properties:{segments:{type:'array',minItems:1,maxItems:14,items:{type:'object',required:['seg'],additionalProperties:false,properties:{
       seg:{type:'string',pattern:'^[a-z0-9_]{1,24}$'},text:{type:'string',minLength:3,maxLength:500},beat:{type:'string',enum:[...BEATS]},
-      visual:{type:'string',minLength:10,maxLength:1200},action:{type:'string',minLength:3,maxLength:600},camera:{type:'string',minLength:3,maxLength:300},characters:{type:'array',maxItems:4,items:{type:'string',minLength:1,maxLength:20}}
+      visual:{type:'string',minLength:10,maxLength:1200},action:{type:'string',minLength:3,maxLength:600},camera:{type:'string',minLength:3,maxLength:300},characters:{type:'array',maxItems:4,items:{type:'string',minLength:1,maxLength:20}},continuity:CONTINUITY_TOOL,motion_beats:MOTION_BEATS_TOOL
     }}}}} },
   {
     name: 'openai_search',
@@ -515,7 +532,8 @@ const TOOLS = [
         captions: { type: 'object', properties: { facebook: { type: 'string' }, instagram: { type: 'string' }, tiktok: { type: 'string' }, youtube: { type: 'string' }, twitter: { type: 'string' } },
           required: ['facebook', 'instagram', 'tiktok', 'youtube', 'twitter'] },
         sfx: { type: 'array', items: { type: 'object', properties: { sfx: { type: 'string' }, seg: { type: 'string' }, at: { type: 'string' }, gain: { type: 'number' },
-          prompt: { type: 'string' }, duration: { type: 'number' } }, required: ['sfx', 'seg', 'at'] } },
+          prompt: { type: 'string' }, duration: { type: 'number' }, purpose:{type:'string',minLength:8,maxLength:240},n:{type:'integer',minimum:0},offset:{type:'number',minimum:-0.5,maximum:2} }, required: ['sfx', 'seg', 'at'] } },
+        motion_review:{type:'string',minLength:20,maxLength:1500,description:'After viewing motion strips/report: explain concrete segment movements and any intentional reading holds; diagnostics do not prove semantic animation quality.'},
         music: { type: 'string', enum: Object.keys(MUSIC) },
         music_brief: { type: 'object', properties: { tempo_bpm: { type: 'integer' }, instruments: { type: 'string' }, feel: { type: 'string' } } },
         style: { type: 'string', enum: STYLE_NAMES },
@@ -537,6 +555,7 @@ export const Draft = z.object({
   presenter_kind: z.enum(['legacy','cat']).optional(),
   story_mode: z.enum(['name_story','general']).optional(),
   storyboard: Storyboard.optional(),
+  motion_review:z.string().trim().min(20).max(1500).optional(),
   title_th: z.string().min(4).max(90),
   angle: z.string().default(''),
   format: z.string().default(''),
@@ -550,7 +569,7 @@ export const Draft = z.object({
   claims: z.array(z.object({ text: z.string(), source_ids: z.array(z.number().int().min(0)).default([]), kind: z.enum(['fact', 'assumption', 'opinion', 'community']).default('fact') })).min(1),
   captions: z.object({ facebook: z.string(), instagram: z.string(), tiktok: z.string(), youtube: z.string(), twitter: z.string() }),
   sfx: z.array(z.object({ sfx: z.string(), seg: z.string(), at: z.string(), gain: z.number().min(0).max(1.2).default(0.5),
-    prompt: z.string().max(140).optional(), duration: z.number().min(0.5).max(4).optional() })).max(14).default([]),
+    prompt: z.string().max(140).optional(), duration: z.number().min(0.5).max(4).optional(),purpose:z.string().trim().max(240).optional(),n:z.number().int().min(0).optional(),offset:z.number().min(-0.5).max(2).optional() })).max(14).default([]),
   music: z.string().default('playful'),
   music_brief: z.object({ tempo_bpm: z.number().min(60).max(150).optional(), instruments: z.string().max(160).optional(), feel: z.string().max(200).optional() }).optional(),
   style: z.string().optional(),
@@ -593,7 +612,7 @@ function iconRefs(node: any, out: string[] = []) {
 const SOFT = /timing word|sfx .*word/;
 // The owner's own edits are never blocked by storytelling rules; they are shown as warnings instead.
 const OWNER_SOFT = /timing word|sfx .*word|hook|re-hook|beat "cta"|both use|is used \d+ times|format|scene sequence|action|main character big|must be seen big|opening question|claim about how many/;
-const isOwnerSoft = (problem:string) => !/^(?:storyboard |recurring (?:reference )?character )/.test(problem) && OWNER_SOFT.test(problem);
+const isOwnerSoft = (problem:string) => !/^(?:direction |storyboard |recurring (?:reference )?character )/.test(problem) && OWNER_SOFT.test(problem);
 
 // problems: must be fixed. warnings: shown to the owner, do not block.
 export type Recent = { format: string; types: string[]; title: string; style?: string; music?: string };
@@ -604,10 +623,12 @@ export function timing(script: { text: string }[]) {
   return script.map((s) => { const start = t; const dur = s.text.replace(/\s+/g, '').length / CPS; t += dur + 0.35; return { start, dur, end: start + dur }; });
 }
 
-export function checkDraft(d: DraftT, seen: Map<string, Seen> | null, recent: Recent[] = [], opts: { requiredNames?: string[]; bespoke?: boolean } = {}) {
+export function checkDraft(d: DraftT, seen: Map<string, Seen> | null, recent: Recent[] = [], opts: { requiredNames?: string[]; bespoke?: boolean; ownerNote?:string; allowPendingMotionReview?:boolean } = {}) {
   const problems: string[] = [], warnings: string[] = [];
   const bespoke = opts.bespoke || !!d.storyboard || d.recurring_character === true;
   const general = d.story_mode === 'general';
+  const directed = d.storyboard?.direction_version === 1;
+  problems.push(...directionProblems(d,opts.ownerNote,opts.allowPendingMotionReview));
   if (d.storyboard && (d.storyboard.story_mode || 'name_story') !== (d.story_mode || 'name_story')) problems.push('story mode must match the saved storyboard');
   if (bespoke) {
     if (!d.storyboard) problems.push('Call plan_story before drawing the episode');
@@ -745,10 +766,10 @@ export function checkDraft(d: DraftT, seen: Map<string, Seen> | null, recent: Re
   if (d.format && !FORMATS[d.format]) problems.push(`unknown format "${d.format}"`);
   if (!d.format) problems.push('set "format" to one of: ' + Object.keys(FORMATS).join(', '));
   const clash = recent.slice(0, 2).filter((r) => r.format && r.format === d.format);
-  if (d.format && clash.length) problems.push(`format "${d.format}" was used in a recent episode ("${clash[0].title}"); choose a different format`);
+  if (!directed && d.format && clash.length) problems.push(`format "${d.format}" was used in a recent episode ("${clash[0].title}"); choose a different format`);
   const sig = (xs: string[]) => xs.slice(0, 5).join('>');
   const same = recent.slice(0, 6).find((r) => r.types.length && sig(r.types) === sig(types));
-  if (same && !bespoke) problems.push(`the scene sequence starts exactly like "${same.title}" (${sig(types)}); change the order or the layouts`);
+  if (same && !bespoke && !directed) problems.push(`the scene sequence starts exactly like "${same.title}" (${sig(types)}); change the order or the layouts`);
   if (!MUSIC[d.music]) warnings.push(`unknown music mood "${d.music}" (playful is used)`);
   const thisYear = nowBkk().getUTCFullYear();
   d.sources.forEach((s, i) => {
@@ -792,12 +813,13 @@ export function buildPackage(topic: string, d: DraftT, research: Seen[]) {
       }
     } else if (!SFX[id]) continue;
     if (!cues.has(id)) cues.set(id, []);
-    cues.get(id)!.push({ seg: fx.seg, word: fx.at, n: 0, offset: 0, gain: fx.gain ?? 0.5 });
+    cues.get(id)!.push({ seg: fx.seg, word: fx.at, n: fx.n ?? 0, offset: fx.offset ?? 0, gain: fx.gain ?? 0.5 });
   }
   const firstLine = (sc: any) => sc.headline?.text || sc.lines?.[0]?.text || sc.question?.text || sc.statement?.text || sc.bubble?.text || '';
   const thumbSeg = d.thumbnail?.seg && d.script.some((s) => s.id === d.thumbnail!.seg) ? d.thumbnail.seg : d.script[0].id;
   return {
     topic, title_th: d.title_th.slice(0, 120), series_tag: SERIES_TAG,
+    ...(exportedDirection(d) ? {direction:exportedDirection(d)} : {}),
     script: d.script,
     voice: { voice_id: VOICE_ID, model_id: 'eleven_v4', language_code: 'th', stability: 0.35, similarity_boost: 0.75, speed: VOICE_SPEED },
     // 'default' reuses the channel's default track (no music generation); the prompt is the fallback if that track cannot be found
@@ -946,8 +968,9 @@ export function applyCast(d: DraftT, req: ReqChar[]): DraftT {
   return { ...d, cast: d.storyboard ? cast.map(({backdrop,...c}) => c) : cast } as DraftT;
 }
 
-function draftWithCharacterPolicy(d: Record<string, any>, enabled: boolean, presenterKind: PresenterKind): Record<string, any> {
-  return {...withCharacterPolicy(d, enabled), presenter_kind:presenterKind, ...(d.storyboard ? {storyboard:withCharacterPolicy(d.storyboard, enabled)} : {})};
+function draftWithCharacterPolicy(d: Record<string, any>, enabled: boolean, presenterKind: PresenterKind, version:0|1=0, ownerNote=''): Record<string, any> {
+  if(version===1 && !d.storyboard)throw new Error('directed draft requires a saved storyboard with narrative, continuity and motion beats');
+  return {...withCharacterPolicy(d, enabled), presenter_kind:presenterKind, ...(d.storyboard ? {storyboard:withDirectionPolicy(withCharacterPolicy(d.storyboard, enabled),version,ownerNote)} : {})};
 }
 
 export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
@@ -975,10 +998,10 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
   }
 
   // The worker compiles the model's scene art and renders preview frames (engine/artkit.py). Returns null when the worker is not answering.
-  async function artCheck(id: string, d: DraftT, style: string): Promise<{ errors: string[]; frames: { seg: string; images: string[] }[] } | null> {
+  async function artCheck(id: string, d: DraftT, style: string): Promise<{ errors: string[]; frames: { seg: string; images: string[]; motion?:Record<string,unknown>; motion_strip?:string }[] } | null> {
     const customs = d.scenes.filter((x: any) => x.type === 'custom');
     if (!customs.length) return { errors: [], frames: [] };
-    const payload = { opening_frame_cover: d.cover_mode === 'opening_frame', strict_art: !!d.storyboard, script: d.script.map((x) => ({ id: x.id, text: x.text })), cast: d.cast, art: d.art || '', scenes: customs, style: style || 'classic' };
+    const payload = { ...(d.storyboard?.direction_version===1?{motion_review:true}:{}), opening_frame_cover: d.cover_mode === 'opening_frame', strict_art: !!d.storyboard, script: d.script.map((x) => ({ id: x.id, text: x.text })), cast: d.cast, art: d.art || '', scenes: customs, style: style || 'classic' };
     const ins = await pool.query('INSERT INTO art_checks (draft_id, payload) VALUES ($1,$2) RETURNING id', [id, JSON.stringify(payload)]);
     const cid = ins.rows[0].id;
     for (let i = 0; i < 80; i++) {   // up to ~2 minutes
@@ -990,7 +1013,8 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
         const errors: string[] = [];
         if (d.cover_mode === 'opening_frame' && (res.scenes || []).find((sc: any) => sc.seg === d.script[0].id)?.frames?.length !== 3) errors.push('opening cover requires video-time-zero, early and late previews; update the worker and retry');
         for (const sc of res.scenes || []) for (const e of sc.errors || []) errors.push(`custom scene ${sc.seg}: ${e}`);
-        return { errors, frames: (res.scenes || []).filter((sc: any) => sc.frames?.length).map((sc: any) => ({ seg: sc.seg, images: sc.frames })) };
+        if(d.storyboard?.direction_version===1)for(const sc of res.scenes || [])if(sc.motion?.complete!==true || !(Number(sc.motion.samples)>=2) || typeof sc.motion_strip!=='string' || !sc.motion_strip)errors.push(`motion review incomplete for ${sc.seg}; update the worker or retry before approving this directed story`);
+        return { errors, frames: (res.scenes || []).filter((sc: any) => sc.frames?.length).map((sc: any) => ({ seg: sc.seg, images: sc.frames, ...(sc.motion?{motion:sc.motion}:{}),...(sc.motion_strip?{motion_strip:sc.motion_strip}:{}) })) };
       }
     }
     await pool.query("UPDATE art_checks SET status='error' WHERE id=$1 AND status='pending'", [cid]);
@@ -1035,6 +1059,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const storyMode = row.story_mode === 'general' ? 'general' as const : 'name_story' as const;
     const recurringCharacter = row.recurring_character === true;
     const presenterKind = parsePresenterKind(row.presenter_kind, 'legacy');
+    const directionVersion = directorVersion(row.director_version);
     let userText = `Story mode: ${storyMode}. Topic from the owner: ${row.topic}`;
     const sourceBlock = sourceText ? sourceMaterialBlock(sourceText) : '';
     if (sourceBlock) userText += '\n\n' + sourceBlock;
@@ -1060,12 +1085,12 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       ? `\n\nVisual style: the owner chose "${fixedStyle}" (${STYLES[fixedStyle].en}); set "style": "${fixedStyle}" and let the music fit it.`
       : `\n\nVisual style: choose "style" yourself (suits the story, differs from the last two episodes).`;
     userText += recent.length
-      ? `\n\nRecent episodes, newest first — use a different format than the last two and do not repeat a scene sequence:\n${recent.map((r) => `- "${r.title}" | format: ${r.format || 'classic quiz'} | style: ${r.style} | music: ${r.music || '-'} | scenes: ${r.types.join(' > ')}`).join('\n')}`
+      ? `\n\nRecent episodes, newest first — ${directionVersion===1?'use for inspiration without breaking this story’s causal continuity':'use a different format than the last two and do not repeat a scene sequence'}:\n${recent.map((r) => `- "${r.title}" | format: ${r.format || 'classic quiz'} | style: ${r.style} | music: ${r.music || '-'} | scenes: ${r.types.join(' > ')}`).join('\n')}`
       : `\n\nEarlier episodes used the classic order hook > number > myth > quiz > reveal > close; choose a different format.`;
     const model = row.model && MODEL_RE.test(row.model) ? row.model : MODEL;
     const effort = REASONING_LEVELS.includes(row.reasoning) ? row.reasoning : REASONING;
     const narration = parseNarration(row);
-    const system = systemPrompt(active, storyMode) + '\n\n## Owner-selected narration style\n' + narrationPrompt(narration) + '\n\n## Recurring character policy\n' + characterPolicyPrompt(recurringCharacter, reqChars[0]?.name, presenterKind) +
+    const system = systemPrompt(active, storyMode, directionVersion) + '\n\n## Owner-selected narration style\n' + narrationPrompt(narration) + '\n\n## Recurring character policy\n' + characterPolicyPrompt(recurringCharacter, reqChars[0]?.name, presenterKind) +
       (sourceText ? '\nThe complete owner source is supplied for planning. Identify the sections and claims relevant to the chosen topic and preserve their caveats in the angle, narration and source metadata. After plan_story succeeds the raw source is removed from repeated drawing requests; the full original remains available through read_source_material. Do not claim the entire pasted document has been verified.' : '');
     const conv = PROVIDER === 'openai' ? openaiConversation(system, userText, model, effort, active, (message) => log(id, message)) : anthropicConversation(system, userText, model, active);
     let sourceCompacted = false;
@@ -1081,7 +1106,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       if (photo) conv.show(`Reference for ${c.name}. Use only as visual reference for their bespoke face and body. ${ref.reference_image ? '' : 'Only a small legacy thumbnail is available: likeness is limited; do not invent hidden details.'}`, [photo]);
       else await log(id, `ไม่มีรูปอ้างอิงของ ${c.name} แล้ว ใช้รายละเอียดลักษณะที่บันทึกไว้`);
     }
-    let storyboard: StoryboardT | null = row.storyboard ? Storyboard.parse(withCharacterPolicy(row.storyboard, recurringCharacter)) : null;
+    let storyboard: StoryboardT | null = row.storyboard ? Storyboard.parse(withDirectionPolicy(withCharacterPolicy(row.storyboard, recurringCharacter), directionVersion, row.note || '')) : null;
     if (storyboard) { const problem = referencePresenterProblem(storyboard, recurringCharacter, reqChars[0]?.name); if (problem) throw new Error(problem); }
     let artwork: ArtworkState = row.artwork || emptyArtwork();
     active.drawing = !!storyboard;
@@ -1170,7 +1195,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
           } else if (u.name === 'plan_story' || u.name === 'revise_story') {
             if (u.name === 'revise_story' && !storyboard) throw new Error('Call plan_story before revising existing segments');
             const plan = u.name === 'revise_story' ? reviseStoryboard(storyboard!, u.input) :
-              Storyboard.parse(withCharacterPolicy({...u.input,...(storyMode === 'general' ? {story_mode:storyMode} : {})}, recurringCharacter));
+              Storyboard.parse(withDirectionPolicy(withCharacterPolicy({...u.input,...(storyMode === 'general' ? {story_mode:storyMode} : {})}, recurringCharacter),directionVersion,row.note || ''));
             const referenceProblem = referencePresenterProblem(plan, recurringCharacter, reqChars[0]?.name);
             if (referenceProblem) throw new Error(referenceProblem);
             artwork = reconcileArtwork(storyboard, plan, artwork);
@@ -1197,7 +1222,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
               results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: 'The arguments were not valid JSON. Submit again with valid JSON.' });
               continue;
             }
-            const parsed = Draft.safeParse(draftWithCharacterPolicy({ ...mergeArtwork({script:storyboard.script,...u.input}, artwork), storyboard, ...(storyMode === 'general' ? {story_mode:storyMode} : {}) }, recurringCharacter, presenterKind));
+            const parsed = Draft.safeParse(draftWithCharacterPolicy({ ...mergeArtwork({script:storyboard.script,...u.input}, artwork), storyboard, ...(storyMode === 'general' ? {story_mode:storyMode} : {}) }, recurringCharacter, presenterKind, directionVersion, row.note || ''));
             if (!parsed.success) {
               const issues = parsed.error.issues.slice(0, 15).map((i) => `${i.path.join('.')}: ${i.message}`);
               await pool.query('UPDATE drafts SET problems=$2 WHERE id=$1', [id,JSON.stringify(issues)]);
@@ -1223,7 +1248,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
               sourceReview = 'SOURCE REVIEW: the server opened missing sources. Read the evidence, correct any unsupported claims and submit metadata again. Do not redraw artwork. Evidence: ' + (checked.text || 'No readable content returned; remove unsupported claims.');
               await saveUsage();
             }
-            const { problems, warnings } = checkDraft(d, seen, recent, { requiredNames: reqChars.map((c) => c.name), bespoke: true });
+            const { problems, warnings } = checkDraft(d, seen, recent, { requiredNames: reqChars.map((c) => c.name), bespoke: true, ownerNote:row.note || '',allowPendingMotionReview:true });
             if (turn <= sourceReviewTurn) sourceReview = 'SOURCE REVIEW: read the newly retrieved evidence before submitting metadata on the NEXT model turn. Evidence: ' + (sourceReviewEvidence || 'Page content unavailable; do not invent unsupported figures.');
             if (sourceReview) problems.push(sourceReview);
             let est: number | null = null;
@@ -1238,9 +1263,11 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
                 pendingReview = JSON.stringify({art:d.art,cast:d.cast,scenes:d.scenes,script:d.script,style:d.style});
                 if (recurringCharacter && presenterKind === 'cat' && !reqChars.length) problems.push('CAT PRESENTER REVIEW: inspect every preview for the SAME recognisable orange tabby cat with a cream muzzle, visible cat ears, whiskers, paws and tail, and a blue hoodie. Reject a human with cat ears, a generic mascot substitution, inconsistent clothes or a different identity. Repair the named portrait or affected scene before accepting.');
                 problems.push('VISUAL REVIEW: the scene art compiled and rendered; its preview frames follow in the next message. The opening shot starts with an extra preview at exactly video time 0: verify the subject and headline are fully visible, readable and inside the crop-safe area; reject a blank or delayed entrance. Compare every face and body with the labelled original reference images, and every scene with the storyboard and narration. When recurring_character is enabled, verify the SAME main presenter is clearly visible in EVERY sampled frame including opening time zero, stays inside safe crop with a readable face, and makes meaningful gestures matching the narration; reject hidden/tiny decorative presenters, fade-outs, exits or identity changes. Inspect the final styled image for crushed facial details, merged eyes or mouth, doubled outlines, and Thai text strokes that merge or become unreadable; a successful render alone does not mean the image is acceptable. If something is wrong (the subject is unrecognisable, tiny, overlapping the text, off-topic, cut off, or loses detail after styling) fix the art and submit again; if all are good, submit the same episode again unchanged.');
-                showImages = { text: 'Preview frames of your custom scenes (opening shot: video time 0, early, late; other shots: early, late). Scene ids in order: ' + ac.frames.map((f) => `${f.seg} (${f.images.length} frames)`).join(', '), images: ac.frames.flatMap((f) => f.images) };
+                if(directionVersion===1)problems.push('MOTION REVIEW: inspect the filmstrips and per-scene sampling diagnostics below. Check each planned movement and the handoff to the next shot; mouth/bobbing/camera-only motion is not enough. Static windows are diagnostics, not semantic proof. Repair specific missing beats or explain intentional reading holds, then submit motion_review naming concrete segments and movements. Reports: '+JSON.stringify(ac.frames.map(({seg,motion})=>({seg,motion}))));
+                showImages = { text: 'Preview frames of your custom scenes (opening shot: video time 0, early, late; other shots: early, late). Scene ids in order: ' + ac.frames.map((f) => `${f.seg} (${f.images.length} frames${directionVersion===1?' + motion strip':''})`).join(', '), images: ac.frames.flatMap((f) => directionVersion===1?[...f.images,f.motion_strip!]:f.images) };
               }
               if (showImages) pendingImages = showImages;
+              if(directionVersion===1 && !showImages && !problems.length)problems.push(...directionProblems(d,row.note || '',false));
             }
             if (!problems.length) {
               const f = finalCheck(row.topic, d, [...seen.values()]);
@@ -1327,11 +1354,14 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       if (!cw || cw.rejected_at) return { status: 409, body: { error: 'เรื่อง Community นี้ถูกปฏิเสธแล้ว จึงส่งผลิตไม่ได้' } };
       if (cw.draft_id !== id) return { status: 409, body: { error: 'นี่ไม่ใช่ร่างล่าสุดของเรื่อง Community นี้' } };
     }
-    const parsed = Draft.safeParse(draftWithCharacterPolicy(row.draft, row.recurring_character === true, parsePresenterKind(row.presenter_kind, 'legacy')));
+    let canonicalDraft:Record<string,any>;
+    try {canonicalDraft=draftWithCharacterPolicy(row.draft, row.recurring_character === true, parsePresenterKind(row.presenter_kind, 'legacy'),directorVersion(row.director_version),row.note || '');}
+    catch(error){return {status:422,body:{error:'draft does not pass the checks',problems:[error instanceof Error?error.message:'invalid directed draft']}};}
+    const parsed = Draft.safeParse(canonicalDraft);
     if (!parsed.success) return {status:422,body:{error:'draft does not pass the checks',problems:parsed.error.issues.slice(0,10).map(issue=>`${issue.path.join('.')}: ${issue.message}`)}};
     const d = parsed.data;
     const research: Seen[] = row.draft.research_seen || [];
-    const { problems } = checkDraft(d, null, [], {requiredNames:(row.characters || []).map((character:any)=>character.name)});
+    const { problems } = checkDraft(d, null, [], {requiredNames:(row.characters || []).map((character:any)=>character.name),ownerNote:row.note || ''});
     const f = finalCheck(row.topic, d, research);
     const errs = [...problems.filter((p) => !isOwnerSoft(p)), ...f.errs];
     if (errs.length) return { status: 422, body: { error: 'draft does not pass the checks', problems: errs } };
@@ -1395,6 +1425,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
   const isId = (s: string) => /^[0-9a-f-]{36}$/.test(s);
   const summary = (r: any) => ({
     id: r.id, topic: r.topic, note: r.note, status: r.status, title: r.draft?.title_th ?? null, angle: r.draft?.angle ?? null, created_at: r.created_at,
+    director_version:directorVersion(r.director_version),
     recurring_character: r.recurring_character === true, presenter_kind:parsePresenterKind(r.presenter_kind, 'legacy'), has_character_reference:Array.isArray(r.characters) && r.characters.length > 0,
     narration_style: r.narration_style || 'standard', narration_custom: r.narration_custom || '', source_text_characters: String(r.source_text || '').length,
     updated_at: r.updated_at, estimated_credits: r.estimated_credits, job_id: r.job_id, job_status: r.job_status ?? null, job_progress: r.job_progress ?? null,
@@ -1568,8 +1599,8 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const chars = ids.length ? (await pool.query('SELECT id, name, look, backdrop FROM characters WHERE id = ANY($1::uuid[]) ORDER BY array_position($1::uuid[], id)', [ids])).rows.map((x: any) => ({ id: x.id, name: x.name, look: x.backdrop ? { ...x.look, backdrop: x.backdrop } : x.look })) : [];
     const style = typeof b.style === 'string' && STYLES[b.style] ? b.style : 'auto';
     const musicMode = b.music_mode === 'ai' ? 'ai' : 'default';
-    const r = await pool.query('INSERT INTO drafts (topic, note, auto_produce, model, reasoning, characters, style, music_mode, story_mode, source_text, request_key, request_hash, narration_style, narration_custom, recurring_character, presenter_kind) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT (request_key) DO NOTHING RETURNING id',
-      [topic, String(b.note || '').trim().slice(0, 1000) || null, !!b.auto_produce, model, PROVIDER === 'openai' ? reasoning : null, JSON.stringify(chars), style, musicMode, storyMode, sourceText || null, request.key, request.hash, narration.narration_style, narration.narration_custom, recurringCharacter, presenterKind]);
+    const r = await pool.query('INSERT INTO drafts (topic, note, auto_produce, model, reasoning, characters, style, music_mode, story_mode, source_text, request_key, request_hash, narration_style, narration_custom, recurring_character, presenter_kind, director_version) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) ON CONFLICT (request_key) DO NOTHING RETURNING id',
+      [topic, String(b.note || '').trim().slice(0, 1000) || null, !!b.auto_produce, model, PROVIDER === 'openai' ? reasoning : null, JSON.stringify(chars), style, musicMode, storyMode, sourceText || null, request.key, request.hash, narration.narration_style, narration.narration_custom, recurringCharacter, presenterKind, 1]);
     if (!r.rows.length) {
       const old = (await pool.query('SELECT id, request_hash FROM drafts WHERE request_key=$1',[request.key])).rows[0];
       return old?.request_hash === request.hash ? c.json({id:old.id},201) : c.json({error:'idempotency-key already used for different input'},409);
@@ -1595,7 +1626,9 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       try { if (parsePresenterKind(b.presenter_kind) !== parsePresenterKind(row.presenter_kind, 'legacy')) return c.json({error:'ใช้เขียนใหม่เพื่อเปลี่ยนรูปแบบผู้เล่า ให้ตัวละครและภาพทุกฉากสอดคล้องกัน'},422); }
       catch(e) { return c.json({error:e instanceof Error ? e.message : 'invalid presenter kind'},422); }
     }
-    const d = draftWithCharacterPolicy(row.draft, row.recurring_character === true, parsePresenterKind(row.presenter_kind, 'legacy'));
+    let d:Record<string,any>;
+    try {d=draftWithCharacterPolicy(row.draft, row.recurring_character === true, parsePresenterKind(row.presenter_kind, 'legacy'),directorVersion(row.director_version),row.note || '');}
+    catch(error){return c.json({error:'invalid directed draft',problems:[error instanceof Error?error.message:'invalid directed draft']},422);}
     if (typeof b.title_th === 'string' && b.title_th.trim()) d.title_th = b.title_th.trim().slice(0, 90);
     if (typeof b.style === 'string' && STYLES[b.style]) d.style = b.style;   // only changes how the clip is drawn; the script stays checked
     if (b.music_mode === 'default' || b.music_mode === 'ai') d.music_mode = b.music_mode;
@@ -1607,7 +1640,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     if (b.captions && typeof b.captions === 'object') for (const k of ['facebook', 'instagram', 'tiktok', 'youtube', 'twitter']) if (typeof b.captions[k] === 'string') d.captions = { ...d.captions, [k]: b.captions[k] };
     const parsed = Draft.safeParse(d);
     if (!parsed.success) return c.json({ error: 'invalid', problems: parsed.error.issues.slice(0, 10).map((i) => `${i.path.join('.')}: ${i.message}`) }, 422);
-    const { problems, warnings } = checkDraft(parsed.data, null, [], {requiredNames:(row.characters || []).map((character:any)=>character.name)});
+    const { problems, warnings } = checkDraft(parsed.data, null, [], {requiredNames:(row.characters || []).map((character:any)=>character.name),ownerNote:row.note || ''});
     // timing words that no longer appear only shift an animation to the segment start: keep them as warnings for edited text
     const hard = problems.filter((p) => !isOwnerSoft(p));
     const soft = problems.filter((p) => isOwnerSoft(p)).map((p) => p + ' (ภาพนี้จะขึ้นตามตำแหน่งโดยประมาณ)');
@@ -1650,15 +1683,17 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     catch (e) { return c.json({error:e instanceof Error ? e.message : 'invalid narration'},422); }
     const previousNarration = parseNarration(row);
     const sameNarration = narration.narration_style === previousNarration.narration_style && narration.narration_custom === previousNarration.narration_custom;
-    const r = await pool.query('INSERT INTO drafts (topic, note, parent_id, auto_produce, model, reasoning, characters, source_type, community_id, style, music_mode, story_mode, source_text, research_job_id, request_key, request_hash, narration_style, narration_custom, recurring_character, presenter_kind) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) ON CONFLICT (request_key) DO NOTHING RETURNING id',
+    const reuseCheckpoints = !!(row.status === 'failed' && row.storyboard && sameNarration && recurringCharacter === (row.recurring_character === true) && presenterKind === parsePresenterKind(row.presenter_kind, 'legacy') && (b.note === undefined || String(b.note).trim() === String(row.note || '').trim()));
+    const directionVersion = reuseCheckpoints ? directorVersion(row.director_version) : 1;
+    const r = await pool.query('INSERT INTO drafts (topic, note, parent_id, auto_produce, model, reasoning, characters, source_type, community_id, style, music_mode, story_mode, source_text, research_job_id, request_key, request_hash, narration_style, narration_custom, recurring_character, presenter_kind, director_version) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) ON CONFLICT (request_key) DO NOTHING RETURNING id',
       [row.topic, String(b.note ?? row.note ?? '').trim().slice(0, 1000) || null, row.id, row.source_type === 'community' ? false : !!b.auto_produce,
         typeof b.model === 'string' && MODEL_RE.test(b.model) ? b.model : row.model, REASONING_LEVELS.includes(b.reasoning) ? b.reasoning : row.reasoning,
-        JSON.stringify(row.characters ?? []), row.source_type || 'studio', row.community_id ?? null, keepStyle, keepMusic, row.story_mode || 'name_story', row.source_text || null, row.research_job_id || row.id, request.key, request.hash, narration.narration_style, narration.narration_custom, recurringCharacter, presenterKind]);
+        JSON.stringify(row.characters ?? []), row.source_type || 'studio', row.community_id ?? null, keepStyle, keepMusic, row.story_mode || 'name_story', row.source_text || null, row.research_job_id || row.id, request.key, request.hash, narration.narration_style, narration.narration_custom, recurringCharacter, presenterKind, directionVersion]);
     if (!r.rows.length) {
       const old = (await pool.query('SELECT id, request_hash FROM drafts WHERE request_key=$1',[request.key])).rows[0];
       return old?.request_hash === request.hash ? c.json({id:old.id},201) : c.json({error:'idempotency-key already used for different input'},409);
     }
-    if (row.status === 'failed' && row.storyboard && sameNarration && recurringCharacter === (row.recurring_character === true) && presenterKind === parsePresenterKind(row.presenter_kind, 'legacy') && (b.note === undefined || String(b.note).trim() === String(row.note || '').trim())) {
+    if (reuseCheckpoints) {
       await pool.query('UPDATE drafts SET storyboard=$2, artwork=$3, research=$4 WHERE id=$1', [r.rows[0].id,JSON.stringify(row.storyboard),JSON.stringify(row.artwork || emptyArtwork()),JSON.stringify(row.research || [])]);
     }
     if (row.community_id) await pool.query('UPDATE community_winners SET draft_id=$2, updated_at=now() WHERE id=$1 AND draft_id=$3', [row.community_id, r.rows[0].id, id]);

@@ -2,11 +2,22 @@ import { z } from 'zod';
 
 const Id = z.string().regex(/^[a-z0-9_]{1,24}$/);
 const Name = z.string().trim().min(1).max(20);
+export const NarrativeDirection = z.object({
+  premise:z.string().trim().min(10).max(400), central_question:z.string().trim().min(8).max(220),
+  throughline:z.string().trim().min(10).max(400), payoff:z.string().trim().min(10).max(400),
+}).strict();
+export const ShotContinuity = z.object({from:z.string().trim().min(5).max(300),to:z.string().trim().min(5).max(300)}).strict();
+export const MotionBeat = z.object({start:z.number().min(0).max(1),end:z.number().min(0).max(1),action:z.string().trim().min(8).max(300),purpose:z.string().trim().min(8).max(300)}).strict().refine(beat=>beat.end>beat.start,'motion beat end must be after its start');
+export const SoundPolicy = z.object({mode:z.enum(['designed','quiet']),owner_quote:z.string().trim().max(250).optional()}).strict();
+
 
 /** The story is agreed before artwork is generated. Legacy drafts have no plan. */
 export const Storyboard = z.object({
   story_mode: z.enum(['name_story','general']).optional(),
   recurring_character: z.boolean().optional(),
+  direction_version:z.literal(1).optional(),
+  narrative:NarrativeDirection.optional(),
+  sound_policy:SoundPolicy.optional(),
   script: z.array(z.object({
     id: Id, text: z.string().min(3).max(500),
     beat: z.enum(['hook', 'rehook', 'info', 'payoff', 'cta']),
@@ -17,6 +28,8 @@ export const Storyboard = z.object({
     action: z.string().trim().min(3).max(600),
     camera: z.string().trim().min(3).max(300),
     characters: z.array(Name).max(4),
+    continuity:ShotContinuity.optional(),
+    motion_beats:z.array(MotionBeat).min(2).max(5).optional(),
   }).strict()).min(4).max(14),
   character_notes: z.string().trim().min(10).max(3000),
 }).strict().superRefine((plan, ctx) => {
@@ -29,6 +42,17 @@ export const Storyboard = z.object({
   }
   if (plan.recurring_character && !plan.shots[0]?.characters.some(name => plan.shots.every(shot => shot.characters.includes(name)))) {
     ctx.addIssue({code:'custom',path:['shots'],message:'recurring character mode requires the same character in every shot'});
+  }
+  if(plan.direction_version===1){
+    if(!plan.narrative)ctx.addIssue({code:'custom',path:['narrative'],message:'directed stories need one premise, central question, throughline and payoff'});
+    if(!plan.sound_policy)ctx.addIssue({code:'custom',path:['sound_policy'],message:'directed stories need a sound policy'});
+    plan.shots.forEach((shot,i)=>{
+      if(!shot.continuity)ctx.addIssue({code:'custom',path:['shots',i,'continuity'],message:'describe the incoming state and the outgoing state that carries the story onward'});
+      if(!shot.motion_beats?.length){ctx.addIssue({code:'custom',path:['shots',i,'motion_beats'],message:'plan meaningful actions throughout this shot, not only mouth movement or a static diagram'});return;}
+      const beats=[...shot.motion_beats].sort((a,b)=>a.start-b.start);let covered=0;
+      for(const beat of beats){if(beat.start-covered>0.12)ctx.addIssue({code:'custom',path:['shots',i,'motion_beats'],message:'motion beats leave a long unplanned hold; connect actions across the shot'});covered=Math.max(covered,beat.end);}
+      if(beats[0].start>0.08 || covered<0.95)ctx.addIssue({code:'custom',path:['shots',i,'motion_beats'],message:'motion beats must cover the beginning through the end of the shot'});
+    });
   }
   plan.shots.forEach((shot, i) => {
     if (plan.story_mode !== 'general' && !shot.characters.length) ctx.addIssue({code:'custom',path:['shots',i,'characters'],message:'name stories require a character in every shot'});
@@ -47,6 +71,8 @@ const SegmentRevision = z.object({
   action: z.string().trim().min(3).max(600).optional(),
   camera: z.string().trim().min(3).max(300).optional(),
   characters: z.array(Name).max(4).optional(),
+  continuity:ShotContinuity.optional(),
+  motion_beats:z.array(MotionBeat).min(2).max(5).optional(),
 }).strict().refine(change => Object.keys(change).length > 1, 'include at least one changed narration or shot field');
 const StoryRevision = z.object({segments:z.array(SegmentRevision).min(1).max(14)}).strict();
 

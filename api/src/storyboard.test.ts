@@ -148,3 +148,27 @@ test('generic mascot cat calls cannot stand in for a named recurring cat present
   const named=scenes.map(scene=>({...scene,code:'def draw(c,t,p):\n  c.person("น้องส้ม",400,900,240)'}));
   assert.deepEqual(validateStoryboardDraft(p,{storyboard:p,recurring_character:true,script:p.script,cast:[{name:'น้องส้ม'}],scenes:named}),[]);
 });
+
+
+function directedPlan(){
+ const p=plan();return Storyboard.parse({...p,direction_version:1,narrative:{premise:'แมวพบว่าจานเค้กว่างจึงเริ่มสงสัย',central_question:'ท่าทางพิสูจน์คนผิดได้หรือไม่',throughline:'ติดตามจานว่างและโน้ตใบเดิมไปจนพบเค้ก',payoff:'ตรวจตู้เย็นพบเค้ก จึงไม่กล่าวหาจากท่าทาง'},sound_policy:{mode:'designed'},shots:p.shots.map(shot=>({...shot,continuity:{from:'รับเบาะแสจากจานเค้กที่ว่าง',to:'ตามเบาะแสไปยังโน้ตและตู้เย็น'},motion_beats:[{start:0,end:.5,action:'แมวเดินเข้าหาจานแล้วหยิบโน้ตขึ้นอ่าน',purpose:'พาเรื่องจากข้อสงสัยไปสู่เบาะแสใหม่'},{start:.5,end:1,action:'แมวคลี่โน้ตและชี้เส้นทางไปที่ตู้เย็น',purpose:'แสดงเหตุและผลที่จะต่อไปยังฉากถัดไป'}]}))});
+}
+
+test('directed stories require a single narrative plan, scene continuity and action coverage through each shot',()=>{
+ const p=directedPlan();assert.equal(p.direction_version,1);
+ const incomplete=structuredClone(p);delete incomplete.narrative;delete incomplete.shots[0].continuity;delete incomplete.shots[1].motion_beats;
+ const parsed=Storyboard.safeParse(incomplete);assert.equal(parsed.success,false);
+ const gap=structuredClone(p);gap.shots[0].motion_beats![0].end=.2;gap.shots[0].motion_beats![1].start=.7;
+ assert.equal(Storyboard.safeParse(gap).success,false);
+ const late=structuredClone(p);late.shots[0].motion_beats![0].start=.3;assert.equal(Storyboard.safeParse(late).success,false);
+ const backwards=structuredClone(p);backwards.shots[0].motion_beats![0].end=0;assert.equal(Storyboard.safeParse(backwards).success,false);
+ assert.equal(Storyboard.safeParse(plan()).success,true,'legacy plans remain valid without new metadata');
+});
+
+test('partial directed repair updates only targeted motion and continuity and preserves the story arc',async()=>{
+ const {reviseStoryboard}=await import('./storyboard.js');const p=directedPlan(),old=structuredClone(p);
+ const revised=reviseStoryboard(p,{segments:[{seg:'market',continuity:{from:'แมวถือโน้ตใบเดิมเดินมาถึงตู้',to:'เค้กอยู่ในตู้เย็น จึงมีหลักฐานให้ตรวจ'},motion_beats:[{start:0,end:.6,action:'แมวเอื้อมจับมือเปิดประตูตู้เย็น',purpose:'ทดสอบเบาะแสในโน้ตแทนการมองท่าทาง'},{start:.6,end:1,action:'ประตูเปิดเผยให้เห็นเค้กที่อยู่ครบ',purpose:'คลี่คลายข้อสงสัยด้วยหลักฐานในเรื่อง'}]}]});
+ assert.deepEqual(revised.narrative,p.narrative);assert.equal(revised.direction_version,1);
+ for(const i of [0,2,3])assert.deepEqual(revised.shots[i],p.shots[i]);
+ assert.deepEqual(p,old);assert.notDeepEqual(revised.shots[1],p.shots[1]);
+});

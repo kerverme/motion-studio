@@ -120,6 +120,7 @@ const Package = z.object({
   sfx: z.array(z.object({ id: z.string(), prompt: z.string().min(3), duration: z.number().min(0.5).max(30), cues: z.array(Cue).min(1) })).max(40).default([]),
   scene_code: z.string().min(50),
   storyboard: z.array(z.record(z.any())).default([]),
+  direction: z.object({version:z.literal(1),narrative:z.record(z.any()),shots:z.array(z.record(z.any())),sound_policy:z.object({mode:z.enum(['designed','quiet']),owner_quote:z.string().optional()}),motion_review:z.string().optional()}).optional(),
   sources: z.array(z.object({
     url: z.string().url(), publisher: z.string().optional(), title: z.string().optional(), published: z.string().optional(),
     collected: z.string().optional(), methodology: z.string().optional(), confidence: z.enum(['high', 'medium', 'low']).optional(),

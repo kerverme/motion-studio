@@ -67,7 +67,7 @@ test('routes persist opt-in with no name/photo, preserve first reference order a
     const legacyId=(await(await send(path,legacyBody,'recurring-legacy-001')).json()).id;
     assert.equal((await db.query<{recurring_character:boolean}>('SELECT recurring_character FROM drafts WHERE id=$1',[legacyId])).rows[0].recurring_character,false);
     const good=generalDraft(true),art={art:good.art,cast:good.cast,scenes:good.scenes};
-    await db.query("UPDATE drafts SET status='failed',storyboard=$2,artwork=$3 WHERE id=$1",[id,JSON.stringify(good.storyboard),JSON.stringify(art)]);
+    await db.query("UPDATE drafts SET status='failed',director_version=0,storyboard=$2,artwork=$3 WHERE id=$1",[id,JSON.stringify(good.storyboard),JSON.stringify(art)]);
     const childId=(await(await send(path+'/'+id+'/rewrite',{},'recurring-retry-001')).json()).id;
     const child:any=(await db.query('SELECT * FROM drafts WHERE id=$1',[childId])).rows[0];assert.equal(child.recurring_character,true);assert.deepEqual(child.storyboard,good.storyboard);assert.deepEqual(child.artwork,art);assert.equal(child.narration_style,'child_10');assert.equal(child.source_text,body.source_text);
     await db.query("UPDATE drafts SET status='failed' WHERE id=$1",[childId]);
