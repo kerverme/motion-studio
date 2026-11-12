@@ -81,6 +81,9 @@ def default_music_key(ctx):
 
 # ---------------------------------------------------------------- stages
 def stage_audio(ctx):
+    if ctx.pkg.get('creative'):
+        from .creative_audio import stage_audio as approved_audio
+        return approved_audio(ctx)
     p = ctx.pkg
     v = p['voice']
     segs = p['script']
@@ -96,7 +99,7 @@ def stage_audio(ctx):
         meta = hit['meta']
     else:
         ctx.spend_check(len(text) * 1.05)
-        chunks = [text] if len(text) <= 4500 else [s['text'] for s in segs]
+        chunks = [text] if len(text) <= (2000 if v.get('model_id', 'eleven_v4') == 'eleven_v4' else 4500) else [s['text'] for s in segs]
         parts, chars, starts, ends, offset, metas = [], '', [], [], 0.0, []
         for i, chunk in enumerate(chunks):
             a, al, m = eleven.tts_with_timestamps(chunk, v['voice_id'], v.get('model_id', 'eleven_v4'), v.get('language_code', 'th'),
@@ -186,7 +189,7 @@ def do_mix(ctx, T, gains_scale=None, trim_db=0.0):
         for c in cues:
             c['gain'] = round(c['gain'] * gains_scale.get(f"{c['sfx']}@{c['t']}", 1.0), 3)
     mvol = (ctx.pkg.get('music') or {}).get('volume', 0.3)
-    mixed, stems = audio.mix(vo, T['end'], sfx_files, cues, mus, mvol)
+    mixed, stems = audio.mix(vo, T['end'], sfx_files, cues, mus, mvol, duck_sfx=bool(ctx.pkg.get('creative')))
     raw = audio.write_wav(ctx.path('audio', 'mix_raw.wav'), mixed)
     fin = audio.finish(raw, ctx.path('audio', 'mix.wav'), trim_db=trim_db)
     return fin, stems, cues, sfx_files
@@ -426,6 +429,9 @@ def write_docs(ctx, T, number, folder):
     sfx_cues = '\n'.join(f"- {c['t']:.2f}s  {c['sfx']}  gain {c['gain']}" for c in T['cues'])
     st += ['## SFX cue sheet (resolved from narration)', sfx_cues]
     files['storyboard.md'] = '\n'.join(st)
+    if p.get('creative'):
+        calls = ctx.db.q('SELECT category,model,reserved_usd,actual_usd,status,usage,provider_id FROM creative_calls WHERE job_id=%s', (ctx.job['id'],))
+        files['creative-manifest.json'] = json.dumps({'creative': p['creative'], 'storyboard': p['storyboard'], 'audio': ctx.r.get('GENERATING_AUDIO'), 'render': ctx.r.get('LEMO_RENDER'), 'costs': calls, 'real_provider_test': True}, ensure_ascii=False, indent=2, default=str)
     out = {}
     for name, text in files.items():
         pth = os.path.join(folder, name)
@@ -445,6 +451,13 @@ def make_archive(ctx, T, out):
             manifest = ctx.path('production_manifest.json')
             json.dump({'shots': ctx.r.get('FAL_SHOTS'), 'approval': ctx.pkg['text_video']['approval']}, open(manifest, 'w'), ensure_ascii=False, indent=2)
             tar.add(manifest, 'episode/production_manifest.json')
+        if ctx.pkg.get('creative'):
+            manifest = ctx.path('creative-source.json')
+            json.dump({'creative':ctx.pkg['creative'],'render':ctx.r.get('LEMO_RENDER',{})},open(manifest,'w'),ensure_ascii=False,default=str)
+            tar.add(manifest, 'episode/creative-source.json')
+            for i, scene in enumerate(ctx.r.get('LEMO_RENDER',{}).get('scenes',[])):
+                source = ctx.fetch(scene['source_key'],ctx.path('sources',f'{i}.html'))
+                tar.add(source, f'episode/lemo/scene-{i}.html')
         tar.add(ENGINE_DIR, 'engine', filter=lambda ti: None if '__pycache__' in ti.name else ti)
     return out
 

@@ -1,3 +1,5 @@
+import {CreativeSettings,chooseStyle,creativePrompt,releaseGates,LEMO_STYLES} from './creative.js';
+import {registerCreative} from './creative-routes.js';
 // Content studio: OpenAI Web Search first, budgeted Firecrawl fallback, then the Thai
 // script and a scene spec for the code-drawn template engine (worker/engine/templates.py), and the result waits as a
 // draft for review. "Produce" turns the draft into a normal episode package and queues it for the worker.
@@ -214,8 +216,9 @@ type ToolResult = { id: string; content: string; is_error?: boolean };
 type Usage = { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number };
 type WebFound = { searches: number; queries: string[]; sources: { url: string; title: string }[] };
 // which research tools are usable right now (changes during a draft when Firecrawl runs out of credits or the web search budget is spent)
-type Active = { fc: boolean; ws: boolean; drawing?: boolean; searches?: number; source?: boolean };
-const activeTools = (a: Active) => TOOLS.filter(t => t.name !== 'openai_search' || PROVIDER !== 'openai').filter(t => ['submit_episode','plan_story','revise_story',...ARTWORK_TOOLS.map(x=>x.name)].includes(t.name) || (t.name === 'read_source_material' ? !!a.source : t.name === 'read_page' ? !!env.OPENAI_API_KEY : t.name === 'openai_search' && !a.drawing && a.ws)).map(t => {
+type Active = { fc: boolean; ws: boolean; drawing?: boolean; searches?: number; source?: boolean; creative?: boolean; lemo?: boolean };
+const activeTools = (a: Active) => TOOLS.filter(t => t.name !== 'openai_search' || PROVIDER !== 'openai').filter(t => ['submit_episode','plan_story','revise_story',...ARTWORK_TOOLS.map(x=>x.name)].includes(t.name) || (t.name === 'read_source_material' ? !!a.source : t.name === 'read_page' ? !!env.OPENAI_API_KEY : t.name === 'openai_search' && !a.drawing && a.ws)).filter(t=>!a.lemo||!ARTWORK_TOOLS.some(x=>x.name===t.name)).map(t => {
+  if(a.creative&&t.name==='plan_story')return {...t,input_schema:{...t.input_schema,properties:{...t.input_schema.properties,creative:{type:'object',description:'Complete Creative Director analysis, candidates, identity and scene sound plan as specified in system instructions'}},required:[...(t.input_schema.required||[]),'creative']}};
   if (t.name !== 'submit_episode' || !a.drawing) return t;
   const schema:any = t.input_schema;
   const omit = new Set(['script','scenes','cast','art']);
@@ -997,6 +1000,32 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       [id, JSON.stringify([{ at: new Date().toISOString(), msg }]), status ?? null]);
   };
 
+  function prepareCreative(row:any){
+    const settings=CreativeSettings.parse(row.creative.settings),board=Storyboard.parse(row.storyboard);
+    const selection=chooseStyle(board.creative,settings,board.script);
+    if(row.creative.selection?.selected.id!==selection.selected.id)throw Error('Style selection is stale');
+    let pkg:any;
+    if(settings.engine==='classic'){
+      const d=Draft.parse(row.draft),checked=checkDraft(d,null,[],{ownerNote:row.note||'',requiredNames:(row.characters||[]).map((x:any)=>x.name)});
+      const f=finalCheck(row.topic,d,row.draft.research_seen||[]);
+      if([...checked.problems.filter(p=>!isOwnerSoft(p)),...f.errs].length)throw Error('Classic draft failed validation');pkg=f.pkg;
+    }else{
+      const meta=z.object({title_th:z.string().min(4).max(90),angle:z.string().max(600).default(''),sources:z.array(z.object({url:z.string().url(),publisher:z.string(),claim:z.string(),published:z.string().optional(),confidence:z.enum(['high','medium','low']),limitations:z.string().optional()}).passthrough()).max(30),claims:z.array(z.object({text:z.string(),source_ids:z.array(z.number().int().min(0)),kind:z.enum(['fact','assumption','opinion'])})).max(80),captions:z.record(z.string()).default({})}).parse(row.draft);
+      const evidence=new Map((row.draft.research_seen||[]).map((x:any)=>[normUrl(x.url),x]));
+      if(meta.sources.some(x=>!evidence.has(normUrl(x.url))))throw Error('Sources must have retrieved URL evidence');
+      if(meta.claims.some(x=>x.kind==='fact'&&(!x.source_ids.length||x.source_ids.some(i=>i>=meta.sources.length))))throw Error('Factual claims need supporting sources; unknown figures must remain unknown');
+      pkg={topic:row.topic,...meta,script:board.script,storyboard:board.shots,scene_code:'# Lemo source is stored separately; never executed by the Classic renderer.\nSCENES = {}',style:'classic',voice:{voice_id:VOICE_ID},sfx:[],music:null,thumbnail:{mode:'opening_frame',seg:board.script[0].id,offset:0},sources:meta.sources.map(x=>({...x,collected:(evidence.get(normUrl(x.url)) as any)?.collected}))};
+      const fresh=deps.researchFreshness(pkg);if(fresh.length)throw Error(fresh.join('; '));
+    }
+    pkg.voice={...pkg.voice,voice_id:settings.voice_id||pkg.voice.voice_id,model_id:settings.tts_model,language_code:'th'};
+    pkg.sfx=selection.plan.scenes.flatMap(scene=>scene.sound.cues.map(c=>({id:scene.seg+'_'+c.id,prompt:c.prompt,duration:c.duration,model_id:settings.sfx_model,cues:[{seg:scene.seg,word:c.word,n:c.occurrence,offset:c.offset,gain:c.gain}],purpose:c.action})));
+    // No unquoted music generation when a default track is unavailable.
+    pkg.music=null;
+    pkg.storyboard=board.shots;
+    return pkg;
+  }
+  registerCreative(app,pool,{guard:deps.guard,prepare:prepareCreative});
+
   function finalCheck(topic: string, d: DraftT, research: Seen[]) {
     const pkg = buildPackage(topic, d, research);
     const errs = [...deps.validate(pkg)];
@@ -1050,7 +1079,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const usage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, firecrawl_calls: 0, web_searches: 0, turns: 0 };
     const cfg0 = configured();
     const sourceText = String(row.source_text || '');
-    const active: Active = { fc: cfg0.firecrawl, ws: cfg0.web_search, source: !!sourceText };
+    const active: Active = { fc: cfg0.firecrawl, ws: cfg0.web_search, source: !!sourceText,creative:!!row.creative,lemo:row.creative?.engine==='lemo' };
     const researchJob = row.research_job_id || row.id;
     const fcStore = new PgResearchBudget(pool);
     const fc = new BudgetedFirecrawl(fcStore,{apiKey:env.FIRECRAWL_API_KEY || '',baseUrl:FIRECRAWL_URL});
@@ -1070,7 +1099,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const recurringCharacter = row.recurring_character === true;
     const presenterKind = parsePresenterKind(row.presenter_kind, 'legacy');
     const directionVersion = directorVersion(row.director_version);
-    const visualVersion = presentationVersion(row.presentation_version);
+    const visualVersion = row.creative?.engine==='lemo'?0:presentationVersion(row.presentation_version);
     let userText = `Story mode: ${storyMode}. Topic from the owner: ${row.topic}`;
     const sourceBlock = sourceText ? sourceMaterialBlock(sourceText) : '';
     if (sourceBlock) userText += '\n\n' + sourceBlock;
@@ -1101,7 +1130,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const model = row.model && MODEL_RE.test(row.model) ? row.model : MODEL;
     const effort = REASONING_LEVELS.includes(row.reasoning) ? row.reasoning : REASONING;
     const narration = parseNarration(row);
-    const system = systemPrompt(active, storyMode, directionVersion, visualVersion) + '\n\n## Owner-selected narration style\n' + narrationPrompt(narration) + '\n\n## Recurring character policy\n' + characterPolicyPrompt(recurringCharacter, reqChars[0]?.name, presenterKind) +
+    const system = systemPrompt(active, storyMode, directionVersion, visualVersion) + (row.creative?creativePrompt(CreativeSettings.parse(row.creative.settings)):'') + '\n\n## Owner-selected narration style\n' + narrationPrompt(narration) + '\n\n## Recurring character policy\n' + characterPolicyPrompt(recurringCharacter, reqChars[0]?.name, presenterKind) +
       (sourceText ? '\nThe complete owner source is supplied for planning. Identify the sections and claims relevant to the chosen topic and preserve their caveats in the angle, narration and source metadata. After plan_story succeeds the raw source is removed from repeated drawing requests; the full original remains available through read_source_material. Do not claim the entire pasted document has been verified.' : '');
     const depictionInstructions = presenterKind==='context' ? '\n\n## Draw the storyboard examples\nEvery shot must list 1–8 concrete visual subjects in subjects [{id,description}]: include the people or animals, relevant objects, setting details, and the actual example or demonstration the narration describes. Give each a short unique ASCII id. Draw those subjects and actions visibly in the scene; labels, badges, a presenter pointing at a card, or a written description alone do not depict them. For a narrated example such as a child riding a bicycle, draw the child and bicycle in that situation. When draw_scene is complete, acknowledge only the subjects actually drawn in depicted_subjects using the exact planned ids. This acknowledgement is a checklist, not evidence: preview review must still confirm what the pictures show.' : '';
     const conv = PROVIDER === 'openai' ? openaiConversation(system+depictionInstructions, userText, model, effort, active, (message) => log(id, message)) : anthropicConversation(system+depictionInstructions, userText, model, active);
@@ -1210,6 +1239,11 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
               Storyboard.parse(withPresentationPolicy(withDepictionPolicy(withDirectionPolicy(withCharacterPolicy({...u.input,...(storyMode === 'general' ? {story_mode:storyMode} : {})}, recurringCharacter),directionVersion,row.note || ''),presenterKind==='context'),visualVersion));
             const referenceProblem = referencePresenterProblem(plan, recurringCharacter, reqChars[0]?.name);
             if (referenceProblem) throw new Error(referenceProblem);
+            if(row.creative){
+              const selection=chooseStyle(plan.creative,row.creative.settings,plan.script);
+              row.creative={...row.creative,selection};
+              await pool.query('UPDATE drafts SET creative=$2 WHERE id=$1',[id,JSON.stringify(row.creative)]);
+            }
             artwork = reconcileArtwork(storyboard, plan, artwork);
             storyboard = plan;
             active.drawing = true;
@@ -1227,6 +1261,12 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
             results.push({type:'tool_result',tool_use_id:u.id,content:JSON.stringify({status:'saved',saved_scenes:savedScenes,missing_scenes:missingScenes,saved_characters:savedCharacters,missing_characters:requiredNames.filter(name=>!savedCharacters.includes(name)),shared_art_saved:!!(artwork.art_saved || artwork.art),instruction:'Keep saved scenes, portraits and helpers. Draw only reported missing assets, one at a time, then submit metadata only. Use revise_story for further partial narration or shot repairs; do not restate unchanged shots. All affected art must pass preview review again.'})});
           } else if (u.name === 'submit_episode') {
             if (!storyboard) { results.push({type:'tool_result',tool_use_id:u.id,is_error:true,content:'First call plan_story with the complete narration and shots. Do not draw before planning.'}); continue; }
+            if(row.creative?.engine==='lemo'){
+              const d={...u.input,script:storyboard.script,storyboard,research_seen:[...seen.values()]};
+              prepareCreative({...row,storyboard,draft:d});
+              await pool.query("UPDATE drafts SET draft=$2,creative=$3,status='ready',research=$4,usage=$5,problems='[]',error=NULL,updated_at=now() WHERE id=$1",[id,JSON.stringify(d),JSON.stringify(row.creative),JSON.stringify(research),JSON.stringify(usage)]);
+              await log(id,'บทและสไตล์ Lemo พร้อมตรวจ · ต้องอนุมัติค่าใช้จ่ายก่อนผลิต');return;
+            }
             submits++;
             await pool.query("UPDATE drafts SET status='writing', updated_at=now() WHERE id=$1", [id]);
             await log(id, submits === 1 ? 'เขียนสคริปต์และวางฉากเสร็จ กำลังตรวจกฎ' : `แก้ตามที่ตรวจพบ (รอบ ${submits})`);
@@ -1362,6 +1402,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const row = (await pool.query('SELECT * FROM drafts WHERE id=$1', [id])).rows[0];
     if (!row) return { status: 404, body: { error: 'not found' } };
     if (row.status === 'submitted' && row.job_id) return { status: 200, body: { job_id: row.job_id, duplicate: true } };
+    if(row.creative)return {status:409,body:{error:'Review and approve the itemized Creative Motion estimate before production'}};
     if (row.status !== 'ready') return { status: 409, body: { error: `draft is ${row.status}` } };
     if (row.source_type === 'community') {
       const cw = (await pool.query('SELECT rejected_at, draft_id FROM community_winners WHERE id=$1', [row.community_id])).rows[0];
@@ -1448,7 +1489,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
 
   app.get('/app/api/studio/status', g, async (c) => {
     const n = (await pool.query("SELECT count(*)::int AS n FROM drafts WHERE created_at > now() - interval '1 day'")).rows[0].n;
-    return c.json({ ...configured(), presentation:{version:1,label:'โมชั่นกราฟิกแบบเดิม (EP004)',default_style:'classic'}, formats: Object.fromEntries(Object.entries(FORMATS).map(([k, f]) => [k, f.th])), model: MODEL,
+    return c.json({ ...configured(), creative:{...releaseGates(),styles:LEMO_STYLES}, presentation:{version:1,label:'โมชั่นกราฟิกแบบเดิม (EP004)',default_style:'classic'}, formats: Object.fromEntries(Object.entries(FORMATS).map(([k, f]) => [k, f.th])), model: MODEL,
       models: MODEL_CHOICES[PROVIDER], reasoning: PROVIDER === 'openai' ? REASONING : null, reasoning_levels: PROVIDER === 'openai' ? REASONING_LEVELS : [], ai_suggestions:!!env.OPENAI_API_KEY, narration_previews:!!env.OPENAI_API_KEY, narration_styles:NARRATION_STYLES.map(({prompt,...style})=>style), source_text_limit:SOURCE_TEXT_LIMIT, drafts_today: n, daily_limit: DAILY_LIMIT, busy, max_credits: DRAFT_MAX_CREDITS });
   });
 
@@ -1547,7 +1588,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     if (!r) return c.json({ error: 'not found' }, 404);
     const dr = r.draft ? { ...r.draft } : null;
     if (dr) { delete dr.research_seen; if (Array.isArray(dr.cast)) dr.cast = dr.cast.map((x: any) => { const { backdrop, ...rest } = x; return { ...rest, has_backdrop: !!backdrop }; }); }
-    return c.json({ ...summary(r), log: r.log, draft: dr, problems: r.problems, usage: r.usage, model: r.model, reasoning: r.reasoning, job_error: r.job_error ?? null,
+    return c.json({ ...summary(r),creative:r.creative,storyboard:r.storyboard, log: r.log, draft: dr, problems: r.problems, usage: r.usage, model: r.model, reasoning: r.reasoning, job_error: r.job_error ?? null,
       research_budget: env.FIRECRAWL_API_KEY ? await new PgResearchBudget(pool).snapshot(r.research_job_id || r.id) : null, research: r.research, story_mode: r.story_mode || 'name_story', source_text:r.source_text || '' });
   });
 
@@ -1597,6 +1638,8 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       const old = (await pool.query('SELECT id, request_hash FROM drafts WHERE request_key=$1',[request.key])).rows[0];
       if (old) return old.request_hash === request.hash ? c.json({id:old.id},201) : c.json({error:'idempotency-key already used for different input'},409);
     }
+    let creative:any=null;
+    if(b.creative){try{const settings=CreativeSettings.parse(b.creative);if(settings.engine==='lemo'&&!releaseGates().enabled&&!releaseGates().development)return c.json({error:'Lemo is disabled pending release approval'},409);creative={engine:settings.engine,settings};}catch(e){return c.json({error:String(e)},422);}}
     const storyMode = b.story_mode === 'general' ? 'general' : 'name_story';
     let sourceText: string, narration: ReturnType<typeof parseNarration>, recurringCharacter: boolean, presenterKind: PresenterKind;
     try { sourceText = storyMode === 'general' ? parseSourceText(b.source_text) : ''; narration = parseNarration(b); recurringCharacter = parseRecurringCharacter(b.recurring_character); presenterKind = parsePresenterKind(b.presenter_kind); }
@@ -1613,8 +1656,8 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const chars = ids.length ? (await pool.query('SELECT id, name, look, backdrop FROM characters WHERE id = ANY($1::uuid[]) ORDER BY array_position($1::uuid[], id)', [ids])).rows.map((x: any) => ({ id: x.id, name: x.name, look: x.backdrop ? { ...x.look, backdrop: x.backdrop } : x.look })) : [];
     const style = typeof b.style === 'string' && (STYLES[b.style] || b.style==='auto') ? b.style : 'classic';
     const musicMode = b.music_mode === 'ai' ? 'ai' : 'default';
-    const r = await pool.query('INSERT INTO drafts (topic, note, auto_produce, model, reasoning, characters, style, music_mode, story_mode, source_text, request_key, request_hash, narration_style, narration_custom, recurring_character, presenter_kind, director_version, presentation_version) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) ON CONFLICT (request_key) DO NOTHING RETURNING id',
-      [topic, String(b.note || '').trim().slice(0, 1000) || null, !!b.auto_produce, model, PROVIDER === 'openai' ? reasoning : null, JSON.stringify(chars), style, musicMode, storyMode, sourceText || null, request.key, request.hash, narration.narration_style, narration.narration_custom, recurringCharacter, presenterKind, 1, 1]);
+    const r = await pool.query('INSERT INTO drafts (topic, note, auto_produce, model, reasoning, characters, style, music_mode, story_mode, source_text, request_key, request_hash, narration_style, narration_custom, recurring_character, presenter_kind, director_version, presentation_version, creative) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) ON CONFLICT (request_key) DO NOTHING RETURNING id',
+      [topic, String(b.note || '').trim().slice(0, 1000) || null, creative?false:!!b.auto_produce, model, PROVIDER === 'openai' ? reasoning : null, JSON.stringify(chars), style, musicMode, storyMode, sourceText || null, request.key, request.hash, narration.narration_style, narration.narration_custom, recurringCharacter, presenterKind, 1, creative?.engine==='lemo'?0:1, creative?JSON.stringify(creative):null]);
     if (!r.rows.length) {
       const old = (await pool.query('SELECT id, request_hash FROM drafts WHERE request_key=$1',[request.key])).rows[0];
       return old?.request_hash === request.hash ? c.json({id:old.id},201) : c.json({error:'idempotency-key already used for different input'},409);
@@ -1700,10 +1743,10 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const reuseCheckpoints = !!(row.status === 'failed' && row.storyboard && sameNarration && recurringCharacter === (row.recurring_character === true) && presenterKind === parsePresenterKind(row.presenter_kind, 'legacy') && (b.note === undefined || String(b.note).trim() === String(row.note || '').trim()));
     const directionVersion = reuseCheckpoints ? directorVersion(row.director_version) : 1;
     const visualVersion = reuseCheckpoints ? presentationVersion(row.presentation_version) : 1;
-    const r = await pool.query('INSERT INTO drafts (topic, note, parent_id, auto_produce, model, reasoning, characters, source_type, community_id, style, music_mode, story_mode, source_text, research_job_id, request_key, request_hash, narration_style, narration_custom, recurring_character, presenter_kind, director_version, presentation_version) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) ON CONFLICT (request_key) DO NOTHING RETURNING id',
-      [row.topic, String(b.note ?? row.note ?? '').trim().slice(0, 1000) || null, row.id, row.source_type === 'community' ? false : !!b.auto_produce,
+    const r = await pool.query('INSERT INTO drafts (topic, note, parent_id, auto_produce, model, reasoning, characters, source_type, community_id, style, music_mode, story_mode, source_text, research_job_id, request_key, request_hash, narration_style, narration_custom, recurring_character, presenter_kind, director_version, presentation_version, creative) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23) ON CONFLICT (request_key) DO NOTHING RETURNING id',
+      [row.topic, String(b.note ?? row.note ?? '').trim().slice(0, 1000) || null, row.id, row.source_type === 'community'||row.creative ? false : !!b.auto_produce,
         typeof b.model === 'string' && MODEL_RE.test(b.model) ? b.model : row.model, REASONING_LEVELS.includes(b.reasoning) ? b.reasoning : row.reasoning,
-        JSON.stringify(row.characters ?? []), row.source_type || 'studio', row.community_id ?? null, keepStyle, keepMusic, row.story_mode || 'name_story', row.source_text || null, row.research_job_id || row.id, request.key, request.hash, narration.narration_style, narration.narration_custom, recurringCharacter, presenterKind, directionVersion, visualVersion]);
+        JSON.stringify(row.characters ?? []), row.source_type || 'studio', row.community_id ?? null, keepStyle, keepMusic, row.story_mode || 'name_story', row.source_text || null, row.research_job_id || row.id, request.key, request.hash, narration.narration_style, narration.narration_custom, recurringCharacter, presenterKind, directionVersion, visualVersion, row.creative?JSON.stringify(row.creative):null]);
     if (!r.rows.length) {
       const old = (await pool.query('SELECT id, request_hash FROM drafts WHERE request_key=$1',[request.key])).rows[0];
       return old?.request_hash === request.hash ? c.json({id:old.id},201) : c.json({error:'idempotency-key already used for different input'},409);

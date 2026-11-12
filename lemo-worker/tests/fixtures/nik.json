@@ -1,0 +1,264 @@
+{
+  "mock_provider": true,
+  "topic": "ประเทศไทยมีคนชื่อ นิก กี่คน?",
+  "script": [
+    {
+      "id": "s1",
+      "text": "คนชื่อ นิก มีเท่าไร",
+      "beat": "hook"
+    },
+    {
+      "id": "s2",
+      "text": "เรายังไม่มีตัวเลขที่ยืนยันได้",
+      "beat": "info"
+    },
+    {
+      "id": "s3",
+      "text": "ชื่อเล่นไม่ควรถูกเดาจากยอดประชากร",
+      "beat": "rehook"
+    },
+    {
+      "id": "s4",
+      "text": "บอกว่าไม่ทราบ ดีกว่าแต่งตัวเลข",
+      "beat": "payoff"
+    }
+  ],
+  "creative": {
+    "analysis": {
+      "genre": "Unknown count must stay a question, never animate an invented statistic. genre",
+      "arc": "Unknown count must stay a question, never animate an invented statistic. arc",
+      "tone": "Unknown count must stay a question, never animate an invented statistic. tone",
+      "audience": "Unknown count must stay a question, never animate an invented statistic. audience",
+      "hook": "Unknown count must stay a question, never animate an invented statistic. hook",
+      "factual_density": "Unknown count must stay a question, never animate an invented statistic. factual_density",
+      "complexity": "Unknown count must stay a question, never animate an invented statistic. complexity",
+      "characters": "Unknown count must stay a question, never animate an invented statistic. characters",
+      "locations": "Unknown count must stay a question, never animate an invented statistic. locations",
+      "metaphors": "Unknown count must stay a question, never animate an invented statistic. metaphors",
+      "pacing": "Unknown count must stay a question, never animate an invented statistic. pacing",
+      "identity": "Unknown count must stay a question, never animate an invented statistic. identity",
+      "brand": "Unknown count must stay a question, never animate an invented statistic. brand",
+      "budget": "Unknown count must stay a question, never animate an invented statistic. budget",
+      "capabilities": "Unknown count must stay a question, never animate an invented statistic. capabilities"
+    },
+    "candidates": [
+      {
+        "id": "dataviz",
+        "scores": {
+          "relevance": 0.91,
+          "storytelling": 0.91,
+          "emotion": 0.91,
+          "characters": 0.91,
+          "continuity": 0.91,
+          "feasibility": 0.91
+        },
+        "confidence": 0.82,
+        "reasons": [
+          "Unknown count must stay a question, never animate an invented statistic."
+        ],
+        "suitable": true
+      },
+      {
+        "id": "firefly-pointillism",
+        "scores": {
+          "relevance": 0.48,
+          "storytelling": 0.48,
+          "emotion": 0.48,
+          "characters": 0.48,
+          "continuity": 0.48,
+          "feasibility": 0.48
+        },
+        "confidence": 0.82,
+        "reasons": [
+          "Alternative technique with weaker narrative fit."
+        ],
+        "suitable": true
+      },
+      {
+        "id": "rubber-hose",
+        "scores": {
+          "relevance": 0.48,
+          "storytelling": 0.48,
+          "emotion": 0.48,
+          "characters": 0.48,
+          "continuity": 0.48,
+          "feasibility": 0.48
+        },
+        "confidence": 0.82,
+        "reasons": [
+          "Alternative technique with weaker narrative fit."
+        ],
+        "suitable": true
+      }
+    ],
+    "identity": {
+      "direction": "Unknown count must stay a question, never animate an invented statistic.",
+      "typography": "Maintain the same typography across the entire film.",
+      "camera": "Maintain the same camera across the entire film.",
+      "motion": "Maintain the same motion across the entire film.",
+      "characters": "Maintain the same characters across the entire film.",
+      "locations": "Maintain the same locations across the entire film.",
+      "props": "Maintain the same props across the entire film.",
+      "lighting": "Maintain the same lighting across the entire film.",
+      "transitions": "Maintain the same transitions across the entire film.",
+      "palette": [
+        "#102B46",
+        "#55D6C2",
+        "#FFF4D6"
+      ]
+    },
+    "scenes": [
+      {
+        "seg": "s1",
+        "objective": "Unknown count must stay a question, never animate an invented statistic.",
+        "shot": "Medium explanatory shot",
+        "camera": "Slow purposeful push toward the action",
+        "composition": "Keep subjects in the middle, subtitles in the bottom safe area",
+        "elements": [
+          "question marks",
+          "separate people cards and an empty evidence scale"
+        ],
+        "emotion": "Curious and clear",
+        "location": "Same consistent story environment",
+        "characters": [],
+        "transition": "Match cut following the active object",
+        "events": [
+          {
+            "at": 0,
+            "action": "Establish the actual subject and its context"
+          },
+          {
+            "at": 0.55,
+            "action": "Demonstrate the narrated change and resolve the visual question"
+          }
+        ],
+        "sound": {
+          "decision": "effects",
+          "reason": "Accent the reveal gently",
+          "cues": [
+            {
+              "id": "accent",
+              "word": "คนช",
+              "occurrence": 0,
+              "offset": 0,
+              "action": "The object appears",
+              "prompt": "Single gentle wooden click, no voice or music",
+              "duration": 0.5,
+              "gain": 0.15
+            }
+          ]
+        }
+      },
+      {
+        "seg": "s2",
+        "objective": "Unknown count must stay a question, never animate an invented statistic.",
+        "shot": "Medium explanatory shot",
+        "camera": "Slow purposeful push toward the action",
+        "composition": "Keep subjects in the middle, subtitles in the bottom safe area",
+        "elements": [
+          "question marks",
+          "separate people cards and an empty evidence scale"
+        ],
+        "emotion": "Curious and clear",
+        "location": "Same consistent story environment",
+        "characters": [],
+        "transition": "Match cut following the active object",
+        "events": [
+          {
+            "at": 0,
+            "action": "Establish the actual subject and its context"
+          },
+          {
+            "at": 0.55,
+            "action": "Demonstrate the narrated change and resolve the visual question"
+          }
+        ],
+        "sound": {
+          "decision": "silence",
+          "reason": "Leave room for this narration to be understood",
+          "cues": []
+        }
+      },
+      {
+        "seg": "s3",
+        "objective": "Unknown count must stay a question, never animate an invented statistic.",
+        "shot": "Medium explanatory shot",
+        "camera": "Slow purposeful push toward the action",
+        "composition": "Keep subjects in the middle, subtitles in the bottom safe area",
+        "elements": [
+          "question marks",
+          "separate people cards and an empty evidence scale"
+        ],
+        "emotion": "Curious and clear",
+        "location": "Same consistent story environment",
+        "characters": [],
+        "transition": "Match cut following the active object",
+        "events": [
+          {
+            "at": 0,
+            "action": "Establish the actual subject and its context"
+          },
+          {
+            "at": 0.55,
+            "action": "Demonstrate the narrated change and resolve the visual question"
+          }
+        ],
+        "sound": {
+          "decision": "effects",
+          "reason": "Accent the reveal gently",
+          "cues": [
+            {
+              "id": "accent",
+              "word": "ชื่",
+              "occurrence": 0,
+              "offset": 0,
+              "action": "The object appears",
+              "prompt": "Single gentle wooden click, no voice or music",
+              "duration": 0.5,
+              "gain": 0.15
+            }
+          ]
+        }
+      },
+      {
+        "seg": "s4",
+        "objective": "Unknown count must stay a question, never animate an invented statistic.",
+        "shot": "Medium explanatory shot",
+        "camera": "Slow purposeful push toward the action",
+        "composition": "Keep subjects in the middle, subtitles in the bottom safe area",
+        "elements": [
+          "question marks",
+          "separate people cards and an empty evidence scale"
+        ],
+        "emotion": "Curious and clear",
+        "location": "Same consistent story environment",
+        "characters": [],
+        "transition": "Match cut following the active object",
+        "events": [
+          {
+            "at": 0,
+            "action": "Establish the actual subject and its context"
+          },
+          {
+            "at": 0.55,
+            "action": "Demonstrate the narrated change and resolve the visual question"
+          }
+        ],
+        "sound": {
+          "decision": "silence",
+          "reason": "Leave room for this narration to be understood",
+          "cues": []
+        }
+      }
+    ]
+  },
+  "sources": [
+    {
+      "url": "https://www.bora.dopa.go.th/",
+      "publisher": "BORA",
+      "collected": "2026-11-12",
+      "claim": "Registration administration portal was accessible.",
+      "limitations": "The statistical subdomain could not be accessed in this verification. No verified nickname count was found; no absence-of-data claim is asserted."
+    }
+  ]
+}

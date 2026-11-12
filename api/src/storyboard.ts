@@ -1,3 +1,4 @@
+import {CreativePlan} from './creative.js';
 import { z } from 'zod';
 import {Layout,presentationSceneProblems} from './presentation.js';
 
@@ -16,6 +17,7 @@ export const SoundPolicy = z.object({mode:z.enum(['designed','quiet']),owner_quo
 
 /** The story is agreed before artwork is generated. Legacy drafts have no plan. */
 export const Storyboard = z.object({
+  creative:CreativePlan.optional(),
   story_mode: z.enum(['name_story','general']).optional(),
   recurring_character: z.boolean().optional(),
   direction_version:z.literal(1).optional(),

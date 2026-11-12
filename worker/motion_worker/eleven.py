@@ -14,11 +14,11 @@ def _headers():
     return {'xi-api-key': config.ELEVENLABS_API_KEY, 'content-type': 'application/json'}
 
 
-def _post(path, body, params=None, expect_json=True, timeout=300):
+def _post(path, body, params=None, expect_json=True, timeout=300, attempts=4):
     url = config.ELEVENLABS_BASE + path
-    for attempt in range(4):
+    for attempt in range(attempts):
         r = requests.post(url, headers=_headers(), json=body, params=params or {}, timeout=timeout)
-        if r.status_code in (429, 500, 502, 503, 504) and attempt < 3:
+        if r.status_code in (429, 500, 502, 503, 504) and attempt < attempts - 1:
             time.sleep(2 ** attempt * 3)
             continue
         if r.status_code >= 400:
@@ -37,45 +37,75 @@ def cache_key(kind, payload):
     return kind + ':' + hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
+def validated_alignment(data, text):
+    """Use real character times only. Never interpolate a missing Thai alignment."""
+    import math, re
+    compact = lambda value: re.sub(r'\s+', '', value)
+    for name in ('normalized_alignment', 'alignment'):
+        align = data.get(name)
+        if not isinstance(align, dict):
+            continue
+        chars = align.get('characters', [])
+        starts = align.get('character_start_times_seconds', [])
+        ends = align.get('character_end_times_seconds', [])
+        if not chars or len(chars) != len(starts) or len(chars) != len(ends):
+            continue
+        if not all(isinstance(c, str) for c in chars) or compact(''.join(chars)) != compact(text):
+            continue
+        if any(not isinstance(t, (int, float)) or not math.isfinite(t) or t < 0 for t in starts + ends):
+            continue
+        if any(a > b for a, b in zip(starts, ends)) or any(a > b for a, b in zip(starts, starts[1:])) or any(a > b for a, b in zip(ends, ends[1:])):
+            continue
+        return align, name
+    raise ElevenError('Missing or invalid narration alignment; accurate Thai timing is required')
+
+
 def tts_with_timestamps(text, voice_id, model_id='eleven_v4', language_code='th', stability=0.4, similarity_boost=0.75,
                         previous_text=None, next_text=None, speed=None):
-    body = {'text': text, 'model_id': model_id, 'language_code': language_code,
-            'voice_settings': {'stability': stability, 'similarity_boost': similarity_boost}}
-    if speed and abs(float(speed) - 1.0) > 0.01:   # owner's rule: a brisk voice (ElevenLabs accepts 0.7-1.2)
-        body['voice_settings']['speed'] = max(0.7, min(1.2, float(speed)))
-    if previous_text:
-        body['previous_text'] = previous_text
-    if next_text:
-        body['next_text'] = next_text
-    try:
-        try:
-            data, meta = _post(f'/v1/text-to-speech/{voice_id}/with-timestamps', body, {'output_format': 'mp3_44100_128'})
-        except ElevenError as e:
-            if 'speed' in body['voice_settings'] and 'speed' in str(e).lower():   # this model refuses "speed": keep the default pace rather than fail
-                del body['voice_settings']['speed']
-                data, meta = _post(f'/v1/text-to-speech/{voice_id}/with-timestamps', body, {'output_format': 'mp3_44100_128'})
-                meta['speed_ignored'] = True
-            else:
-                raise
-    except ElevenError as e:
-        # some models reject language_code / settings combinations; retry with the documented Thai-capable v3 model
-        if model_id != 'eleven_v3' and ('model' in str(e).lower() or '422' in str(e) or '400' in str(e)):
-            body['model_id'] = 'eleven_v3'
-            data, meta = _post(f'/v1/text-to-speech/{voice_id}/with-timestamps', body, {'output_format': 'mp3_44100_128'})
-            meta['model_fallback'] = 'eleven_v3'
-        else:
-            raise
-    audio = base64.b64decode(data['audio_base64'])
-    align = data.get('alignment') or data.get('normalized_alignment')
-    if not audio or not align:
-        raise ElevenError('TTS response missing audio or alignment')
-    meta['model_id'] = body['model_id']
+    if not voice_id:
+        raise ElevenError('A configured voice_id is required')
+    if model_id == 'eleven_v4':
+        if len(text) > 2000:
+            raise ElevenError('Split v4 dialogue into requests of at most 2000 characters')
+        body = {'inputs': [{'text': text, 'voice_id': voice_id}], 'model_id': model_id,
+                'language_code': language_code, 'settings': {'stability': stability, 'similarity': similarity_boost}}
+        path = '/v1/text-to-dialogue/with-timestamps'
+    else:
+        body = {'text': text, 'model_id': model_id, 'language_code': language_code,
+                'voice_settings': {'stability': stability, 'similarity_boost': similarity_boost}}
+        if speed:
+            body['voice_settings']['speed'] = max(.7, min(1.2, float(speed)))
+        if previous_text:
+            body['previous_text'] = previous_text
+        if next_text:
+            body['next_text'] = next_text
+        path = f'/v1/text-to-speech/{voice_id}/with-timestamps'
+    # POST has no guaranteed provider idempotency. The caller reserves before it;
+    # a timeout/5xx is ambiguous and must not trigger another paid model/request.
+    data, meta = _post(path, body, {'output_format': 'mp3_44100_128'}, attempts=1)
+    audio = base64.b64decode(data.get('audio_base64', ''), validate=True)
+    align, origin = validated_alignment(data, text)
+    if not audio:
+        raise ElevenError('Narration audio missing')
+    if model_id == 'eleven_v4' and not data.get('voice_segments'):
+        raise ElevenError('v4 response missing voice_segments')
+    meta.update(model_id=model_id, alignment_source=origin, voice_segments=data.get('voice_segments', []),
+                speed_ignored=model_id == 'eleven_v4' and bool(speed and speed != 1))
     return audio, align, meta
 
 
-def sound_effect(prompt, duration, prompt_influence=0.5):
-    body = {'text': prompt, 'duration_seconds': duration, 'prompt_influence': prompt_influence, 'model_id': 'eleven_text_to_sound_v2'}
-    audio, meta = _post('/v1/sound-generation', body, {'output_format': 'mp3_44100_128'}, expect_json=False)
+def sound_effect(prompt, duration, prompt_influence=0.5, model_id='eleven_text_to_sound_v2', loop=False):
+    if model_id not in ('eleven_text_to_sound_v3', 'eleven_text_to_sound_v2'):
+        raise ElevenError('Unsupported SFX model')
+    if loop and model_id != 'eleven_text_to_sound_v2':
+        raise ElevenError('SFX v3 does not support loop')
+    if not .5 <= float(duration) <= 30:
+        raise ElevenError('SFX duration must be 0.5–30 seconds')
+    body = {'text': prompt, 'duration_seconds': duration, 'prompt_influence': prompt_influence, 'model_id': model_id, 'loop': loop}
+    audio, meta = _post('/v1/sound-generation', body, {'output_format': 'mp3_44100_128'}, expect_json=False, attempts=1)
+    if not audio:
+        raise ElevenError('SFX response missing audio')
+    meta.update(model_id=model_id, prompt=prompt, duration=duration)
     return audio, meta
 
 

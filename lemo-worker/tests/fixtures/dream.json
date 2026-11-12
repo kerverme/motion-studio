@@ -1,0 +1,268 @@
+{
+  "mock_provider": true,
+  "topic": "ทำไมคนเราถึงฝันตอนนอน?",
+  "script": [
+    {
+      "id": "s1",
+      "text": "หลับแล้วสมองยังทำงาน",
+      "beat": "hook"
+    },
+    {
+      "id": "s2",
+      "text": "ความฝันมักเกิดในช่วง REM",
+      "beat": "info"
+    },
+    {
+      "id": "s3",
+      "text": "ตาขยับ แต่กล้ามเนื้อส่วนใหญ่ผ่อนลง",
+      "beat": "rehook"
+    },
+    {
+      "id": "s4",
+      "text": "ภาพฝันเป็นภาพเล่า ไม่ใช่ภาพตรวจสมอง",
+      "beat": "payoff"
+    }
+  ],
+  "creative": {
+    "analysis": {
+      "genre": "Dream imagery needs atmosphere while clearly separating illustration from measured brain activity. genre",
+      "arc": "Dream imagery needs atmosphere while clearly separating illustration from measured brain activity. arc",
+      "tone": "Dream imagery needs atmosphere while clearly separating illustration from measured brain activity. tone",
+      "audience": "Dream imagery needs atmosphere while clearly separating illustration from measured brain activity. audience",
+      "hook": "Dream imagery needs atmosphere while clearly separating illustration from measured brain activity. hook",
+      "factual_density": "Dream imagery needs atmosphere while clearly separating illustration from measured brain activity. factual_density",
+      "complexity": "Dream imagery needs atmosphere while clearly separating illustration from measured brain activity. complexity",
+      "characters": "Dream imagery needs atmosphere while clearly separating illustration from measured brain activity. characters",
+      "locations": "Dream imagery needs atmosphere while clearly separating illustration from measured brain activity. locations",
+      "metaphors": "Dream imagery needs atmosphere while clearly separating illustration from measured brain activity. metaphors",
+      "pacing": "Dream imagery needs atmosphere while clearly separating illustration from measured brain activity. pacing",
+      "identity": "Dream imagery needs atmosphere while clearly separating illustration from measured brain activity. identity",
+      "brand": "Dream imagery needs atmosphere while clearly separating illustration from measured brain activity. brand",
+      "budget": "Dream imagery needs atmosphere while clearly separating illustration from measured brain activity. budget",
+      "capabilities": "Dream imagery needs atmosphere while clearly separating illustration from measured brain activity. capabilities"
+    },
+    "candidates": [
+      {
+        "id": "dataviz",
+        "scores": {
+          "relevance": 0.48,
+          "storytelling": 0.48,
+          "emotion": 0.48,
+          "characters": 0.48,
+          "continuity": 0.48,
+          "feasibility": 0.48
+        },
+        "confidence": 0.82,
+        "reasons": [
+          "Alternative technique with weaker narrative fit."
+        ],
+        "suitable": true
+      },
+      {
+        "id": "firefly-pointillism",
+        "scores": {
+          "relevance": 0.91,
+          "storytelling": 0.91,
+          "emotion": 0.91,
+          "characters": 0.91,
+          "continuity": 0.91,
+          "feasibility": 0.91
+        },
+        "confidence": 0.82,
+        "reasons": [
+          "Dream imagery needs atmosphere while clearly separating illustration from measured brain activity."
+        ],
+        "suitable": true
+      },
+      {
+        "id": "rubber-hose",
+        "scores": {
+          "relevance": 0.48,
+          "storytelling": 0.48,
+          "emotion": 0.48,
+          "characters": 0.48,
+          "continuity": 0.48,
+          "feasibility": 0.48
+        },
+        "confidence": 0.82,
+        "reasons": [
+          "Alternative technique with weaker narrative fit."
+        ],
+        "suitable": true
+      }
+    ],
+    "identity": {
+      "direction": "Dream imagery needs atmosphere while clearly separating illustration from measured brain activity.",
+      "typography": "Maintain the same typography across the entire film.",
+      "camera": "Maintain the same camera across the entire film.",
+      "motion": "Maintain the same motion across the entire film.",
+      "characters": "Maintain the same characters across the entire film.",
+      "locations": "Maintain the same locations across the entire film.",
+      "props": "Maintain the same props across the entire film.",
+      "lighting": "Maintain the same lighting across the entire film.",
+      "transitions": "Maintain the same transitions across the entire film.",
+      "palette": [
+        "#172D29",
+        "#D2DC72",
+        "#FFF3BB"
+      ]
+    },
+    "scenes": [
+      {
+        "seg": "s1",
+        "objective": "Dream imagery needs atmosphere while clearly separating illustration from measured brain activity.",
+        "shot": "Medium explanatory shot",
+        "camera": "Slow purposeful push toward the action",
+        "composition": "Keep subjects in the middle, subtitles in the bottom safe area",
+        "elements": [
+          "sleeping person",
+          "moon",
+          "moving light particles and an eye symbol"
+        ],
+        "emotion": "Curious and clear",
+        "location": "Same consistent story environment",
+        "characters": [],
+        "transition": "Match cut following the active object",
+        "events": [
+          {
+            "at": 0,
+            "action": "Establish the actual subject and its context"
+          },
+          {
+            "at": 0.55,
+            "action": "Demonstrate the narrated change and resolve the visual question"
+          }
+        ],
+        "sound": {
+          "decision": "effects",
+          "reason": "Accent the reveal gently",
+          "cues": [
+            {
+              "id": "accent",
+              "word": "หลั",
+              "occurrence": 0,
+              "offset": 0,
+              "action": "The object appears",
+              "prompt": "Single gentle wooden click, no voice or music",
+              "duration": 0.5,
+              "gain": 0.15
+            }
+          ]
+        }
+      },
+      {
+        "seg": "s2",
+        "objective": "Dream imagery needs atmosphere while clearly separating illustration from measured brain activity.",
+        "shot": "Medium explanatory shot",
+        "camera": "Slow purposeful push toward the action",
+        "composition": "Keep subjects in the middle, subtitles in the bottom safe area",
+        "elements": [
+          "sleeping person",
+          "moon",
+          "moving light particles and an eye symbol"
+        ],
+        "emotion": "Curious and clear",
+        "location": "Same consistent story environment",
+        "characters": [],
+        "transition": "Match cut following the active object",
+        "events": [
+          {
+            "at": 0,
+            "action": "Establish the actual subject and its context"
+          },
+          {
+            "at": 0.55,
+            "action": "Demonstrate the narrated change and resolve the visual question"
+          }
+        ],
+        "sound": {
+          "decision": "silence",
+          "reason": "Leave room for this narration to be understood",
+          "cues": []
+        }
+      },
+      {
+        "seg": "s3",
+        "objective": "Dream imagery needs atmosphere while clearly separating illustration from measured brain activity.",
+        "shot": "Medium explanatory shot",
+        "camera": "Slow purposeful push toward the action",
+        "composition": "Keep subjects in the middle, subtitles in the bottom safe area",
+        "elements": [
+          "sleeping person",
+          "moon",
+          "moving light particles and an eye symbol"
+        ],
+        "emotion": "Curious and clear",
+        "location": "Same consistent story environment",
+        "characters": [],
+        "transition": "Match cut following the active object",
+        "events": [
+          {
+            "at": 0,
+            "action": "Establish the actual subject and its context"
+          },
+          {
+            "at": 0.55,
+            "action": "Demonstrate the narrated change and resolve the visual question"
+          }
+        ],
+        "sound": {
+          "decision": "effects",
+          "reason": "Accent the reveal gently",
+          "cues": [
+            {
+              "id": "accent",
+              "word": "ตาข",
+              "occurrence": 0,
+              "offset": 0,
+              "action": "The object appears",
+              "prompt": "Single gentle wooden click, no voice or music",
+              "duration": 0.5,
+              "gain": 0.15
+            }
+          ]
+        }
+      },
+      {
+        "seg": "s4",
+        "objective": "Dream imagery needs atmosphere while clearly separating illustration from measured brain activity.",
+        "shot": "Medium explanatory shot",
+        "camera": "Slow purposeful push toward the action",
+        "composition": "Keep subjects in the middle, subtitles in the bottom safe area",
+        "elements": [
+          "sleeping person",
+          "moon",
+          "moving light particles and an eye symbol"
+        ],
+        "emotion": "Curious and clear",
+        "location": "Same consistent story environment",
+        "characters": [],
+        "transition": "Match cut following the active object",
+        "events": [
+          {
+            "at": 0,
+            "action": "Establish the actual subject and its context"
+          },
+          {
+            "at": 0.55,
+            "action": "Demonstrate the narrated change and resolve the visual question"
+          }
+        ],
+        "sound": {
+          "decision": "silence",
+          "reason": "Leave room for this narration to be understood",
+          "cues": []
+        }
+      }
+    ]
+  },
+  "sources": [
+    {
+      "url": "https://www.nhlbi.nih.gov/health/sleep/stages-of-sleep",
+      "publisher": "NHLBI",
+      "collected": "2026-11-12",
+      "claim": "During REM the brain is active; dreams usually occur during REM and muscles usually become limp.",
+      "limitations": "Illustrative animation does not depict an individual brain scan."
+    }
+  ]
+}

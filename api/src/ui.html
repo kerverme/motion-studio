@@ -833,7 +833,17 @@ function studio(st, drafts){
   const narrationChange=()=>{narrationCustomLabel.hidden=narrationSel.value!=='custom';narrationHint.textContent=(narrationChoices.find(x=>x.id===narrationSel.value)||{}).description||'';try{sessionStorage.setItem('ms.narration_style',narrationSel.value);sessionStorage.setItem('ms.narration_custom',narrationCustom.value);}catch{}};
   narrationSel.addEventListener('change',narrationChange);narrationCustom.addEventListener('input',narrationChange);narrationChange();
   const inputProblem=()=>modeSel.value==='general'&&sourceText.value.length>sourceLimit?'เนื้อหาเกิน '+sourceLimit.toLocaleString('th-TH')+' ตัวอักษร กรุณาลดหรือแบ่งเป็นหลายเรื่องก่อนส่ง':narrationSel.value==='custom'&&!narrationCustom.value.trim()?'กรุณาบอกสไตล์การเล่าที่ต้องการในช่องกำหนดเอง':narrationSel.value==='custom'&&narrationCustom.value.trim().length>1000?'สไตล์ที่กำหนดเองเกิน 1,000 ตัวอักษร กรุณาย่อก่อนส่ง':'';
-  const auto = h('input',{type:'checkbox'});
+  const auto = h('input',{type:'checkbox',disabled:true});
+  const engineSel=h('select',{class:'field','aria-label':'Rendering engine'},h('option',{value:'classic'},'Classic Motion Studio'),h('option',{value:'lemo',disabled:!st.creative?.enabled&&!st.creative?.development},'Lemo Creative Motion'+(!st.creative?.enabled?' · ทดลองพัฒนา':'')));
+  const creativeMode=h('select',{class:'field','aria-label':'การเลือกสไตล์'},h('option',{value:'auto'},'Auto — AI Director'),h('option',{value:'manual'},'Manual — เลือกเอง'));
+  const creativeStyle=h('select',{class:'field','aria-label':'สไตล์ Lemo',hidden:true},(st.creative?.styles||[]).map(x=>h('option',{value:x.id},x.name)));
+  creativeMode.addEventListener('change',()=>creativeStyle.hidden=creativeMode.value!=='manual');
+  const voiceModel=h('select',{class:'field','aria-label':'โมเดลเสียง'},['eleven_v4','eleven_v3','eleven_multilingual_v2'].map(x=>h('option',{value:x},x)));
+  const creativeBudget=h('input',{class:'field',type:'number',min:.01,max:1000,step:.01,value:10,'aria-label':'งบสูงสุด USD'});
+  const lemoOptions=h('div',{hidden:true},h('label',{},'การกำกับภาพ',creativeMode),creativeStyle);
+  engineSel.addEventListener('change',()=>lemoOptions.hidden=engineSel.value!=='lemo');
+  const creativePanel=h('div',{class:'chars'},h('h3',{},'เครื่องมือสร้างภาพ'),engineSel,lemoOptions,h('div',{class:'row'},h('label',{},'เสียงบรรยาย',voiceModel),h('label',{},'งบผลิตสูงสุด (USD)',creativeBudget)),h('p',{class:'sub'},'วางแผนเสียงให้ทุกฉาก · เอฟเฟกต์ v3 · ตรวจราคาและอนุมัติก่อนผลิต เสียงและภาพที่มีแล้วจะใช้ซ้ำ'));
+  const creativeInput=()=>({engine:engineSel.value,mode:creativeMode.value,...(creativeMode.value==='manual'?{manual_style:creativeStyle.value}:{}),tts_model:voiceModel.value,sfx_model:'eleven_text_to_sound_v3',max_usd:Number(creativeBudget.value)});
   let saved={}; try{ saved=JSON.parse(localStorage.getItem('ms.ai')||'{}'); }catch{}
   const modelSel = h('select',{class:'field','aria-label':'โมเดล',style:'width:auto;padding:8px 10px'}, (st.models||[]).map(m=>h('option',{value:m.id},m.label)));
   modelSel.value = (st.models||[]).some(m=>m.id===saved.model) ? saved.model : st.model;
@@ -846,7 +856,7 @@ function studio(st, drafts){
   const go = h('button',{class:'btn primary',disabled:!ready,on:{click:async()=>{
     err.textContent=inputProblem();if(err.textContent)return; const general=modeSel.value==='general'; const t=general?(topic.value.trim()||sourceText.value.trim().slice(0,120)):openerTopic(heroName.value.trim(), topic.value.trim()); if (t.length<4){ err.textContent=general?'พิมพ์หัวข้อหรือเนื้อหาอย่างน้อย 4 ตัวอักษร':'ใส่ชื่อตัวเอก หรือพิมพ์เรื่องที่จะเล่าอย่างน้อย 4 ตัวอักษร'; topic.focus(); return; }
     go.disabled=true; go.textContent='กำลังส่ง…';
-    try{ const r=await draftPost('/app/api/studio/drafts',{topic:t,story_mode:modeSel.value,source_text:general?sourceText.value:'',narration_style:narrationSel.value,narration_custom:narrationSel.value==='custom'?narrationCustom.value.trim():'',recurring_character:general&&recurringCharacter.checked,presenter_kind:'context',note:note.value,auto_produce:auto.checked,model:modelSel.value,reasoning:effSel?effSel.value:undefined,characters:general&&!useChars.checked?[]:selectedChars(),style:selectedStyle(),music_mode:selectedMusic()});
+    try{ const r=await draftPost('/app/api/studio/drafts',{topic:t,creative:creativeInput(),story_mode:modeSel.value,source_text:general?sourceText.value:'',narration_style:narrationSel.value,narration_custom:narrationSel.value==='custom'?narrationCustom.value.trim():'',recurring_character:general&&recurringCharacter.checked,presenter_kind:'context',note:note.value,auto_produce:auto.checked,model:modelSel.value,reasoning:effSel?effSel.value:undefined,characters:general&&!useChars.checked?[]:selectedChars(),style:selectedStyle(),music_mode:selectedMusic()});
       try{ sessionStorage.removeItem('ms.topic'); sessionStorage.removeItem('ms.hero'); sessionStorage.removeItem('ms.source_text'); sessionStorage.removeItem('ms.note'); }catch{} toast('เริ่มค้นข้อมูลแล้ว'); await load(); openDraft(r.id); }
     catch(x){ err.textContent=x.message; go.disabled=false; go.textContent='เริ่มค้นและเขียน'; } }}},'เริ่มค้นและเขียน');
   const heroGroup=h('label',{class:'sub'},'ชื่อตัวเอก ',heroName);
@@ -951,11 +961,12 @@ function studio(st, drafts){
     h('details',{}, h('summary',{},'เพิ่มแนวทาง (ไม่บังคับ)'), h('div',{style:'margin-top:10px'},note)),
     h('div',{class:'row',style:'justify-content:flex-start;gap:8px'}, h('span',{class:'sub'},'สมอง'), modelSel, effSel),
     narrationPanel,
+    creativePanel,
     recurringPanel,
     stylePanel(),
     musicPanel(),
     charChoice, charsPanel,
-    h('label',{class:'check'}, auto, h('span',{},'ผลิตต่อทันทีเมื่อร่างผ่านการตรวจกฎ (ไม่ต้องรอฉันตรวจ)')),
+    h('label',{class:'check'}, auto, h('span',{},'งานใหม่ต้องตรวจราคาและอนุมัติก่อนผลิต')),
     h('div',{class:'row'}, h('span',{class:'sub'}, 'วันนี้ใช้ไป '+st.drafts_today+' จาก '+st.daily_limit+' ร่าง · ค่าเสียงไม่เกิน '+fmtN(st.max_credits)+' เครดิต/คลิป'), go),
     err);
   const list = drafts.length ? h('div',{class:'drafts'}, h('h2',{},'ร่างล่าสุด'), drafts.map(d=>{
@@ -965,6 +976,35 @@ function studio(st, drafts){
       h('span',{class:'sub'}, fmtD(d.created_at)+(d.last?' · '+d.last:'')));
   })) : h('div',{class:'empty'}, h('h2',{},'ยังไม่มีร่าง'), h('p',{},'พิมพ์หัวข้อด้านบน แล้วระบบจะเริ่มค้นข้อมูลให้'));
   put(mainEl, head, composer, list);
+}
+
+
+async function creativeDraftView(body,d,refresh){
+  const creative=d.creative,selection=creative.selection,plan=structuredClone(selection.plan),settings=structuredClone(creative.settings),script=structuredClone(d.storyboard.script);
+  const err=h('div',{class:'err',role:'alert'}),status=h('div',{class:'sub',role:'status'});
+  const editable=d.status==='ready';
+  const styleSel=h('select',{class:'field','aria-label':'สไตล์หลัก',disabled:settings.locked||!editable},[selection.selected,...selection.alternatives].map(x=>h('option',{value:x.id},x.id+' · '+Math.round(x.score*100)+'%')));styleSel.value=selection.selected.id;
+  const locked=h('input',{type:'checkbox',checked:settings.locked,disabled:!editable});locked.addEventListener('change',()=>{settings.locked=locked.checked;styleSel.disabled=locked.checked;});
+  const save=async()=>{settings.mode='manual';settings.manual_style=styleSel.value;const r=await api('/app/api/creative/'+d.id,{method:'PATCH',body:JSON.stringify({settings,plan,...(creative.engine==='lemo'?{script}:{})})});return r;};
+  const identity=h('div',{class:'chars'},h('h3',{},creative.engine==='lemo'?'Lemo Creative Motion':'Classic Motion Studio'),h('label',{},'แนวภาพหลัก',styleSel),h('div',{style:'display:flex;gap:8px;margin:12px 0'},plan.identity.palette.map(color=>h('span',{title:color,style:'display:block;border-radius:12px;width:45px;height:45px;background:'+color}))),h('p',{class:'sub'},'พาเลตแนวภาพ · เฟรมจริงจะปรากฏเมื่อเรนเดอร์ฉาก'),h('p',{},plan.identity.direction),h('ul',{},selection.selected.reasons.map(x=>h('li',{},x))),selection.low_confidence?h('p',{class:'warn'},'AI ยังไม่มั่นใจในสไตล์นี้ กรุณาตรวจทางเลือกและยืนยันก่อนผลิต'):'',h('label',{class:'check'},locked,' ล็อกสไตล์ทั้งเรื่อง'),h('p',{class:'sub'},'ทางเลือก: '+selection.alternatives.map(x=>x.id+' '+Math.round(x.score*100)+'%').join(' · ')));
+  const scenes=plan.scenes.map((scene,i)=>{
+    const text=h('textarea',{class:'field',value:script[i].text,disabled:!editable||creative.engine!=='lemo','aria-label':'บทฉาก '+scene.seg});text.addEventListener('input',()=>script[i].text=text.value);
+    const fields=[['objective','จุดประสงค์'],['composition','องค์ประกอบภาพ'],['camera','กล้อง'],['location','สถานที่']].map(([key,label])=>{const el=h('textarea',{class:'field',value:scene[key],disabled:!editable,'aria-label':label+' '+scene.seg});el.addEventListener('input',()=>scene[key]=el.value);return h('label',{class:'sub'},label,el);});
+    const chars=h('input',{class:'field',value:scene.characters.join(', '),disabled:!editable,'aria-label':'ตัวละคร '+scene.seg});chars.addEventListener('input',()=>scene.characters=chars.value.split(',').map(x=>x.trim()).filter(Boolean));
+    const cues=scene.sound.cues.map(c=>{const el=h('textarea',{class:'field',value:c.prompt,disabled:!editable,'aria-label':'เสียง '+c.id});el.addEventListener('input',()=>c.prompt=el.value);return h('label',{class:'sub'},c.word+' · '+c.duration+' วินาที',el);});
+    return h('section',{class:'chars'},h('h3',{},'ฉาก '+(i+1)),text,...fields,h('label',{class:'sub'},'ตัวละคร (คั่นด้วย ,)',chars),h('p',{class:'sub'},'การเคลื่อนไหว: '+scene.events.map(e=>e.action).join(' → ')),h('details',{},h('summary',{},'เสียงประกอบ · '+scene.sound.decision),h('p',{},scene.sound.reason),...cues),creative.engine==='lemo'?h('button',{class:'btn quiet',on:{click:async()=>{try{const r=await api('/app/api/creative/'+d.id+'/regenerate-scene',{method:'POST',body:JSON.stringify({seg:scene.seg})});openDraft(r.id);}catch(e){err.textContent=e.message;}}}},'สร้างเวอร์ชันเพื่อวาดฉากนี้ใหม่…'):'');
+  });
+  const production=h('div',{class:'chars'});
+  if(d.job_id){
+    try{const job=await api('/app/api/creative/jobs/'+d.job_id);put(production,h('h3',{},job.status),h('progress',{value:job.progress,max:1}),h('p',{},job.error||job.stage),job.result?.video_url?h('video',{controls:true,src:job.result.video_url,style:'max-width:100%;max-height:500px'}):'',h('p',{class:'sub'},'คำขอที่บันทึก '+job.calls.length+' · ราคาที่ยังรอยืนยัน '+job.calls.filter(x=>x.actual_usd===null).length+' รายการ'),h('button',{class:'btn',on:{click:refresh}},'ตรวจสถานะอีกครั้ง'),!['READY_TO_POST','CANCELLED','FAILED'].includes(job.status)?h('button',{class:'btn',on:{click:async()=>{await api('/app/api/creative/jobs/'+d.job_id+'/cancel',{method:'POST'});refresh();}}},'ยกเลิกงาน'):job.status==='FAILED'?h('button',{class:'btn',on:{click:async()=>{try{await api('/app/api/creative/jobs/'+d.job_id+'/retry',{method:'POST'});refresh();}catch(e){err.textContent=e.message;}}}},'ซ่อมต่อจากจุดที่บันทึกไว้'):'');}catch(e){err.textContent=e.message;}
+  }
+  put(body,h('h2',{},d.draft.title_th),identity,...scenes,editable?h('div',{class:'row'},h('button',{class:'btn',on:{click:async()=>{try{await save();status.textContent='บันทึกแล้ว ราคาจะคำนวณตามฉบับล่าสุด';await refresh();}catch(e){err.textContent=e.message;}}}},'บันทึกการแก้ไข'),h('button',{class:'btn',disabled:settings.locked,on:{click:async()=>{if(!confirm('ให้สมองที่เลือกประเมินสไตล์ใหม่? จะมีค่าใช้จ่ายการวางแผน AI และยังไม่ส่งผลิตเสียงหรือวิดีโอ'))return;try{await save();const r=await draftPost('/app/api/studio/drafts/'+d.id+'/rewrite',{note:'Keep the story and factual sources. Reevaluate creative style candidates and scene direction. Do not copy the previous style scores.'});openDraft(r.id);}catch(e){err.textContent=e.message;}}}},'ให้ AI ประเมินสไตล์ใหม่'),h('button',{class:'btn primary',on:{click:async()=>{try{await save();await creativeCostDialog(production,d.id);}catch(e){err.textContent=e.message;}}}},'ตรวจราคาและส่งผลิต…')):'',status,production,err);
+}
+async function creativeCostDialog(target,id){
+  const q=await api('/app/api/creative/'+id+'/estimate'),allocations={},labels={planning:'สมองวางบท (จ่ายไปแล้ว)',style:'กำกับสไตล์ในคำขอเดิม',coding:'AI เขียนภาพ',narration:'เสียงบรรยาย',sfx:'เสียงประกอบ',music:'ดนตรี',compute:'เรนเดอร์',other:'อื่น ๆ'};
+  const cap=h('input',{class:'field',type:'number',step:.01,min:.01,value:10,'aria-label':'ยอดสูงสุดที่อนุมัติ'}),unknown=h('input',{type:'checkbox'}),style=h('input',{type:'checkbox'}),error=h('div',{class:'err'});
+  const rows=q.items.map(item=>{const n=h('input',{class:'field',type:'number',step:.01,min:0,value:item.estimated_usd===null?'':Number(item.estimated_usd).toFixed(4),disabled:!item.quantity,'aria-label':'วงเงิน '+item.category});allocations[item.category]=n;return h('tr',{},h('td',{},labels[item.category]),h('td',{},item.estimated_usd===null?'ยังไม่ทราบ':item.category==='planning'?'ดู usage ที่ใช้แล้ว':Number(item.estimated_usd).toFixed(4)+' USD'),h('td',{},n));});
+  put(target,h('h3',{},'ตรวจค่าใช้จ่ายก่อนผลิต'),h('table',{},h('thead',{},h('tr',{},h('th',{},'รายการ'),h('th',{},'ประมาณการ'),h('th',{},'วงเงิน USD'))),h('tbody',{},...rows)),h('p',{class:'sub'},'โทเค็นวางบทที่ใช้แล้ว: '+JSON.stringify(q.planning_usage)),h('label',{},'วงเงินรวมสูงสุด',cap),h('label',{class:'check'},unknown,' อนุมัติรายการราคายังไม่ทราบตามวงเงินที่กรอก (ยอดจริงต้องตรวจจากผู้ให้บริการ วงเงินนี้ไม่ใช่ราคาที่รับประกัน)'),h('label',{class:'check'},style,' ตรวจบท ภาพ เสียง และสไตล์แล้ว'),h('button',{class:'btn primary',on:{click:async function(){this.disabled=true;try{const r=await api('/app/api/creative/'+id+'/approve',{method:'POST',body:JSON.stringify({revision:q.revision,quote_hash:q.quote_hash,max_usd:Number(cap.value),allocations:Object.fromEntries(Object.entries(allocations).map(([k,v])=>[k,Number(v.value)])),unknown_ack:unknown.checked,style_ack:style.checked})});toast('ส่งเข้าคิวแล้ว');openDraft(id);}catch(e){error.textContent=e.message;this.disabled=false;}}}},'ยืนยันวงเงินและผลิต'),error);
 }
 
 function openDraft(id){
@@ -978,6 +1018,7 @@ function openDraft(id){
       if (!body.isConnected) return;
       titleEl.textContent = draftState(d)[1];
       if (dirty) return;
+      if(d.creative&&d.draft&&!['failed','queued','researching','writing'].includes(d.status)){await creativeDraftView(body,d,refresh);return;}
       render(d);
       if (inProgress(d)) timer=setTimeout(refresh, 4000);
     }

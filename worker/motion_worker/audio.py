@@ -48,7 +48,7 @@ def db(v):
     return 20 * np.log10(max(float(v), 1e-9))
 
 
-def mix(vo_path, end_s, sfx_files, cues, music_path=None, music_volume=0.3, duck_depth=0.6, fade_out=2.5):
+def mix(vo_path, end_s, sfx_files, cues, music_path=None, music_volume=0.3, duck_depth=0.6, fade_out=2.5, duck_sfx=False):
     """Returns (mix, stems) as float32 stereo arrays of exactly end_s seconds."""
     N = int(round(end_s * SR))
     vo = np.zeros((N, 2), np.float32)
@@ -64,6 +64,10 @@ def mix(vo_path, end_s, sfx_files, cues, music_path=None, music_volume=0.3, duck
         j = min(N, i + len(s))
         if i < N:
             sfx[i:j] += s[:j - i]
+    if duck_sfx:
+        speech = np.clip(envelope(vo, .06) / .04, 0, 1)
+        gain = 1 - .78 * moving_avg(speech, int(.12 * SR))
+        sfx *= gain[:, None].astype(np.float32)
     mus = np.zeros((N, 2), np.float32)
     if music_path:
         m = decode(music_path)

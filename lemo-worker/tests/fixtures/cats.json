@@ -1,0 +1,268 @@
+{
+  "mock_provider": true,
+  "topic": "ถ้าแมวทุกตัวในประเทศไทยพูดได้หนึ่งวันจะเกิดอะไรขึ้น?",
+  "script": [
+    {
+      "id": "s1",
+      "text": "สมมติวันนี้แมวพูดได้",
+      "beat": "hook"
+    },
+    {
+      "id": "s2",
+      "text": "ขอปลาทูเพิ่มอีกหนึ่งตัว",
+      "beat": "info"
+    },
+    {
+      "id": "s3",
+      "text": "คนยังไม่ทันตอบ แมวก็เรียกประชุม",
+      "beat": "rehook"
+    },
+    {
+      "id": "s4",
+      "text": "หมดวันแล้ว ทุกอย่างกลับเป็นเหมียว",
+      "beat": "payoff"
+    }
+  ],
+  "creative": {
+    "analysis": {
+      "genre": "A fictional escalating joke needs recognizable cats, readable reactions and a final reversal. genre",
+      "arc": "A fictional escalating joke needs recognizable cats, readable reactions and a final reversal. arc",
+      "tone": "A fictional escalating joke needs recognizable cats, readable reactions and a final reversal. tone",
+      "audience": "A fictional escalating joke needs recognizable cats, readable reactions and a final reversal. audience",
+      "hook": "A fictional escalating joke needs recognizable cats, readable reactions and a final reversal. hook",
+      "factual_density": "A fictional escalating joke needs recognizable cats, readable reactions and a final reversal. factual_density",
+      "complexity": "A fictional escalating joke needs recognizable cats, readable reactions and a final reversal. complexity",
+      "characters": "A fictional escalating joke needs recognizable cats, readable reactions and a final reversal. characters",
+      "locations": "A fictional escalating joke needs recognizable cats, readable reactions and a final reversal. locations",
+      "metaphors": "A fictional escalating joke needs recognizable cats, readable reactions and a final reversal. metaphors",
+      "pacing": "A fictional escalating joke needs recognizable cats, readable reactions and a final reversal. pacing",
+      "identity": "A fictional escalating joke needs recognizable cats, readable reactions and a final reversal. identity",
+      "brand": "A fictional escalating joke needs recognizable cats, readable reactions and a final reversal. brand",
+      "budget": "A fictional escalating joke needs recognizable cats, readable reactions and a final reversal. budget",
+      "capabilities": "A fictional escalating joke needs recognizable cats, readable reactions and a final reversal. capabilities"
+    },
+    "candidates": [
+      {
+        "id": "dataviz",
+        "scores": {
+          "relevance": 0.48,
+          "storytelling": 0.48,
+          "emotion": 0.48,
+          "characters": 0.48,
+          "continuity": 0.48,
+          "feasibility": 0.48
+        },
+        "confidence": 0.82,
+        "reasons": [
+          "Alternative technique with weaker narrative fit."
+        ],
+        "suitable": true
+      },
+      {
+        "id": "firefly-pointillism",
+        "scores": {
+          "relevance": 0.48,
+          "storytelling": 0.48,
+          "emotion": 0.48,
+          "characters": 0.48,
+          "continuity": 0.48,
+          "feasibility": 0.48
+        },
+        "confidence": 0.82,
+        "reasons": [
+          "Alternative technique with weaker narrative fit."
+        ],
+        "suitable": true
+      },
+      {
+        "id": "rubber-hose",
+        "scores": {
+          "relevance": 0.91,
+          "storytelling": 0.91,
+          "emotion": 0.91,
+          "characters": 0.91,
+          "continuity": 0.91,
+          "feasibility": 0.91
+        },
+        "confidence": 0.82,
+        "reasons": [
+          "A fictional escalating joke needs recognizable cats, readable reactions and a final reversal."
+        ],
+        "suitable": true
+      }
+    ],
+    "identity": {
+      "direction": "A fictional escalating joke needs recognizable cats, readable reactions and a final reversal.",
+      "typography": "Maintain the same typography across the entire film.",
+      "camera": "Maintain the same camera across the entire film.",
+      "motion": "Maintain the same motion across the entire film.",
+      "characters": "Maintain the same characters across the entire film.",
+      "locations": "Maintain the same locations across the entire film.",
+      "props": "Maintain the same props across the entire film.",
+      "lighting": "Maintain the same lighting across the entire film.",
+      "transitions": "Maintain the same transitions across the entire film.",
+      "palette": [
+        "#F8EAD2",
+        "#24354A",
+        "#FFAF69"
+      ]
+    },
+    "scenes": [
+      {
+        "seg": "s1",
+        "objective": "A fictional escalating joke needs recognizable cats, readable reactions and a final reversal.",
+        "shot": "Medium explanatory shot",
+        "camera": "Slow purposeful push toward the action",
+        "composition": "Keep subjects in the middle, subtitles in the bottom safe area",
+        "elements": [
+          "original orange cat",
+          "fish plate",
+          "microphone and meeting table"
+        ],
+        "emotion": "Playful escalating surprise",
+        "location": "Same consistent story environment",
+        "characters": [
+          "original orange cat"
+        ],
+        "transition": "Match cut following the active object",
+        "events": [
+          {
+            "at": 0,
+            "action": "Establish the actual subject and its context"
+          },
+          {
+            "at": 0.55,
+            "action": "Demonstrate the narrated change and resolve the visual question"
+          }
+        ],
+        "sound": {
+          "decision": "effects",
+          "reason": "Accent the reveal gently",
+          "cues": [
+            {
+              "id": "accent",
+              "word": "สมม",
+              "occurrence": 0,
+              "offset": 0,
+              "action": "The object appears",
+              "prompt": "Single gentle wooden click, no voice or music",
+              "duration": 0.5,
+              "gain": 0.15
+            }
+          ]
+        }
+      },
+      {
+        "seg": "s2",
+        "objective": "A fictional escalating joke needs recognizable cats, readable reactions and a final reversal.",
+        "shot": "Medium explanatory shot",
+        "camera": "Slow purposeful push toward the action",
+        "composition": "Keep subjects in the middle, subtitles in the bottom safe area",
+        "elements": [
+          "original orange cat",
+          "fish plate",
+          "microphone and meeting table"
+        ],
+        "emotion": "Playful escalating surprise",
+        "location": "Same consistent story environment",
+        "characters": [
+          "original orange cat"
+        ],
+        "transition": "Match cut following the active object",
+        "events": [
+          {
+            "at": 0,
+            "action": "Establish the actual subject and its context"
+          },
+          {
+            "at": 0.55,
+            "action": "Demonstrate the narrated change and resolve the visual question"
+          }
+        ],
+        "sound": {
+          "decision": "silence",
+          "reason": "Leave room for this narration to be understood",
+          "cues": []
+        }
+      },
+      {
+        "seg": "s3",
+        "objective": "A fictional escalating joke needs recognizable cats, readable reactions and a final reversal.",
+        "shot": "Medium explanatory shot",
+        "camera": "Slow purposeful push toward the action",
+        "composition": "Keep subjects in the middle, subtitles in the bottom safe area",
+        "elements": [
+          "original orange cat",
+          "fish plate",
+          "microphone and meeting table"
+        ],
+        "emotion": "Playful escalating surprise",
+        "location": "Same consistent story environment",
+        "characters": [
+          "original orange cat"
+        ],
+        "transition": "Match cut following the active object",
+        "events": [
+          {
+            "at": 0,
+            "action": "Establish the actual subject and its context"
+          },
+          {
+            "at": 0.55,
+            "action": "Demonstrate the narrated change and resolve the visual question"
+          }
+        ],
+        "sound": {
+          "decision": "effects",
+          "reason": "Accent the reveal gently",
+          "cues": [
+            {
+              "id": "accent",
+              "word": "คนย",
+              "occurrence": 0,
+              "offset": 0,
+              "action": "The object appears",
+              "prompt": "Single gentle wooden click, no voice or music",
+              "duration": 0.5,
+              "gain": 0.15
+            }
+          ]
+        }
+      },
+      {
+        "seg": "s4",
+        "objective": "A fictional escalating joke needs recognizable cats, readable reactions and a final reversal.",
+        "shot": "Medium explanatory shot",
+        "camera": "Slow purposeful push toward the action",
+        "composition": "Keep subjects in the middle, subtitles in the bottom safe area",
+        "elements": [
+          "original orange cat",
+          "fish plate",
+          "microphone and meeting table"
+        ],
+        "emotion": "Playful escalating surprise",
+        "location": "Same consistent story environment",
+        "characters": [
+          "original orange cat"
+        ],
+        "transition": "Match cut following the active object",
+        "events": [
+          {
+            "at": 0,
+            "action": "Establish the actual subject and its context"
+          },
+          {
+            "at": 0.55,
+            "action": "Demonstrate the narrated change and resolve the visual question"
+          }
+        ],
+        "sound": {
+          "decision": "silence",
+          "reason": "Leave room for this narration to be understood",
+          "cues": []
+        }
+      }
+    ]
+  },
+  "sources": []
+}
