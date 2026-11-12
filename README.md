@@ -4,6 +4,13 @@ Topic in → narrated, subtitled, sound-designed 1080×1920 MP4 in Google Drive 
 All visuals are drawn by code (Pillow/NumPy procedural drawing, code-written SVG via CairoSVG, FFmpeg).
 No image or video generation models are used anywhere. ElevenLabs is used for audio only.
 
+New Studio drafts use the classic motion presentation from EP004: the original Kanit headings, animated cards,
+counters, stamps and iris cuts, combined with story-specific drawings. `storyboard.presentation_version: 1`
+requires a `layout` per shot and matching `scene.graphic` data (see `api/src/presentation.ts`). The scene stays
+`type: custom`; the engine draws its code and then the selected graphic, without adding a stock mascot.
+Migration 024 keeps existing drafts at version 0. New drafts and intentional rewrites use version 1; an unchanged
+failed-job retry preserves its version and saved artwork. Deploy the worker before enabling new API generation.
+
 ## How the work is split
 
 | Step | Where | Notes |

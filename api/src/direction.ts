@@ -54,7 +54,7 @@ export function directionProblems(draft:{storyboard?:StoryboardT;script:{id:stri
 export function exportedDirection(draft:{storyboard?:StoryboardT;motion_review?:string}) {
   const plan=draft.storyboard;
   if(plan?.direction_version!==1)return undefined;
-  return {version:1 as const,narrative:plan.narrative!,shots:plan.shots.map(({seg,continuity,motion_beats,subjects})=>({seg,continuity:continuity!,motion_beats:motion_beats!,...(subjects?{subjects}:{})})),sound_policy:plan.sound_policy!,motion_review:draft.motion_review};
+  return {version:1 as const,narrative:plan.narrative!,shots:plan.shots.map(({seg,continuity,motion_beats,subjects,layout})=>({seg,continuity:continuity!,motion_beats:motion_beats!,...(subjects?{subjects}:{}),...(layout?{layout}:{})})),sound_policy:plan.sound_policy!,motion_review:draft.motion_review};
 }
 
 export function directionPrompt():string {

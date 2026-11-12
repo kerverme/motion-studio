@@ -669,16 +669,16 @@ function characterPanel(){
 
 /* ---------- visual style picker (all styles are drawn by code in the worker; no image generation) ---------- */
 let STYLE_LIST = null;
-function selectedStyle(){ try{ return localStorage.getItem('ms.style')||'auto'; }catch{ return 'auto'; } }
+function selectedStyle(){ try{ const chosen=localStorage.getItem('ms.style.classic_motion'); if(chosen)return chosen; const previous=localStorage.getItem('ms.style'); return previous&&previous!=='auto'?previous:'classic'; }catch{ return 'classic'; } }
 function stylePanel(){
   const wrap = h('div',{class:'chars'});
   function draw(){
     const cur = selectedStyle();
     const opts = [{id:'auto',label:'ให้ AI เลือก',about:'เลือกให้เข้ากับเรื่อง และไม่ซ้ำกับตอนก่อน'}, ...(STYLE_LIST||[])];
     put(wrap, h('h3',{},'สไตล์ภาพ'),
-      h('div',{class:'hint'},'ทุกสไตล์วาดด้วยโค้ด ไม่ใช้ AI สร้างภาพ ตัวหนังสือและซับไตเติลยังคมชัดทุกสไตล์ · เปลี่ยนได้อีกตอนตรวจร่าง'),
+      h('div',{class:'hint','data-presentation':'classic_motion'},h('b',{},'ค่าเริ่มต้น: โมชั่นกราฟิกแบบเดิม (EP004)'),' · หัวข้อใหญ่ ฟอนต์ Kanit การ์ดเด้ง ตัวเลขนับขึ้น และฉากเปลี่ยนตามเรื่อง พร้อมวาดตัวละครและตัวอย่างจากบท · เลือกสไตล์สีและพื้นผิวด้านล่างได้'),
       STYLE_LIST===null ? h('div',{class:'sub'},'กำลังโหลด…') : h('div',{class:'stylegrid',role:'radiogroup','aria-label':'สไตล์ภาพ'}, opts.map(o=>
-        h('button',{class:'sty'+(o.id===cur?' on':''),role:'radio','aria-checked':String(o.id===cur),title:o.about||'',on:{click:()=>{ try{ localStorage.setItem('ms.style',o.id); }catch{} draw(); }}},
+        h('button',{class:'sty'+(o.id===cur?' on':''),role:'radio','aria-checked':String(o.id===cur),title:o.about||'',on:{click:()=>{ try{ localStorage.setItem('ms.style.classic_motion',o.id); }catch{} draw(); }}},
           o.preview ? h('img',{src:o.preview,alt:''}) : h('div',{class:'ph','aria-hidden':'true'},'✦'), h('span',{},o.label)))));
   }
   if (STYLE_LIST===null) api('/app/api/studio/styles').then(r=>{ STYLE_LIST=r.styles||[]; draw(); }).catch(()=>{ STYLE_LIST=[]; draw(); });
@@ -992,10 +992,11 @@ function openDraft(id){
       const scenes = Object.fromEntries((dr.scenes||[]).map(s=>[s.seg,s]));
       const plannedShots=Object.fromEntries((dr.storyboard&&dr.storyboard.shots||[]).map(shot=>[shot.seg,shot]));
       const segAreas = {};
-      const onscreen = sc => { if(!sc) return ''; const bits=[]; const t=x=>x&&(x.text||x); 
+      const onscreen = sc => { if(!sc) return ''; sc={...sc,...sc.graphic}; const bits=[]; const t=x=>x&&(x.text||x);
         if(sc.headline) bits.push(t(sc.headline)); (sc.lines||[]).forEach(l=>bits.push(t(l))); if(sc.question) bits.push(t(sc.question));
         if(sc.value!=null) bits.push((sc.prefix||'')+nf.format(sc.value)+(sc.suffix||'')); (sc.items||[]).forEach(i=>bits.push(i.display?(i.label+' '+i.display):(i.text||i.label||i.year&&(i.year+' '+i.text))));
         (sc.options||[]).forEach(o=>bits.push((o.letter||'')+' '+o.text)); if(sc.statement) bits.push('“'+t(sc.statement)+'”'); if(sc.bubble) bits.push('💬 '+t(sc.bubble)); if(sc.big) bits.push(t(sc.big)); if(sc.stamp) bits.push('['+t(sc.stamp)+']');
+        (sc.messages||[]).forEach(m=>bits.push(t(m))); if(sc.verdict_text) bits.push(sc.verdict_text);
         return bits.filter(Boolean).join(' · '); };
       const chars = ()=>Object.values(segAreas).reduce((n,a)=>n+a.value.length,0);
       const charInfo = h('span',{class:'sub'});
@@ -1010,7 +1011,7 @@ function openDraft(id){
         const subjects=(plannedShots[s.id]&&plannedShots[s.id].subjects||[]).map(subject=>subject.description).filter(Boolean);
         const hot = s.beat==='hook'||s.beat==='rehook'||s.beat==='cta';
         return h('div',{class:'segc'}, h('div',{class:'top'}, h('span',{}, '~'+mmss(T0[s.id])+' · ', h('b',{style:hot?'color:var(--accent)':''}, BEAT[s.beat]||s.beat||''), ' · '+s.id),
-          h('span',{}, sc?(TPL[sc.type]||sc.type)+(sc.set?' · ฉาก '+sc.set:''):'')), ta, sc?h('div',{class:'scr'},'บนจอ: '+onscreen(sc)):'',subjects.length?h('div',{class:'scr'},'ภาพในฉาก: '+subjects.join(' · ')):'');
+          h('span',{}, sc?(TPL[sc.graphic?.type]||TPL[sc.type]||sc.type)+(sc.set?' · ฉาก '+sc.set:''):'')), ta, sc?h('div',{class:'scr'},'บนจอ: '+onscreen(sc)):'',subjects.length?h('div',{class:'scr'},'ภาพในฉาก: '+subjects.join(' · ')):'');
       }));
       updChars();
       title.addEventListener('input',()=>{ dirty=true; save.disabled=false; });

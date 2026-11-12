@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { personCalls, DepictedSubjects, depictionProblems, type StoryboardT } from './storyboard.js';
+import {presentationSceneProblems,LAYOUTS} from './presentation.js';
 
 const Name = z.string().trim().min(1).max(20);
 const Id = z.string().regex(/^[a-z0-9_]{1,24}$/);
@@ -39,6 +40,8 @@ export const ARTWORK_TOOLS = [
       scene: { type: 'object', required: ['seg', 'type', 'code'], properties: {
         seg: { type: 'string', maxLength: 24 }, type: { type: 'string', enum: ['custom'] }, code: { type: 'string', maxLength: 6000 },
         depicted_subjects:{type:'array',maxItems:8,items:{type:'string',pattern:'^[a-z0-9_]{1,24}$'},description:'For a shot with subjects: exact ids of subjects actually drawn. A label or pointing presenter is insufficient. Check the rendered images before final approval.'},
+        graphic:{type:'object',required:['type'],properties:{type:{type:'string',enum:[...LAYOUTS]}},additionalProperties:true,description:'Classic motion graphics matching the saved shot.layout. Fields follow the presentation instructions; story illustration is still drawn in code.'},
+        headline:{type:'object',required:['text'],properties:{text:{type:'string',maxLength:44},at:{type:'string'},color:{type:'string'}},additionalProperties:false},
       }, additionalProperties: true },
     } },
   },
@@ -54,6 +57,8 @@ function assertPlanReferences(state: ArtworkState, plan: StoryboardT) {
     if (!shot) throw new Error(`scene ${scene.seg} is not in the storyboard`);
     const depictions=depictionProblems(shot,scene,plan.depiction_version===1);
     if(depictions.length)throw new Error(depictions.join('; '));
+    const presentation=presentationSceneProblems(shot,scene,plan.presentation_version===1);
+    if(presentation.length)throw new Error(presentation.join('; '));
     const drawn = personCalls(scene.code);
     for (const name of shot.characters) if (!drawn.includes(name)) throw new Error(`scene ${scene.seg}: draw planned character ${name} with a direct c.person call`);
     for (const name of drawn) if (!names.has(name)) throw new Error(`scene ${scene.seg}: unknown storyboard character ${name}`);
@@ -102,6 +107,7 @@ export function reconcileArtwork(oldPlan: StoryboardT | null, newPlan: Storyboar
     const newLine = newPlan.script.find(line => line.id === seg);
     return !!oldShot && !!newShot && !!oldLine && !!newLine &&
       oldPlan?.depiction_version===newPlan.depiction_version &&
+      oldPlan?.presentation_version===newPlan.presentation_version && oldShot.layout===newShot.layout &&
       JSON.stringify(oldShot.subjects)===JSON.stringify(newShot.subjects) &&
       JSON.stringify(oldShot.motion_beats)===JSON.stringify(newShot.motion_beats) &&
       JSON.stringify(oldShot.continuity)===JSON.stringify(newShot.continuity) &&

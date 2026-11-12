@@ -70,7 +70,7 @@ test('routes persist opt-in with no name/photo, preserve first reference order a
     const send=(url:string,body:any,key:string,method='POST')=>app.request(url,{method,headers:{'content-type':'application/json','idempotency-key':key},body:JSON.stringify(body)});
     const body={topic:'นาฬิกาชีวิตกับแสง',story_mode:'general',source_text:'บทความยาวต้นฉบับยังต้องตรวจ',recurring_character:true,presenter_kind:'legacy',narration_style:'child_10',model:'gpt-6.1-sol',auto_produce:false,characters:[]};
     const created=await send(path,body,'recurring-create-001');assert.equal(created.status,201,await created.clone().text());const {id}=await created.json();
-    const stored:any=(await db.query('SELECT * FROM drafts WHERE id=$1',[id])).rows[0];assert.equal(stored.recurring_character,true);assert.deepEqual(stored.characters,[]);assert.equal(stored.style,'auto');
+    const stored:any=(await db.query('SELECT * FROM drafts WHERE id=$1',[id])).rows[0];assert.equal(stored.recurring_character,true);assert.deepEqual(stored.characters,[]);assert.equal(stored.style,'classic');
     const detail:any=await(await app.request(path+'/'+id)).json();assert.equal(detail.recurring_character,true);assert.equal(detail.narration_style,'child_10');assert.equal(detail.source_text,body.source_text);
     const listing:any=await(await app.request(path)).json();assert.equal(listing.drafts.find((d:any)=>d.id===id).recurring_character,true);
     assert.equal((await send(path,{...body,recurring_character:false},'recurring-create-001')).status,409);
@@ -79,7 +79,7 @@ test('routes persist opt-in with no name/photo, preserve first reference order a
     const legacyId=(await(await send(path,legacyBody,'recurring-legacy-001')).json()).id;
     assert.equal((await db.query<{recurring_character:boolean}>('SELECT recurring_character FROM drafts WHERE id=$1',[legacyId])).rows[0].recurring_character,false);
     const good=generalDraft(true),art={art:good.art,cast:good.cast,scenes:good.scenes};
-    await db.query("UPDATE drafts SET status='failed',director_version=0,storyboard=$2,artwork=$3 WHERE id=$1",[id,JSON.stringify(good.storyboard),JSON.stringify(art)]);
+    await db.query("UPDATE drafts SET status='failed',director_version=0,presentation_version=0,storyboard=$2,artwork=$3 WHERE id=$1",[id,JSON.stringify(good.storyboard),JSON.stringify(art)]);
     const childId=(await(await send(path+'/'+id+'/rewrite',{},'recurring-retry-001')).json()).id;
     const child:any=(await db.query('SELECT * FROM drafts WHERE id=$1',[childId])).rows[0];assert.equal(child.recurring_character,true);assert.deepEqual(child.storyboard,good.storyboard);assert.deepEqual(child.artwork,art);assert.equal(child.narration_style,'child_10');assert.equal(child.source_text,body.source_text);
     await db.query("UPDATE drafts SET status='failed' WHERE id=$1",[childId]);
@@ -136,7 +136,7 @@ test('context default applies to new work while omitted retries preserve legacy 
     const changed=await send(path+'/'+retryId+'/rewrite',{presenter_kind:'cat'},'legacy-min-to-cat');assert.equal(changed.status,201);const catId=(await changed.json()).id;
     const cat:any=(await oldDb.query('SELECT * FROM drafts WHERE id=$1',[catId])).rows[0];assert.equal(cat.presenter_kind,'cat');assert.equal(cat.storyboard,null);assert.equal(cat.artwork,null);
     // An ordinary retry of an explicit cat checkpoint keeps its old art; opting into context clears that art.
-    await oldDb.query("UPDATE drafts SET status='failed',director_version=0,storyboard=$2,artwork=$3 WHERE id=$1",[catId,JSON.stringify(oldDraft.storyboard),JSON.stringify(oldArt)]);
+    await oldDb.query("UPDATE drafts SET status='failed',director_version=0,presentation_version=0,storyboard=$2,artwork=$3 WHERE id=$1",[catId,JSON.stringify(oldDraft.storyboard),JSON.stringify(oldArt)]);
     const catRetry=await send(path+'/'+catId+'/rewrite',{},'saved-cat-retry-001');assert.equal(catRetry.status,201);const catRetryId=(await catRetry.json()).id;
     const catResumed:any=(await oldDb.query('SELECT * FROM drafts WHERE id=$1',[catRetryId])).rows[0];assert.equal(catResumed.presenter_kind,'cat');assert.equal(catResumed.recurring_character,true);assert.deepEqual(catResumed.storyboard,oldDraft.storyboard);assert.deepEqual(catResumed.artwork,oldArt);
     await oldDb.query("UPDATE drafts SET status='failed' WHERE id=$1",[catRetryId]);

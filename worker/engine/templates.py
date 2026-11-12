@@ -244,7 +244,7 @@ def headline(img, t, seg, sp):
     y = 300
     if h:
         h = h if isinstance(h, dict) else {'text': h}
-        th = at(seg, h.get('at'), 0.0)
+        th = -0.4 if sp.get('_classic_motion') and sp.get('_opening_frame') else at(seg, h.get('at'), 0.0)
         s = pop(t, th)
         if s > 0:
             im = tblock(h.get('text'), 88, 960, 800, col(h.get('color'), WHITE), 9, INK, 2)
@@ -468,7 +468,7 @@ def T_hook(img, d, t, seg, sp):
     y = 480
     for i, ln in enumerate(lines[:3]):
         ln = ln if isinstance(ln, dict) else {'text': ln}
-        tl = at(seg, ln.get('at'), 0.0 if i == 0 else 0.3 * i)
+        tl = -0.4 if sp.get('_classic_motion') and sp.get('_opening_frame') and i == 0 else at(seg, ln.get('at'), 0.0 if i == 0 else 0.3 * i)
         size = 118 if i == 0 else 100
         fill = col(ln.get('color'), WHITE if i == 0 else YEL)
         im = tblock(ln.get('text'), size, 980, 900, fill, 12, INK, 2)
@@ -998,8 +998,7 @@ def custom_person_style(who):
 
 
 def T_custom(img, d, t, seg, sp):
-    """A scene whose art was written by the model for this story, drawn with the artkit shapes. A scene that fails to compile or
-    to draw is reported to QA and replaced by the plain scenario layout with the cast, so a bad drawing never kills the render."""
+    """Draw story-specific art. Strict storyboards fail visibly; only legacy specs retain their fallback."""
     fn = ART['fns'].get(seg)
     S = core.SEG[seg]
     origin = 0.0 if sp.get('_opening_frame') else S['s']
@@ -1031,6 +1030,7 @@ TEMPLATES = {
 # templates that place their own big title / characters
 OWN_TITLE = {'hook', 'outro'}
 OWN_CAST = {'scenario', 'custom'}
+GRAPHIC_TYPES = {'illustration', 'hook', 'number', 'compare', 'list', 'truth', 'chat', 'icons', 'outro'}
 
 
 def _scene(seg, sp, seed):
@@ -1054,9 +1054,15 @@ def _scene(seg, sp, seed):
             decor(d, t, seed)
         try:
             fn(img, d, t, seg, sp)
+            graphic = sp.get('graphic') if sp.get('_classic_motion') else None
+            graphic_kind = graphic.get('type') if isinstance(graphic, dict) else None
+            if graphic_kind and graphic_kind != 'illustration':
+                # Reuse EP004's exact type, card and cue animations, without its automatic mascot/cast.
+                # Bespoke art is drawn separately, so topic examples and character-free shots remain possible.
+                TEMPLATES[graphic_kind](img, d, t, seg, {**graphic, '_classic_motion': True, '_opening_frame': sp.get('_opening_frame')})
             if kind not in OWN_CAST:
                 mascots(img, t, seg, sp, default_cat=kind not in ('outro',) or True)
-            if kind not in OWN_TITLE:
+            if kind not in OWN_TITLE and graphic_kind not in OWN_TITLE:
                 headline(img, t, seg, sp)
             extras(img, d, t, seg, sp)
         except Exception as e:  # legacy specs retain their original generic fallback
@@ -1080,6 +1086,13 @@ def build_scenes(spec):
     CAST.clear()
     CAST.update({k: v for k, v in cast.items() if isinstance(v, dict)})
     strict_art = bool(spec.get('strict_art')) or any(bool(member.get('portrait_code')) for member in CAST.values())
+    classic_motion = spec.get('presentation_version') == 1
+    if classic_motion:
+        strict_art = True
+        for scene in spec.get('scenes') or []:
+            graphic = scene.get('graphic')
+            if scene.get('type') != 'custom' or not isinstance(graphic, dict) or graphic.get('type') not in GRAPHIC_TYPES:
+                raise artkit.ArtError(f'scene {scene.get("seg")}: missing or unsupported classic motion graphic')
     BACKDROP.clear()
     for k, v in CAST.items():
         if v.get('backdrop'):
@@ -1118,7 +1131,7 @@ def build_scenes(spec):
         if not seg:
             continue
         pal = PALETTES.get(sp.get('bg')) or PALETTES[PAL_ORDER[i % len(PAL_ORDER)]]
-        out[seg] = (_scene(seg, dict(sp, _flip=bool(i % 2), _i=i, _strict_art=strict_art, _opening_frame=bool(spec.get('opening_frame_cover')) and seg == core.ORDER[0]), i + 3), pal)
+        out[seg] = (_scene(seg, dict(sp, _flip=bool(i % 2), _i=i, _strict_art=strict_art, _classic_motion=classic_motion, _opening_frame=bool(spec.get('opening_frame_cover')) and seg == core.ORDER[0]), i + 3), pal)
     for i, sid in enumerate(core.ORDER):
         if sid not in out:  # legacy specs keep their fallback; new story art fails closed
             if strict_art:

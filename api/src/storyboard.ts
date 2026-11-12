@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import {Layout,presentationSceneProblems} from './presentation.js';
 
 const Id = z.string().regex(/^[a-z0-9_]{1,24}$/);
 const Name = z.string().trim().min(1).max(20);
@@ -19,6 +20,7 @@ export const Storyboard = z.object({
   recurring_character: z.boolean().optional(),
   direction_version:z.literal(1).optional(),
   depiction_version:z.literal(1).optional(),
+  presentation_version:z.literal(1).optional(),
   narrative:NarrativeDirection.optional(),
   sound_policy:SoundPolicy.optional(),
   script: z.array(z.object({
@@ -30,6 +32,7 @@ export const Storyboard = z.object({
     visual: z.string().trim().min(10).max(1200),
     action: z.string().trim().min(3).max(600),
     camera: z.string().trim().min(3).max(300),
+    layout:Layout.optional(),
     characters: z.array(Name).max(4),
     continuity:ShotContinuity.optional(),
     motion_beats:z.array(MotionBeat).min(2).max(5).optional(),
@@ -59,6 +62,7 @@ export const Storyboard = z.object({
     });
   }
   plan.shots.forEach((shot, i) => {
+    if(plan.presentation_version===1 && !shot.layout)ctx.addIssue({code:'custom',path:['shots',i,'layout'],message:'choose a classic motion layout for this shot'});
     if(plan.depiction_version===1 && !shot.subjects?.length)ctx.addIssue({code:'custom',path:['shots',i,'subjects'],message:'list the concrete people, animals, objects or processes that must actually appear in this shot'});
     if(shot.subjects && new Set(shot.subjects.map(subject=>subject.id)).size!==shot.subjects.length)ctx.addIssue({code:'custom',path:['shots',i,'subjects'],message:'subject ids must be unique within a shot'});
     if (plan.story_mode !== 'general' && !shot.characters.length) ctx.addIssue({code:'custom',path:['shots',i,'characters'],message:'name stories require a character in every shot'});
@@ -66,6 +70,11 @@ export const Storyboard = z.object({
       ctx.addIssue({ code: 'custom', path: ['shots', i, 'characters'], message: 'character names must be unique within a shot' });
     }
   });
+  if(plan.presentation_version===1){
+    const layouts=plan.shots.map(s=>s.layout);
+    if(new Set(layouts.filter(Boolean)).size<3 || !layouts.includes('illustration'))ctx.addIssue({code:'custom',path:['shots'],message:'use at least three different classic layouts, including illustration for actual examples'});
+    layouts.forEach((layout,i)=>{if(i>0 && layout && layout!=='illustration' && layout===layouts[i-1])ctx.addIssue({code:'custom',path:['shots',i,'layout'],message:'vary consecutive graphic layouts'});});
+  }
 });
 export type StoryboardT = z.infer<typeof Storyboard>;
 
@@ -94,6 +103,7 @@ const SegmentRevision = z.object({
   visual: z.string().trim().min(10).max(1200).optional(),
   action: z.string().trim().min(3).max(600).optional(),
   camera: z.string().trim().min(3).max(300).optional(),
+  layout:Layout.optional(),
   characters: z.array(Name).max(4).optional(),
   continuity:ShotContinuity.optional(),
   motion_beats:z.array(MotionBeat).min(2).max(5).optional(),
@@ -175,7 +185,7 @@ export function personCalls(code: string): string[] {
 
 export function validateStoryboardDraft(plan: StoryboardT, draft: {
   script: { id: string; text: string; beat?: string }[];
-  scenes: { seg: string; type: string; code?: string;depicted_subjects?:unknown }[];
+  scenes: { seg: string; type: string; code?: string;depicted_subjects?:unknown;[key:string]:unknown }[];
   cast: { name: string }[];
   storyboard?: unknown;
   recurring_character?: boolean;
@@ -202,6 +212,7 @@ export function validateStoryboardDraft(plan: StoryboardT, draft: {
     if (!scene) { errors.push(`storyboard ${shot.seg}: missing scene`); continue; }
     if (scene.type !== 'custom') errors.push(`storyboard ${shot.seg}: every scene must be custom, including the opening`);
     errors.push(...depictionProblems(shot,scene,plan.depiction_version===1));
+    errors.push(...presentationSceneProblems(shot,scene,plan.presentation_version===1));
     const drawn = personCalls(scene.code || '');
     for (const name of shot.characters) {
       if (!names.has(name)) errors.push(`storyboard ${shot.seg}: character "${name}" is not in cast`);

@@ -18,6 +18,7 @@ import { draftRequest } from './draft-request.js';
 import { NARRATION_STYLES, SOURCE_TEXT_LIMIT, SOURCE_READ_LIMIT, parseNarration, parseSourceText, narrationPrompt, sourceMaterialBlock, readSourceMaterial } from './narration.js';
 import { parseRecurringCharacter, parsePresenterKind, withCharacterPolicy, referencePresenterProblem, characterPolicyPrompt, type PresenterKind } from './character-policy.js';
 import { directorVersion, withDirectionPolicy, directionProblems, directionPrompt, exportedDirection } from './direction.js';
+import {LAYOUTS,presentationVersion,withPresentationPolicy,presentationPrompt} from './presentation.js';
 
 const env = process.env;
 const ANTHROPIC_URL = (env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/$/, '');
@@ -300,7 +301,7 @@ function openaiConversation(system: string, first: string, model: string, effort
   };
 }
 
-export function systemPrompt(a: Active, mode: 'name_story' | 'general' = 'name_story', directionVersion:0|1=0) {
+export function systemPrompt(a: Active, mode: 'name_story' | 'general' = 'name_story', directionVersion:0|1=0, visualVersion:0|1=0) {
   const d = nowBkk();
   const ce = d.getUTCFullYear(), be = ce + 543;
   let prompt = `You are the head writer and researcher of a Thai short-video channel. Series tag: "${SERIES_TAG}".
@@ -479,6 +480,12 @@ Use the same headline in thumbnail.title. The first preview of the opening shot 
     prompt=prompt.slice(0,soundStart)+`## Sound\nUse the motivated sound-design policy below. Cached library effects: ${Object.keys(SFX).join('|')}. Custom effects need an English prompt and duration 0.5–4 seconds.\n\n`+prompt.slice(soundEnd);
     prompt+='\n\n'+directionPrompt();
   }
+  if(visualVersion===1){
+    prompt=prompt.replace('No fixed scene layouts or preset sets. Vary shot scale, framing, setting, blocking and motion according to the narration and storyboard.', 'Use the classic motion layouts and relevant preset sets described below; combine them with bespoke drawings of this story.');
+    prompt=prompt.replace('Draw a short readable Thai headline from t=0 with c.text, within x=100..980 and y=300..620.', 'Use the engine headline or graphic hook lines for the opening title; the first title is already visible at t=0. Do not duplicate it in c.text.');
+    prompt=prompt.replace('Draw a distinct face AND full body, not a generic chibi with different clothes.', 'Draw a clean expressive cartoon face AND full body with readable silhouettes and a consistent identity; use simple rounded proportions like the earlier channel cartoons.');
+    prompt+='\n\n'+presentationPrompt();
+  }
   return prompt;
 }
 
@@ -492,7 +499,7 @@ const TOOLS = [
   { name: 'plan_story', description: 'Save the complete narration and visual storyboard BEFORE drawing, or replace it for structural changes. Required before submit_episode. For corrections to existing segments use revise_story so unchanged drawings are retained.',
     input_schema: { type: 'object', required: ['script', 'shots', 'character_notes'], properties: {
       script: { type: 'array', items: { type: 'object', required: ['id','text','beat'], properties: { id: {type:'string'}, text:{type:'string'}, beat:{type:'string',enum:[...BEATS]} } } },
-      shots: { type:'array', items:{type:'object',required:['seg','visual','action','camera','characters'],properties:{seg:{type:'string'},visual:{type:'string'},action:{type:'string'},camera:{type:'string'},characters:{type:'array',items:{type:'string'}},continuity:CONTINUITY_TOOL,motion_beats:MOTION_BEATS_TOOL,subjects:SUBJECTS_TOOL}} },
+      shots: { type:'array', items:{type:'object',required:['seg','visual','action','camera','characters'],properties:{seg:{type:'string'},visual:{type:'string'},action:{type:'string'},camera:{type:'string'},characters:{type:'array',items:{type:'string'}},continuity:CONTINUITY_TOOL,motion_beats:MOTION_BEATS_TOOL,subjects:SUBJECTS_TOOL,layout:{type:'string',enum:[...LAYOUTS]}}} },
       character_notes: {type:'string'},
       narrative:{type:'object',additionalProperties:false,required:['premise','central_question','throughline','payoff'],properties:{premise:{type:'string',minLength:10,maxLength:400},central_question:{type:'string',minLength:8,maxLength:220},throughline:{type:'string',minLength:10,maxLength:400},payoff:{type:'string',minLength:10,maxLength:400}}},
       sound_policy:{type:'object',additionalProperties:false,required:['mode'],properties:{mode:{type:'string',enum:['designed','quiet']},owner_quote:{type:'string',maxLength:250}}}
@@ -500,7 +507,7 @@ const TOOLS = [
   { name: 'revise_story', description: 'Repair only named existing segments in the saved storyboard. Send only changed fields. Other narration, shots, portraits and shared helpers stay saved. Changed segments need their scene drawn again. Cannot add/remove/reorder segments; use plan_story for structural changes.',
     input_schema: {type:'object',required:['segments'],additionalProperties:false,properties:{segments:{type:'array',minItems:1,maxItems:14,items:{type:'object',required:['seg'],additionalProperties:false,properties:{
       seg:{type:'string',pattern:'^[a-z0-9_]{1,24}$'},text:{type:'string',minLength:3,maxLength:500},beat:{type:'string',enum:[...BEATS]},
-      visual:{type:'string',minLength:10,maxLength:1200},action:{type:'string',minLength:3,maxLength:600},camera:{type:'string',minLength:3,maxLength:300},characters:{type:'array',maxItems:4,items:{type:'string',minLength:1,maxLength:20}},continuity:CONTINUITY_TOOL,motion_beats:MOTION_BEATS_TOOL,subjects:SUBJECTS_TOOL
+      visual:{type:'string',minLength:10,maxLength:1200},action:{type:'string',minLength:3,maxLength:600},camera:{type:'string',minLength:3,maxLength:300},characters:{type:'array',maxItems:4,items:{type:'string',minLength:1,maxLength:20}},continuity:CONTINUITY_TOOL,motion_beats:MOTION_BEATS_TOOL,subjects:SUBJECTS_TOOL,layout:{type:'string',enum:[...LAYOUTS]}
     }}}}} },
   {
     name: 'openai_search',
@@ -614,7 +621,7 @@ function iconRefs(node: any, out: string[] = []) {
 const SOFT = /timing word|sfx .*word/;
 // The owner's own edits are never blocked by storytelling rules; they are shown as warnings instead.
 const OWNER_SOFT = /timing word|sfx .*word|hook|re-hook|beat "cta"|both use|is used \d+ times|format|scene sequence|action|main character big|must be seen big|opening question|claim about how many/;
-const isOwnerSoft = (problem:string) => !/^(?:direction |storyboard |recurring (?:reference )?character )/.test(problem) && OWNER_SOFT.test(problem);
+const isOwnerSoft = (problem:string) => !/^(?:presentation |direction |storyboard |recurring (?:reference )?character )/.test(problem) && OWNER_SOFT.test(problem);
 
 // problems: must be fixed. warnings: shown to the owner, do not block.
 export type Recent = { format: string; types: string[]; title: string; style?: string; music?: string };
@@ -794,7 +801,7 @@ export function checkDraft(d: DraftT, seen: Map<string, Seen> | null, recent: Re
 
 // ---------------------------------------------------------------- draft -> episode package
 export function sceneCode(d: DraftT) {
-  const spec = { opening_frame_cover: d.cover_mode === 'opening_frame', strict_art: !!d.storyboard, scenes: d.scenes, text: Object.fromEntries(d.script.map((s) => [s.id, s.text])), cast: d.cast, art: d.art || '' };
+  const spec = { presentation_version:d.storyboard?.presentation_version || 0, opening_frame_cover: d.cover_mode === 'opening_frame', strict_art: !!d.storyboard, scenes: d.scenes, text: Object.fromEntries(d.script.map((s) => [s.id, s.text])), cast: d.cast, art: d.art || '' };
   return `"""Generated episode: scenes are data rendered by engine.templates (code-drawn templates, no images)."""\nimport json\nfrom engine.templates import build_scenes\n\nSPEC = json.loads(${JSON.stringify(JSON.stringify(spec))})\nSCENES = build_scenes(SPEC)\n`;
 }
 
@@ -817,7 +824,7 @@ export function buildPackage(topic: string, d: DraftT, research: Seen[]) {
     if (!cues.has(id)) cues.set(id, []);
     cues.get(id)!.push({ seg: fx.seg, word: fx.at, n: fx.n ?? 0, offset: fx.offset ?? 0, gain: fx.gain ?? 0.5 });
   }
-  const firstLine = (sc: any) => sc.headline?.text || sc.lines?.[0]?.text || sc.question?.text || sc.statement?.text || sc.bubble?.text || '';
+  const firstLine = (sc: any) => sc.headline?.text || sc.graphic?.lines?.[0]?.text || sc.lines?.[0]?.text || sc.question?.text || sc.statement?.text || sc.bubble?.text || '';
   const thumbSeg = d.thumbnail?.seg && d.script.some((s) => s.id === d.thumbnail!.seg) ? d.thumbnail.seg : d.script[0].id;
   return {
     topic, title_th: d.title_th.slice(0, 120), series_tag: SERIES_TAG,
@@ -970,9 +977,9 @@ export function applyCast(d: DraftT, req: ReqChar[]): DraftT {
   return { ...d, cast: d.storyboard ? cast.map(({backdrop,...c}) => c) : cast } as DraftT;
 }
 
-function draftWithCharacterPolicy(d: Record<string, any>, enabled: boolean, presenterKind: PresenterKind, version:0|1=0, ownerNote=''): Record<string, any> {
+function draftWithCharacterPolicy(d: Record<string, any>, enabled: boolean, presenterKind: PresenterKind, version:0|1=0, ownerNote='', visualVersion:0|1=0): Record<string, any> {
   if(version===1 && !d.storyboard)throw new Error('directed draft requires a saved storyboard with narrative, continuity and motion beats');
-  return {...withCharacterPolicy(d, enabled), presenter_kind:presenterKind, ...(d.storyboard ? {storyboard:withDepictionPolicy(withDirectionPolicy(withCharacterPolicy(d.storyboard, enabled),version,ownerNote),presenterKind==='context')} : {})};
+  return {...withCharacterPolicy(d, enabled), presenter_kind:presenterKind, ...(d.storyboard ? {storyboard:withPresentationPolicy(withDepictionPolicy(withDirectionPolicy(withCharacterPolicy(d.storyboard, enabled),version,ownerNote),presenterKind==='context'),visualVersion)} : {})};
 }
 
 export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
@@ -1003,7 +1010,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
   async function artCheck(id: string, d: DraftT, style: string): Promise<{ errors: string[]; frames: { seg: string; images: string[]; motion?:Record<string,unknown>; motion_strip?:string }[] } | null> {
     const customs = d.scenes.filter((x: any) => x.type === 'custom');
     if (!customs.length) return { errors: [], frames: [] };
-    const payload = { ...(d.storyboard?.direction_version===1?{motion_review:true}:{}), opening_frame_cover: d.cover_mode === 'opening_frame', strict_art: !!d.storyboard, script: d.script.map((x) => ({ id: x.id, text: x.text })), cast: d.cast, art: d.art || '', scenes: customs, style: style || 'classic' };
+    const payload = { presentation_version:d.storyboard?.presentation_version || 0, ...(d.storyboard?.direction_version===1?{motion_review:true}:{}), opening_frame_cover: d.cover_mode === 'opening_frame', strict_art: !!d.storyboard, script: d.script.map((x) => ({ id: x.id, text: x.text })), cast: d.cast, art: d.art || '', scenes: customs, style: style || 'classic' };
     const ins = await pool.query('INSERT INTO art_checks (draft_id, payload) VALUES ($1,$2) RETURNING id', [id, JSON.stringify(payload)]);
     const cid = ins.rows[0].id;
     for (let i = 0; i < 80; i++) {   // up to ~2 minutes
@@ -1013,6 +1020,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
         const res = r.result || {};
         if (res.error) return { errors: [`the preview failed: ${String(res.error).slice(0, 300)}`], frames: [] };
         const errors: string[] = [];
+        if(d.storyboard?.presentation_version===1 && (res.presentation_version!==1 || customs.some(scene=>!(res.scenes || []).some((checked:any)=>checked.seg===scene.seg && checked.frames?.length>=2))))errors.push('classic motion presentation preview is incomplete; update the worker or retry before approving');
         if (d.cover_mode === 'opening_frame' && (res.scenes || []).find((sc: any) => sc.seg === d.script[0].id)?.frames?.length !== 3) errors.push('opening cover requires video-time-zero, early and late previews; update the worker and retry');
         for (const sc of res.scenes || []) for (const e of sc.errors || []) errors.push(`custom scene ${sc.seg}: ${e}`);
         if(d.storyboard?.direction_version===1)for(const sc of res.scenes || [])if(sc.motion?.complete!==true || !(Number(sc.motion.samples)>=2) || typeof sc.motion_strip!=='string' || !sc.motion_strip)errors.push(`motion review incomplete for ${sc.seg}; update the worker or retry before approving this directed story`);
@@ -1062,6 +1070,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const recurringCharacter = row.recurring_character === true;
     const presenterKind = parsePresenterKind(row.presenter_kind, 'legacy');
     const directionVersion = directorVersion(row.director_version);
+    const visualVersion = presentationVersion(row.presentation_version);
     let userText = `Story mode: ${storyMode}. Topic from the owner: ${row.topic}`;
     const sourceBlock = sourceText ? sourceMaterialBlock(sourceText) : '';
     if (sourceBlock) userText += '\n\n' + sourceBlock;
@@ -1092,7 +1101,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const model = row.model && MODEL_RE.test(row.model) ? row.model : MODEL;
     const effort = REASONING_LEVELS.includes(row.reasoning) ? row.reasoning : REASONING;
     const narration = parseNarration(row);
-    const system = systemPrompt(active, storyMode, directionVersion) + '\n\n## Owner-selected narration style\n' + narrationPrompt(narration) + '\n\n## Recurring character policy\n' + characterPolicyPrompt(recurringCharacter, reqChars[0]?.name, presenterKind) +
+    const system = systemPrompt(active, storyMode, directionVersion, visualVersion) + '\n\n## Owner-selected narration style\n' + narrationPrompt(narration) + '\n\n## Recurring character policy\n' + characterPolicyPrompt(recurringCharacter, reqChars[0]?.name, presenterKind) +
       (sourceText ? '\nThe complete owner source is supplied for planning. Identify the sections and claims relevant to the chosen topic and preserve their caveats in the angle, narration and source metadata. After plan_story succeeds the raw source is removed from repeated drawing requests; the full original remains available through read_source_material. Do not claim the entire pasted document has been verified.' : '');
     const depictionInstructions = presenterKind==='context' ? '\n\n## Draw the storyboard examples\nEvery shot must list 1–8 concrete visual subjects in subjects [{id,description}]: include the people or animals, relevant objects, setting details, and the actual example or demonstration the narration describes. Give each a short unique ASCII id. Draw those subjects and actions visibly in the scene; labels, badges, a presenter pointing at a card, or a written description alone do not depict them. For a narrated example such as a child riding a bicycle, draw the child and bicycle in that situation. When draw_scene is complete, acknowledge only the subjects actually drawn in depicted_subjects using the exact planned ids. This acknowledgement is a checklist, not evidence: preview review must still confirm what the pictures show.' : '';
     const conv = PROVIDER === 'openai' ? openaiConversation(system+depictionInstructions, userText, model, effort, active, (message) => log(id, message)) : anthropicConversation(system+depictionInstructions, userText, model, active);
@@ -1109,7 +1118,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       if (photo) conv.show(`Reference for ${c.name}. Use only as visual reference for their bespoke face and body. ${ref.reference_image ? '' : 'Only a small legacy thumbnail is available: likeness is limited; do not invent hidden details.'}`, [photo]);
       else await log(id, `ไม่มีรูปอ้างอิงของ ${c.name} แล้ว ใช้รายละเอียดลักษณะที่บันทึกไว้`);
     }
-    let storyboard: StoryboardT | null = row.storyboard ? Storyboard.parse(withDepictionPolicy(withDirectionPolicy(withCharacterPolicy(row.storyboard, recurringCharacter), directionVersion, row.note || ''),presenterKind==='context')) : null;
+    let storyboard: StoryboardT | null = row.storyboard ? Storyboard.parse(withPresentationPolicy(withDepictionPolicy(withDirectionPolicy(withCharacterPolicy(row.storyboard, recurringCharacter), directionVersion, row.note || ''),presenterKind==='context'),visualVersion)) : null;
     if (storyboard) { const problem = referencePresenterProblem(storyboard, recurringCharacter, reqChars[0]?.name); if (problem) throw new Error(problem); }
     let artwork: ArtworkState = row.artwork || emptyArtwork();
     active.drawing = !!storyboard;
@@ -1198,7 +1207,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
           } else if (u.name === 'plan_story' || u.name === 'revise_story') {
             if (u.name === 'revise_story' && !storyboard) throw new Error('Call plan_story before revising existing segments');
             const plan = u.name === 'revise_story' ? reviseStoryboard(storyboard!, u.input) :
-              Storyboard.parse(withDepictionPolicy(withDirectionPolicy(withCharacterPolicy({...u.input,...(storyMode === 'general' ? {story_mode:storyMode} : {})}, recurringCharacter),directionVersion,row.note || ''),presenterKind==='context'));
+              Storyboard.parse(withPresentationPolicy(withDepictionPolicy(withDirectionPolicy(withCharacterPolicy({...u.input,...(storyMode === 'general' ? {story_mode:storyMode} : {})}, recurringCharacter),directionVersion,row.note || ''),presenterKind==='context'),visualVersion));
             const referenceProblem = referencePresenterProblem(plan, recurringCharacter, reqChars[0]?.name);
             if (referenceProblem) throw new Error(referenceProblem);
             artwork = reconcileArtwork(storyboard, plan, artwork);
@@ -1225,7 +1234,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
               results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: 'The arguments were not valid JSON. Submit again with valid JSON.' });
               continue;
             }
-            const parsed = Draft.safeParse(draftWithCharacterPolicy({ ...mergeArtwork({script:storyboard.script,...u.input}, artwork), storyboard, ...(storyMode === 'general' ? {story_mode:storyMode} : {}) }, recurringCharacter, presenterKind, directionVersion, row.note || ''));
+            const parsed = Draft.safeParse(draftWithCharacterPolicy({ ...mergeArtwork({script:storyboard.script,...u.input}, artwork), storyboard, ...(storyMode === 'general' ? {story_mode:storyMode} : {}) }, recurringCharacter, presenterKind, directionVersion, row.note || '', visualVersion));
             if (!parsed.success) {
               const issues = parsed.error.issues.slice(0, 15).map((i) => `${i.path.join('.')}: ${i.message}`);
               await pool.query('UPDATE drafts SET problems=$2 WHERE id=$1', [id,JSON.stringify(issues)]);
@@ -1266,6 +1275,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
                 pendingReview = JSON.stringify({art:d.art,cast:d.cast,scenes:d.scenes,script:d.script,style:d.style});
                 if (recurringCharacter && presenterKind === 'cat' && !reqChars.length) problems.push('CAT PRESENTER REVIEW: inspect every preview for the SAME recognisable orange tabby cat with a cream muzzle, visible cat ears, whiskers, paws and tail, and a blue hoodie. Reject a human with cat ears, a generic mascot substitution, inconsistent clothes or a different identity. Repair the named portrait or affected scene before accepting.');
                 problems.push('VISUAL REVIEW: the scene art compiled and rendered; its preview frames follow in the next message. The opening shot starts with an extra preview at exactly video time 0: verify the subject and headline are fully visible, readable and inside the crop-safe area; reject a blank or delayed entrance. Compare every face and body with the labelled original reference images, and every scene with the storyboard and narration. When recurring_character is enabled, verify the SAME main presenter is clearly visible in EVERY sampled frame including opening time zero, stays inside safe crop with a readable face, and makes meaningful gestures matching the narration; reject hidden/tiny decorative presenters, fade-outs, exits or identity changes. Inspect the final styled image for crushed facial details, merged eyes or mouth, doubled outlines, and Thai text strokes that merge or become unreadable; a successful render alone does not mean the image is acceptable. If something is wrong (the subject is unrecognisable, tiny, overlapping the text, off-topic, cut off, or loses detail after styling) fix the art and submit again; if all are good, submit the same episode again unchanged.');
+                if(visualVersion===1)problems.push('PRESENTATION REVIEW: compare the actual previews with the EP004 classic motion design: large bold outlined Kanit headings, readable cards/counts, distinct layouts and locations, word-timed reveals, no duplicated small headings, no text/illustration overlap. Inspect the concrete examples too; metadata alone is insufficient. Repair only the failing scene.');
                 if(presenterKind==='context')problems.push('DEPICTION REVIEW: inspect every scene against its planned visual subjects: '+JSON.stringify(d.storyboard?.shots.map(({seg,subjects})=>({seg,subjects})))+'. Verify that the concrete actors, objects, example setting and described action are visibly drawn. A matching depicted_subjects list, text label, badge, pointing presenter, successful render or pixel activity is not proof. Repair only the specific scene or portrait that omits or substitutes the narrated example, then resubmit.');
                 if(directionVersion===1)problems.push('MOTION REVIEW: inspect the filmstrips and per-scene sampling diagnostics below. Check each planned movement and the handoff to the next shot; mouth/bobbing/camera-only motion is not enough. Static windows are diagnostics, not semantic proof. Repair specific missing beats or explain intentional reading holds, then submit motion_review naming concrete segments and movements. Reports: '+JSON.stringify(ac.frames.map(({seg,motion})=>({seg,motion}))));
                 showImages = { text: 'Preview frames of your custom scenes (opening shot: video time 0, early, late; other shots: early, late). Scene ids in order: ' + ac.frames.map((f) => `${f.seg} (${f.images.length} frames${directionVersion===1?' + motion strip':''})`).join(', '), images: ac.frames.flatMap((f) => directionVersion===1?[...f.images,f.motion_strip!]:f.images) };
@@ -1359,7 +1369,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       if (cw.draft_id !== id) return { status: 409, body: { error: 'นี่ไม่ใช่ร่างล่าสุดของเรื่อง Community นี้' } };
     }
     let canonicalDraft:Record<string,any>;
-    try {canonicalDraft=draftWithCharacterPolicy(row.draft, row.recurring_character === true, parsePresenterKind(row.presenter_kind, 'legacy'),directorVersion(row.director_version),row.note || '');}
+    try {canonicalDraft=draftWithCharacterPolicy(row.draft, row.recurring_character === true, parsePresenterKind(row.presenter_kind, 'legacy'),directorVersion(row.director_version),row.note || '',presentationVersion(row.presentation_version));}
     catch(error){return {status:422,body:{error:'draft does not pass the checks',problems:[error instanceof Error?error.message:'invalid directed draft']}};}
     const parsed = Draft.safeParse(canonicalDraft);
     if (!parsed.success) return {status:422,body:{error:'draft does not pass the checks',problems:parsed.error.issues.slice(0,10).map(issue=>`${issue.path.join('.')}: ${issue.message}`)}};
@@ -1429,7 +1439,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
   const isId = (s: string) => /^[0-9a-f-]{36}$/.test(s);
   const summary = (r: any) => ({
     id: r.id, topic: r.topic, note: r.note, status: r.status, title: r.draft?.title_th ?? null, angle: r.draft?.angle ?? null, created_at: r.created_at,
-    director_version:directorVersion(r.director_version),
+    director_version:directorVersion(r.director_version), presentation_version:presentationVersion(r.presentation_version),
     recurring_character: r.recurring_character === true, presenter_kind:parsePresenterKind(r.presenter_kind, 'legacy'), has_character_reference:Array.isArray(r.characters) && r.characters.length > 0,
     narration_style: r.narration_style || 'standard', narration_custom: r.narration_custom || '', source_text_characters: String(r.source_text || '').length,
     updated_at: r.updated_at, estimated_credits: r.estimated_credits, job_id: r.job_id, job_status: r.job_status ?? null, job_progress: r.job_progress ?? null,
@@ -1438,7 +1448,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
 
   app.get('/app/api/studio/status', g, async (c) => {
     const n = (await pool.query("SELECT count(*)::int AS n FROM drafts WHERE created_at > now() - interval '1 day'")).rows[0].n;
-    return c.json({ ...configured(), formats: Object.fromEntries(Object.entries(FORMATS).map(([k, f]) => [k, f.th])), model: MODEL,
+    return c.json({ ...configured(), presentation:{version:1,label:'โมชั่นกราฟิกแบบเดิม (EP004)',default_style:'classic'}, formats: Object.fromEntries(Object.entries(FORMATS).map(([k, f]) => [k, f.th])), model: MODEL,
       models: MODEL_CHOICES[PROVIDER], reasoning: PROVIDER === 'openai' ? REASONING : null, reasoning_levels: PROVIDER === 'openai' ? REASONING_LEVELS : [], ai_suggestions:!!env.OPENAI_API_KEY, narration_previews:!!env.OPENAI_API_KEY, narration_styles:NARRATION_STYLES.map(({prompt,...style})=>style), source_text_limit:SOURCE_TEXT_LIMIT, drafts_today: n, daily_limit: DAILY_LIMIT, busy, max_credits: DRAFT_MAX_CREDITS });
   });
 
@@ -1601,10 +1611,10 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const reasoning = REASONING_LEVELS.includes(b.reasoning) ? b.reasoning : REASONING;
     const ids: string[] = (Array.isArray(b.characters) ? b.characters : []).map(String).filter(isId).slice(0, 3);
     const chars = ids.length ? (await pool.query('SELECT id, name, look, backdrop FROM characters WHERE id = ANY($1::uuid[]) ORDER BY array_position($1::uuid[], id)', [ids])).rows.map((x: any) => ({ id: x.id, name: x.name, look: x.backdrop ? { ...x.look, backdrop: x.backdrop } : x.look })) : [];
-    const style = typeof b.style === 'string' && STYLES[b.style] ? b.style : 'auto';
+    const style = typeof b.style === 'string' && (STYLES[b.style] || b.style==='auto') ? b.style : 'classic';
     const musicMode = b.music_mode === 'ai' ? 'ai' : 'default';
-    const r = await pool.query('INSERT INTO drafts (topic, note, auto_produce, model, reasoning, characters, style, music_mode, story_mode, source_text, request_key, request_hash, narration_style, narration_custom, recurring_character, presenter_kind, director_version) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) ON CONFLICT (request_key) DO NOTHING RETURNING id',
-      [topic, String(b.note || '').trim().slice(0, 1000) || null, !!b.auto_produce, model, PROVIDER === 'openai' ? reasoning : null, JSON.stringify(chars), style, musicMode, storyMode, sourceText || null, request.key, request.hash, narration.narration_style, narration.narration_custom, recurringCharacter, presenterKind, 1]);
+    const r = await pool.query('INSERT INTO drafts (topic, note, auto_produce, model, reasoning, characters, style, music_mode, story_mode, source_text, request_key, request_hash, narration_style, narration_custom, recurring_character, presenter_kind, director_version, presentation_version) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) ON CONFLICT (request_key) DO NOTHING RETURNING id',
+      [topic, String(b.note || '').trim().slice(0, 1000) || null, !!b.auto_produce, model, PROVIDER === 'openai' ? reasoning : null, JSON.stringify(chars), style, musicMode, storyMode, sourceText || null, request.key, request.hash, narration.narration_style, narration.narration_custom, recurringCharacter, presenterKind, 1, 1]);
     if (!r.rows.length) {
       const old = (await pool.query('SELECT id, request_hash FROM drafts WHERE request_key=$1',[request.key])).rows[0];
       return old?.request_hash === request.hash ? c.json({id:old.id},201) : c.json({error:'idempotency-key already used for different input'},409);
@@ -1631,7 +1641,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       catch(e) { return c.json({error:e instanceof Error ? e.message : 'invalid presenter kind'},422); }
     }
     let d:Record<string,any>;
-    try {d=draftWithCharacterPolicy(row.draft, row.recurring_character === true, parsePresenterKind(row.presenter_kind, 'legacy'),directorVersion(row.director_version),row.note || '');}
+    try {d=draftWithCharacterPolicy(row.draft, row.recurring_character === true, parsePresenterKind(row.presenter_kind, 'legacy'),directorVersion(row.director_version),row.note || '',presentationVersion(row.presentation_version));}
     catch(error){return c.json({error:'invalid directed draft',problems:[error instanceof Error?error.message:'invalid directed draft']},422);}
     if (typeof b.title_th === 'string' && b.title_th.trim()) d.title_th = b.title_th.trim().slice(0, 90);
     if (typeof b.style === 'string' && STYLES[b.style]) d.style = b.style;   // only changes how the clip is drawn; the script stays checked
@@ -1689,10 +1699,11 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const sameNarration = narration.narration_style === previousNarration.narration_style && narration.narration_custom === previousNarration.narration_custom;
     const reuseCheckpoints = !!(row.status === 'failed' && row.storyboard && sameNarration && recurringCharacter === (row.recurring_character === true) && presenterKind === parsePresenterKind(row.presenter_kind, 'legacy') && (b.note === undefined || String(b.note).trim() === String(row.note || '').trim()));
     const directionVersion = reuseCheckpoints ? directorVersion(row.director_version) : 1;
-    const r = await pool.query('INSERT INTO drafts (topic, note, parent_id, auto_produce, model, reasoning, characters, source_type, community_id, style, music_mode, story_mode, source_text, research_job_id, request_key, request_hash, narration_style, narration_custom, recurring_character, presenter_kind, director_version) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) ON CONFLICT (request_key) DO NOTHING RETURNING id',
+    const visualVersion = reuseCheckpoints ? presentationVersion(row.presentation_version) : 1;
+    const r = await pool.query('INSERT INTO drafts (topic, note, parent_id, auto_produce, model, reasoning, characters, source_type, community_id, style, music_mode, story_mode, source_text, research_job_id, request_key, request_hash, narration_style, narration_custom, recurring_character, presenter_kind, director_version, presentation_version) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) ON CONFLICT (request_key) DO NOTHING RETURNING id',
       [row.topic, String(b.note ?? row.note ?? '').trim().slice(0, 1000) || null, row.id, row.source_type === 'community' ? false : !!b.auto_produce,
         typeof b.model === 'string' && MODEL_RE.test(b.model) ? b.model : row.model, REASONING_LEVELS.includes(b.reasoning) ? b.reasoning : row.reasoning,
-        JSON.stringify(row.characters ?? []), row.source_type || 'studio', row.community_id ?? null, keepStyle, keepMusic, row.story_mode || 'name_story', row.source_text || null, row.research_job_id || row.id, request.key, request.hash, narration.narration_style, narration.narration_custom, recurringCharacter, presenterKind, directionVersion]);
+        JSON.stringify(row.characters ?? []), row.source_type || 'studio', row.community_id ?? null, keepStyle, keepMusic, row.story_mode || 'name_story', row.source_text || null, row.research_job_id || row.id, request.key, request.hash, narration.narration_style, narration.narration_custom, recurringCharacter, presenterKind, directionVersion, visualVersion]);
     if (!r.rows.length) {
       const old = (await pool.query('SELECT id, request_hash FROM drafts WHERE request_key=$1',[request.key])).rows[0];
       return old?.request_hash === request.hash ? c.json({id:old.id},201) : c.json({error:'idempotency-key already used for different input'},409);
