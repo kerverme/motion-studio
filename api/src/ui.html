@@ -217,6 +217,28 @@ details summary{cursor:pointer;color:var(--ink-2);font-size:14px;margin-top:10px
 .charnew input[type=text]{padding:9px 12px;border-radius:var(--r-md);border:1px solid var(--line);background:var(--raised);width:180px}
 
 /* studio */
+.tv-form{max-width:940px}
+.tv-panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);padding:22px;display:flex;flex-direction:column;gap:18px}
+.tv-panel h3,.tv-panel p{margin:0}
+.tv-field{display:flex;flex-direction:column;gap:7px;min-width:0;font-size:14px;font-weight:500}
+.tv-field>span{color:var(--ink-2)}
+.tv-field input,.tv-field textarea,.tv-field select,.tv-custom{display:block;width:100%;min-width:0;padding:11px 13px;border:1px solid var(--line);border-radius:var(--r-md);background:var(--raised);line-height:1.6;font-weight:400}
+.tv-field textarea,.tv-custom{resize:vertical}
+.tv-field small{font-weight:400}
+.tv-field :disabled{opacity:.8}
+.tv-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:start}
+.tv-panel>.btn{align-self:flex-start}
+.tv-notice{border-left:3px solid var(--accent);padding:12px 16px;background:var(--surface);border-radius:var(--r-sm);line-height:1.6}
+.tv-review{display:flex;flex-direction:column;gap:18px}
+.tv-review .tv-panel{padding:18px}
+.tv-review .tv-field textarea{font-size:14px}
+.tv-review details a{overflow-wrap:anywhere}
+.tv-price strong{font-family:var(--serif);font-size:25px}
+.tv-price label{display:flex;gap:10px;align-items:flex-start;line-height:1.6}
+.tv-price input[type=checkbox]{margin-top:6px;flex-shrink:0}
+.tv-list-item{white-space:normal}
+.tv-custom[hidden]{display:none}
+@media(max-width:600px){.tv-grid{grid-template-columns:1fr}.tv-panel{padding:16px}.tv-price strong{font-size:22px}}
 .composer{background:var(--surface);border:1px solid var(--line-2);border-radius:var(--r-lg);padding:20px 22px;display:flex;flex-direction:column;gap:12px}
 .composer textarea,.field{width:100%;padding:12px 14px;border-radius:var(--r-md);border:1px solid var(--line);background:var(--raised);line-height:1.55;resize:vertical}
 .composer textarea.topic{font-family:var(--serif);font-size:19px;min-height:84px}
@@ -284,6 +306,7 @@ details summary{cursor:pointer;color:var(--ink-2);font-size:14px;margin-top:10px
 </head>
 <body>
 <div id="root"></div>
+<script src="/app/text-video.js"></script>
 <script>
 'use strict';
 const root = document.getElementById('root');
@@ -360,7 +383,7 @@ function login(msg){
 }
 
 /* ---------- frame ---------- */
-const VIEWS = [['create','สร้าง'],['community','Community'],['ready','พร้อมใช้'],['used','เสร็จแล้ว'],['working','กำลังทำ'],['analytics','สถิติ']];
+const VIEWS = [['create','สร้าง'],['text_video','Text to Video'],['community','Community'],['ready','พร้อมใช้'],['used','เสร็จแล้ว'],['working','กำลังทำ'],['analytics','สถิติ']];
 let mainEl;
 function frame(){
   const nav = h('nav',{class:'nav','aria-label':'หมวด'}, VIEWS.map(([k,l])=>h('button',{'aria-current':S.view===k?'page':false,on:{click:()=>go(k)}}, h('span',{},l), h('span',{class:'n'}, k!=='analytics' && S.counts[k]!=null ? S.counts[k] : '\u00a0'))));
@@ -378,6 +401,8 @@ async function load(){
     if (S.view==='create'){
       const [st, dr, e, ch] = await Promise.all([api('/app/api/studio/status'), api('/app/api/studio/drafts'), api('/app/api/episodes?tab=ready'), api('/app/api/studio/characters')]);
       CHARS = ch.characters||[]; S.formats=st.formats; S.counts={...e.counts, create: dr.drafts.filter(d=>d.status==='ready').length||null}; frame(); studio(st, dr.drafts);
+    } else if (S.view==='text_video'){
+      const [cfg, plans] = await Promise.all([api('/app/api/text-video/config'),api('/app/api/text-video/plans')]);frame();renderTextVideo(cfg,plans.plans);
     } else if (S.view==='community'){
       const [cm, e] = await Promise.all([api('/app/api/community'), api('/app/api/episodes?tab=ready')]);
       S.counts={...S.counts, ...e.counts, community: cm.winners.filter(w=>w.status==='claude_draft_ready').length||null}; frame(); community(cm);
@@ -398,7 +423,8 @@ const GENERATION_MODEL_LABELS = {'gpt-6.1-sol':'GPT-6.1 Sol','gpt-6.1-terra':'GP
 function clipDisplayTitle(ep){
   const model=typeof ep.generation_model==='string'&&ep.generation_model?ep.generation_model:null;
   const label=model?(Object.hasOwn(GENERATION_MODEL_LABELS,model)?GENERATION_MODEL_LABELS[model]:model):'ไม่ทราบโมเดล';
-  const tag='['+label+']',title=String(ep.title||'');
+  const videoLabel=ep.video_model?({h3_max:'H3 Max',grok_15:'Grok Imagine Video 1.5'}[ep.video_model]||ep.video_model):null;
+  const tag='['+label+(videoLabel?' · '+videoLabel:'')+']',title=String(ep.title||'');
   // Display only: keep canonical titles and publishing captions unchanged.
   return title.startsWith(tag)?tag+' '+title.slice(tag.length).trimStart():tag+' '+title;
 }

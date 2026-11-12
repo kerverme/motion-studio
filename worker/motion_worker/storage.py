@@ -46,6 +46,9 @@ class S3Storage:
         except Exception:
             return False
 
+    def signed_url(self, key, expires=86400):
+        return self.s3.generate_presigned_url('get_object', Params={'Bucket': self.bucket, 'Key': key}, ExpiresIn=expires)
+
 
 class LocalStorage:
     def __init__(self, root):

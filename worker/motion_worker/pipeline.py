@@ -441,6 +441,10 @@ def make_archive(ctx, T, out):
         tar.add(p, 'episode/package.json')
         tar.add(write_scene_code(ctx), 'episode/scenes.py')
         tar.add(ctx.path('timeline.json'), 'episode/timeline.json')
+        if ctx.pkg.get('text_video'):
+            manifest = ctx.path('production_manifest.json')
+            json.dump({'shots': ctx.r.get('FAL_SHOTS'), 'approval': ctx.pkg['text_video']['approval']}, open(manifest, 'w'), ensure_ascii=False, indent=2)
+            tar.add(manifest, 'episode/production_manifest.json')
         tar.add(ENGINE_DIR, 'engine', filter=lambda ti: None if '__pycache__' in ti.name else ti)
     return out
 

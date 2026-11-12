@@ -15,6 +15,7 @@ import { syncPosts } from './metrics.js';
 import { registerStudio, configured as studioConfigured, OPENAI_MODELS } from './studio.js';
 import { registerTopicSuggestions } from './topic-suggestions.js';
 import { registerNarrationPreviews } from './narration-previews.js';
+import { registerTextVideo } from './text-video.js';
 import { registerCommunity } from './community.js';
 import * as notion from './notion.js';
 
@@ -320,6 +321,7 @@ async function retryJob(id: string): Promise<{ ok: boolean; status?: string; err
   const j = await loadJob(id);
   if (!j) return { ok: false, error: 'not found' };
   if (!['FAILED', 'CANCELLED'].includes(j.status)) return { ok: false, error: `job is ${j.status}` };
+  if (j.kind === 'text_video') return {ok:false,error:'เปิด Text to Video แล้วตรวจราคาซ่อมเฉพาะส่วนและยืนยันใหม่ก่อนลองต่อ'};
   const resume = j.stage || 'GENERATING_AUDIO';
   await pool.query('UPDATE jobs SET status=$2, error=NULL, attempts=0, locked_by=NULL, locked_until=NULL, updated_at=now() WHERE id=$1', [j.id, resume]);
   await event(j.id, 'retry requested; resuming from last completed stage', null, 'info', resume);
@@ -409,6 +411,7 @@ app.get('/internal/google/access-token', async (c) => {
 const ui = registerUi(app, pool, { API_TOKEN, retryJob });
 const suggestions = registerTopicSuggestions(app,pool,{guard:ui.requireUi,models:OPENAI_MODELS});
 const narrationPreviews = registerNarrationPreviews(app,pool,{guard:ui.requireUi,models:OPENAI_MODELS});
+const textVideo = registerTextVideo(app,pool,{guard:ui.requireUi,models:OPENAI_MODELS});
 const studio = registerStudio(app, pool, { guard: ui.requireUi, createJob, estimateCredits: (p: unknown) => estimateCredits(Package.parse(p)), researchFreshness: (p: unknown) => researchFreshness(Package.parse(p)), validate: (p: unknown) => {
   const r = Package.safeParse(p);
   return r.success ? [] : r.error.issues.slice(0, 10).map((i) => `${i.path.join('.')}: ${i.message}`);
@@ -430,6 +433,7 @@ app.onError((err, c) => {
 await migrate();
 suggestions.start().catch(e=>console.error('topic suggestions startup', e instanceof Error ? e.message : 'failed'));
 narrationPreviews.start().catch(e=>console.error('narration previews startup', e instanceof Error ? e.message : 'failed'));
+textVideo.start().catch(e=>console.error('text video startup', e instanceof Error ? e.message : 'failed'));
 // Buffer post status + metrics every 10 minutes; changed episodes are mirrored to Notion
 setInterval(() => {
   syncPosts(pool).then((r) => notion.syncLater(pool, r.changed)).catch((e) => console.error('post sync', e instanceof Error ? e.message : e));

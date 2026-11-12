@@ -1,8 +1,45 @@
 # Motion Studio
 
 Topic in → narrated, subtitled, sound-designed 1080×1920 MP4 in Google Drive (`Motion Studio / Ready to Post`).
-All visuals are drawn by code (Pillow/NumPy procedural drawing, code-written SVG via CairoSVG, FFmpeg).
-No image or video generation models are used anywhere. ElevenLabs is used for audio only.
+The original Create flow draws visuals by code (Pillow/NumPy, SVG and FFmpeg).
+The separate **Text to Video** sidebar uses fal.ai video generation; ElevenLabs supplies narration.
+
+## Text to Video
+
+OpenAI plans a connected story with 4/6/8 shots of 15 seconds for a 60/90/120-second maximum.
+Supported model pairs are H3 Max and Grok Imagine Video 1.5 (text-to-video first, image-to-video thereafter).
+The worker extracts the previous normalised clip's final visible frame and passes it as the next input image.
+Identity and smooth transitions remain generative quality limitations; the owner reviews the delivered clip.
+
+Planning never submits media. The owner edits narration, shot prompts and handoffs, then requests an itemised
+fal/ElevenLabs estimate and explicitly confirms it. The estimate records resolution-specific published fal
+rates (verified 2026-11-12), live account base rates, and the owner's USD/1,000-credit ElevenLabs rate.
+Unknown prices block production. Estimates are not provider billing guarantees. H3 uses conservative standard
+rates and allows one extra billed second per shot; Grok includes each bridging image. No paid music or SFX
+are silently added. OpenAI planning charges are separate and disclosed before planning.
+
+Setup: set **FAL_KEY** on `motion-api`; set `FAL_KEY=${{motion-api.FAL_KEY}}` on `motion-worker`.
+Keep existing `ELEVENLABS_API_KEY` and `MOTION_DEFAULT_VOICE_ID` on the worker. Never put keys in the UI.
+Worker capabilities are refreshed every 30 seconds; production is blocked when unavailable/stale.
+Migration 025 adds plans and a durable paid-call ledger. Deploy worker before API.
+
+Approval is bound to the plan/revision and expires before first submission after 15 minutes. Once approved,
+new paid calls are allowed for eight hours, with fal rates rechecked before each new shot. Changed rates stop
+the job for a new estimate. Duplicate confirmation returns the same job. Each provider call is reserved in
+Postgres BEFORE its POST: a missing response is held for reconciliation, never automatically resubmitted.
+Known failed calls can be quoted again; completed/accepted calls are reused and excluded from repair costs.
+The original job retry endpoint cannot bypass this approval flow. A provider request with unknown outcome
+requires operator reconciliation using provider history; it cannot be retried via another approval.
+
+The final clip is trimmed/padded to the selected duration, with word-aligned Thai Kanit subtitles and narration
+fitted up to 1.2x. If narration is still too long, production stops before fal instead of cutting spoken words.
+Deliveries appear in Ready with creator model provenance and use the existing Notion synchronisation.
+Nothing is posted automatically. The source archive includes the shot/request and approval manifest.
+
+Tests: `cd api && node --import tsx --test src/text-video.test.ts`; worker tests include an explicitly enabled
+60-second FFmpeg integration using synthetic provider fixtures:
+`TEXT_VIDEO_FULL_TEST=1 python -m unittest discover -s worker/tests -p test_text_video.py -v`.
+These fixtures do not demonstrate real fal generation quality; paid production must be approved separately.
 
 New Studio drafts use the classic motion presentation from EP004: the original Kanit headings, animated cards,
 counters, stamps and iris cuts, combined with story-specific drawings. `storyboard.presentation_version: 1`

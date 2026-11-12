@@ -2,7 +2,7 @@
 import json, os, signal, subprocess, sys, threading, time, traceback
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from motion_worker import config, eleven, pipeline, testpkg, audio, drive as drive_mod
+from motion_worker import config, eleven, pipeline, testpkg, audio, drive as drive_mod, text_video
 from motion_worker.db import DB, Heartbeat
 from motion_worker.storage import get_storage
 
@@ -53,6 +53,8 @@ def handle(db, store, job):
         job['package'] = testpkg.PACKAGE
         db.q('UPDATE jobs SET package=%s WHERE id=%s', (json.dumps(testpkg.PACKAGE, ensure_ascii=False), job['id']))
     ctx = pipeline.Ctx(db, store, job)
+    if kind == 'text_video':
+        return text_video.run(ctx)
     if kind == 'episode':
         return pipeline.run_episode(ctx, config.WORKER_ID)
     if kind == 'test_render':
@@ -85,6 +87,7 @@ def main():
     print('db + storage ready', flush=True)
     from motion_worker import artcheck
     threading.Thread(target=artcheck.poll_loop, args=(lambda: STOP,), daemon=True, name='art-checks').start()
+    threading.Thread(target=text_video.capability_loop, args=(lambda: STOP,), daemon=True, name='text-video-capabilities').start()
     while not STOP:
         job = None
         try:
@@ -102,12 +105,15 @@ def main():
         try:
             handle(db, store, job)
             print(f"job {job['id']} done", flush=True)
+        except text_video.JobCancelled:
+            db.release(job)
+            print(f"text-video job {job['id']} cancelled; no further paid requests", flush=True)
         except pipeline.BudgetExceeded as e:
             db.fail(job, str(e), final=True)
         except Exception as e:
             tb = traceback.format_exc()
             print(tb, flush=True)
-            final = job['attempts'] >= job['max_attempts'] or isinstance(e, (eleven.ElevenError,)) and 'HTTP 4' in str(e) and '429' not in str(e)
+            final = isinstance(e, text_video.ApprovalRequired) or job['attempts'] >= job['max_attempts'] or isinstance(e, (eleven.ElevenError,)) and 'HTTP 4' in str(e) and '429' not in str(e)
             db.fail(job, f'{type(e).__name__}: {e}', final=final)
         finally:
             hb.stop.set()
