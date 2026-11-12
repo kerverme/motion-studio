@@ -95,6 +95,39 @@ class TextVideoTests(unittest.TestCase):
         with patch.dict(os.environ,{'FAL_KEY':'test-only'}),patch.object(tv.requests,'get',return_value=Response({'prices':[{'endpoint_id':tv.MODELS['h3_max'][0],'unit':'seconds','unit_price':.1,'currency':'USD'}]})):
             with self.assertRaises(tv.ApprovalRequired):tv.verify_price(self.ctx,tv.MODELS['h3_max'][0])
 
+    def test_v3_omits_unsupported_stitching_and_reuses_persisted_audio(self):
+        shots=self.job['package']['text_video']['plan']['shots']
+        chars=list(shots[0]['narration']);n=len(chars)
+        response=Response({'audio_base64':base64.b64encode(b'persisted audio fixture').decode(),'alignment':{'characters':chars,'character_start_times_seconds':[i/n for i in range(n)],'character_end_times_seconds':[(i+1)/n for i in range(n)]}})
+        # A pre-fix HTTP 400 has the same logical identity as the repaired request.
+        legacy={'text':shots[0]['narration'],'model_id':'eleven_v3','language_code':'th','voice_settings':{'stability':.5,'similarity_boost':.75},'voice_id':'test-voice','next_text':shots[1]['narration']}
+        old,_=tv.reserve(self.ctx,'eleven:shot_01','eleven',legacy)
+        tv.update(self.ctx,old,'failed',{'http_status':400})
+        with patch.object(tv.requests,'post',return_value=response) as post:
+            with self.assertRaises(tv.ApprovalRequired):tv.narration(self.ctx,shots[0],0)
+            post.assert_not_called()
+            self.job['package']['text_video']['approval']['id']='00000000-0000-4000-8000-000000000002'
+            for i,shot in enumerate(shots):
+                first=tv.narration(self.ctx,shot,i)
+                self.assertEqual(tv.narration(self.ctx,shot,i),first)
+            self.assertEqual(post.call_count,4)
+            for call in post.call_args_list:
+                payload=call.kwargs['json']
+                self.assertEqual(payload['model_id'],'eleven_v3')
+                self.assertNotIn('previous_text',payload)
+                self.assertNotIn('next_text',payload)
+
+    def test_provider_error_is_actionable_and_credentials_are_redacted(self):
+        row,_=tv.reserve(self.ctx,'eleven:shot_01','eleven',{})
+        response=Response({'detail':{'status':'unsupported_model','message':'Unsupported next_text; key=private-test-key'}},400,{'request-id':'rejected-request'})
+        with patch.object(tv.requests,'post',return_value=response):
+            with self.assertRaisesRegex(tv.ApprovalRequired,'unsupported_model') as caught:
+                tv.paid_post(self.ctx,row,'https://api.elevenlabs.io/test',{'xi-api-key':'private-test-key'},{},1)
+        self.assertNotIn('private-test-key',str(caught.exception))
+        self.assertNotIn('private-test-key',json.dumps(self.db.calls))
+        self.assertEqual(self.db.calls[0]['request_id'],'rejected-request')
+        self.assertEqual(self.db.calls[0]['status'],'failed')
+
     def test_cancelled_jobs_cannot_reappear_as_ready_or_failed(self):
         # The DB conditional update lost to cancellation: do not overwrite the episode or emit a success.
         db=object.__new__(DB);job={**self.job,'kind':'text_video'}

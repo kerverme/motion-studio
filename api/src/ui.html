@@ -1161,7 +1161,7 @@ function patchJob(c, j){
   const se = (j.events||[]).filter(e=>e.status===j.status && /started$/.test(e.message)).pop(); c.stageStart = se ? +new Date(se.created_at) : 0;
   if (!c.clock){ c.clock = h('div',{class:'clock'}); c.sub.before(c.clock); }
   c.sub.replaceChildren('ลองแล้ว '+j.attempts+' จาก '+j.max_attempts+' ครั้ง', j.error ? h('div',{style:'color:var(--bad)'},String(j.error).slice(0,280)) : '');
-  c.act.replaceChildren(...(bad ? [h('button',{class:'btn primary',on:{click:async()=>{ try{ await api('/app/api/jobs/'+j.id+'/retry',{method:'POST'}); toast('เริ่มทำต่อจากขั้นที่ค้างแล้ว'); load(); }catch(x){ toast(x.message); } }}},'ทำต่อจากขั้นที่ค้าง')] : []));
+  c.act.replaceChildren(...(bad ? [j.kind==='text_video' ? h('button',{class:'btn primary',on:{click:()=>openTextVideo(j.text_video_plan_id)}},'ตรวจราคาซ่อมเฉพาะส่วน') : h('button',{class:'btn primary',on:{click:async()=>{ try{ await api('/app/api/jobs/'+j.id+'/retry',{method:'POST'}); toast('เริ่มทำต่อจากขั้นที่ค้างแล้ว'); load(); }catch(x){ toast(x.message); } }}},'ทำต่อจากขั้นที่ค้าง')] : []));
   c.bar.classList.toggle('bad', bad); c.bar.classList.remove('indet');
 }
 function patchDraft(c, d){

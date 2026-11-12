@@ -106,8 +106,21 @@ def paid_post(ctx, row, url, headers, payload, timeout):
         raise ApprovalRequired(f"{row['slot']}: การเชื่อมต่อหลุด ยังไม่ทราบผล จึงไม่ส่งคำขอที่อาจคิดเงินซ้ำ")
     if not r.ok:
         known_rejection = 400 <= r.status_code < 500 and r.status_code != 408
-        update(ctx, row, 'failed' if known_rejection else 'unknown', {'http_status': r.status_code})
-        raise ApprovalRequired(f"{row['slot']}: ผู้ให้บริการตอบ HTTP {r.status_code} ยังไม่ส่งซ้ำ")
+        # Keep actionable provider errors, without storing credentials or raw bodies.
+        detail = ''
+        try:
+            body = r.json()
+            error = body.get('detail') or body.get('error') or {}
+            if isinstance(error, dict):
+                detail = ' · '.join(str(error[k]) for k in ('status', 'code', 'message') if isinstance(error.get(k), str))
+            for name, secret in headers.items():
+                if name.lower() in ('authorization', 'xi-api-key') and secret:
+                    detail = detail.replace(secret, '[redacted]').replace(secret.removeprefix('Key '), '[redacted]')
+            detail = ' '.join(detail.split())[:400]
+        except (ValueError, AttributeError, TypeError):
+            pass
+        update(ctx, row, 'failed' if known_rejection else 'unknown', {'http_status': r.status_code, 'error': detail}, r.headers.get('request-id'))
+        raise ApprovalRequired(f"{row['slot']}: ผู้ให้บริการตอบ HTTP {r.status_code}{': '+detail if detail else ''} ยังไม่ส่งซ้ำ")
     try:
         return r, r.json()
     except ValueError:
@@ -233,9 +246,12 @@ def fal_shot(ctx, shot, index, previous_frame):
 def narration(ctx, shot, index):
     shots = ctx.pkg['text_video']['plan']['shots']; slot = 'eleven:'+shot['id']
     payload = {'text': shot['narration'], 'model_id': 'eleven_v3', 'language_code': 'th', 'voice_settings': {'stability': .5, 'similarity_boost': .75}}
-    if index: payload['previous_text'] = shots[index-1]['narration']
-    if index+1 < len(shots): payload['next_text'] = shots[index+1]['narration']
     logical = {**payload, 'voice_id': ctx.pkg['voice']['voice_id']}
+    # Eleven v3 rejects request stitching. Keep this story context only in the
+    # ledger identity, so existing accepted/done/uncertain calls remain protected.
+    # https://elevenlabs.io/docs/eleven-api/guides/how-to/text-to-speech/request-stitching
+    if index: logical['previous_text'] = shots[index-1]['narration']
+    if index+1 < len(shots): logical['next_text'] = shots[index+1]['narration']
     old = latest(ctx, slot)
     if not old or old['status'] not in ('done', 'accepted'):
         item = authorise(ctx, slot, 'eleven');ctx.spend_check(item['credits'])

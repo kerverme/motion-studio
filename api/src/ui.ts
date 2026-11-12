@@ -148,7 +148,7 @@ export function registerUi(app: Hono, pool: pg.Pool, deps: { API_TOKEN: string; 
     const tab = c.req.query('tab') === 'used' ? 'used' : 'ready';
     const r = await pool.query(`${CLIP_SQL} WHERE e.ui_status = $1 ORDER BY e.number DESC NULLS LAST LIMIT 200`, [tab]);
     const cnt = (await pool.query(`SELECT e.ui_status, count(*)::int AS n FROM episodes e WHERE EXISTS (SELECT 1 FROM publication_handoffs h WHERE h.episode_id = e.id) GROUP BY 1`)).rows;
-    const working = (await pool.query("SELECT count(*)::int AS n FROM jobs WHERE kind='episode' AND status NOT IN ('READY_TO_POST','CANCELLED')")).rows[0].n;
+    const working = (await pool.query("SELECT count(*)::int AS n FROM jobs WHERE kind IN ('episode','text_video') AND status NOT IN ('READY_TO_POST','CANCELLED')")).rows[0].n;
     const counts = { ready: cnt.find((x) => x.ui_status === 'ready')?.n ?? 0, used: cnt.find((x) => x.ui_status === 'used')?.n ?? 0, working };
     return c.json({ episodes: r.rows.map(shape).filter((e) => e.video_url), counts });
   });
@@ -188,14 +188,15 @@ export function registerUi(app: Hono, pool: pg.Pool, deps: { API_TOKEN: string; 
 
   // ---- jobs in progress / failed
   app.get('/app/api/working', requireUi, async (c) => {
-    const r = await pool.query(`SELECT j.id, j.status, j.stage, j.progress, j.error, j.attempts, j.max_attempts, j.created_at, j.updated_at, j.locked_until,
+    const r = await pool.query(`SELECT j.id, j.kind, j.status, j.stage, j.progress, j.error, j.attempts, j.max_attempts, j.created_at, j.updated_at, j.locked_until,
         COALESCE(e.title_th, j.package->>'title_th') AS title,
-        d.id AS draft_id, d.model AS draft_model, d.reasoning AS draft_reasoning,
+        d.id AS draft_id, COALESCE(d.model,j.package->>'generation_model') AS draft_model, d.reasoning AS draft_reasoning,
+        j.package->'text_video'->>'plan_id' AS text_video_plan_id,
         COALESCE((SELECT json_agg(x ORDER BY x.id) FROM (SELECT id, status, level, message, created_at FROM job_events WHERE job_id=j.id ORDER BY id DESC LIMIT 8) x), '[]'::json) AS events,
         (SELECT max(created_at) FROM job_events WHERE job_id=j.id) AS last_event_at
       FROM jobs j LEFT JOIN episodes e ON e.id = j.episode_id LEFT JOIN drafts d ON d.job_id = j.id
-      WHERE j.kind='episode' AND j.status NOT IN ('READY_TO_POST','CANCELLED')
-         OR (j.kind='episode' AND j.status='CANCELLED' AND j.updated_at > now() - interval '2 days')
+      WHERE j.kind IN ('episode','text_video') AND (j.status NOT IN ('READY_TO_POST','CANCELLED')
+         OR (j.status='CANCELLED' AND j.updated_at > now() - interval '2 days'))
       ORDER BY j.created_at DESC LIMIT 30`);
     // drafts an LLM is writing right now (the only place an LLM runs)
     const dr = await pool.query(`SELECT id, topic, status, model, reasoning, log, created_at, updated_at FROM drafts
