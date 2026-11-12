@@ -16,8 +16,8 @@ const plan=(n=4)=>({title:'เรือลำน้อยเดินทาง�
 const rates=VIDEO_MODELS.flatMap(m=>[m.t2v,m.i2v].map(endpoint_id=>({endpoint_id,unit:'seconds',unit_price:m.baseline,currency:'USD'})));
 const path='/app/api/text-video/plans';let llmCalls=0,invalidSource=false,failResponse=false;
 function server(){const app=new Hono();const service=registerTextVideo(app,pool as any,{autoStart:false,models:['gpt-6.1-sol','gpt-6.1-terra','gpt-6-astra'],guard:async(c,next)=>c.req.header('x-test-auth')==='yes'?next():c.json({error:'unauthorized'},401),prices:async()=>rates,response:async(body,opts)=>{
-  llmCalls++;assert.equal(body.model,input.model);assert.equal(body.max_tool_calls,4);assert.match(body.input[0].content,/complete supplied source/);await opts.onProgress?.('OpenAI accepted [resp_test123]');if(failResponse)throw new Error('OpenAI ตรวจสถานะไม่สำเร็จ [resp_test123]');
-  const p:any=plan(JSON.parse(body.input[1].content).duration/15);if(invalidSource){p.kind='educational';p.sources=[{url:'https://invented.example/source',title:'Fake',publisher:'Fake',published:'unknown',claim:'unsupported'}];p.shots[0].source_ids=[0];}
+  llmCalls++;assert.equal(body.model,input.model);assert.equal(body.max_tool_calls,4);assert.match(body.instructions,/complete supplied source/);assert.equal(body.text,undefined,'hosted search must not request legacy JSON mode');await opts.onProgress?.('OpenAI accepted [resp_test123]');if(failResponse)throw new Error('OpenAI ตรวจสถานะไม่สำเร็จ [resp_test123]');
+  const p:any=plan(JSON.parse(body.input[0].content).duration/15);if(invalidSource){p.kind='educational';p.sources=[{url:'https://invented.example/source',title:'Fake',publisher:'Fake',published:'unknown',claim:'unsupported'}];p.shots[0].source_ids=[0];}
   return {status:'completed',id:'resp_test123',output:[{type:'message',content:[{type:'output_text',text:JSON.stringify(p)}]}]};}});return{app,service};}
 const headers={'content-type':'application/json','x-test-auth':'yes'};
 const send=(app:Hono,url:string,body:any,method='POST',id=randomUUID())=>app.request(url,{method,headers:{...headers,'idempotency-key':id},body:JSON.stringify(body)});
