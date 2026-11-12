@@ -1,0 +1,163 @@
+{
+  "date": "2026-11-12",
+  "main_baseline": "3e43db1fbab64601b9c8417dc7410825623d5891",
+  "upstream": "3a7132b996be0241c1ea0ab180d519f06e6f10b6",
+  "production_deployed": false,
+  "real_provider_calls": 0,
+  "api_tests": 136,
+  "worker_tests": 45,
+  "worker_full_60_second_assembly": true,
+  "lemo_tests": 17,
+  "pre_spend_executor_readiness": "passed with mocked readiness responses; real quota gate remains blocked",
+  "typecheck": "passed",
+  "ui": "development fixture browser test passed",
+  "runtime_limits_verified": false,
+  "runtime_blocker": "runsc --ignore-cgroups; no verifiable per-container cgroup limits",
+  "real_v4_verified": false,
+  "real_sfx_v3_verified": false,
+  "real_thai_speech_sync_verified": false,
+  "commercial_license_approved": false,
+  "stories": [
+    {
+      "story": "nik",
+      "style": "dataviz",
+      "classic_seconds": 3.735,
+      "lemo_sandbox_seconds": 60.094,
+      "mock_providers": true,
+      "qa": {
+        "classic": {
+          "ok": true,
+          "checks": [
+            "decodes",
+            "video_spec",
+            "audio_spec",
+            "duration",
+            "no_clipping",
+            "narration_present",
+            "av_sync",
+            "sfx_under_narration",
+            "no_black_frames",
+            "scenes_render_content",
+            "animation_cues_resolved",
+            "sfx_cues_resolved",
+            "claims_sourced",
+            "sources_listed"
+          ]
+        },
+        "lemo": {
+          "ok": true,
+          "checks": [
+            "decodes",
+            "video_spec",
+            "audio_spec",
+            "duration",
+            "no_clipping",
+            "narration_present",
+            "av_sync",
+            "sfx_under_narration",
+            "no_black_frames",
+            "scenes_render_content",
+            "animation_cues_resolved",
+            "sfx_cues_resolved",
+            "claims_sourced",
+            "sources_listed"
+          ]
+        }
+      }
+    },
+    {
+      "story": "dream",
+      "style": "firefly-pointillism",
+      "classic_seconds": 4.287,
+      "lemo_sandbox_seconds": 56.96,
+      "mock_providers": true,
+      "qa": {
+        "classic": {
+          "ok": true,
+          "checks": [
+            "decodes",
+            "video_spec",
+            "audio_spec",
+            "duration",
+            "no_clipping",
+            "narration_present",
+            "av_sync",
+            "sfx_under_narration",
+            "no_black_frames",
+            "scenes_render_content",
+            "animation_cues_resolved",
+            "sfx_cues_resolved",
+            "claims_sourced",
+            "sources_listed"
+          ]
+        },
+        "lemo": {
+          "ok": true,
+          "checks": [
+            "decodes",
+            "video_spec",
+            "audio_spec",
+            "duration",
+            "no_clipping",
+            "narration_present",
+            "av_sync",
+            "sfx_under_narration",
+            "no_black_frames",
+            "scenes_render_content",
+            "animation_cues_resolved",
+            "sfx_cues_resolved",
+            "claims_sourced",
+            "sources_listed"
+          ]
+        }
+      }
+    },
+    {
+      "story": "cats",
+      "style": "rubber-hose",
+      "classic_seconds": 3.922,
+      "lemo_sandbox_seconds": 52.993,
+      "mock_providers": true,
+      "qa": {
+        "classic": {
+          "ok": true,
+          "checks": [
+            "decodes",
+            "video_spec",
+            "audio_spec",
+            "duration",
+            "no_clipping",
+            "narration_present",
+            "av_sync",
+            "sfx_under_narration",
+            "no_black_frames",
+            "scenes_render_content",
+            "animation_cues_resolved",
+            "sfx_cues_resolved",
+            "claims_sourced",
+            "sources_listed"
+          ]
+        },
+        "lemo": {
+          "ok": true,
+          "checks": [
+            "decodes",
+            "video_spec",
+            "audio_spec",
+            "duration",
+            "no_clipping",
+            "narration_present",
+            "av_sync",
+            "sfx_under_narration",
+            "no_black_frames",
+            "scenes_render_content",
+            "animation_cues_resolved",
+            "sfx_cues_resolved",
+            "claims_sourced",
+            "sources_listed"
+          ]
+        }
+      }
+    }
+  ]
+}

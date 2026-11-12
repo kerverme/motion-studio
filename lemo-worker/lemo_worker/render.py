@@ -4,6 +4,21 @@ import requests
 from motion_worker import pipeline, rendering, timeline
 from motion_worker.creative_ledger import digest, cached_call, Ledger
 from .coding import generate_scene
+from .catalog import private_spec
+
+
+def preflight(ctx):
+    """Configuration/security checks happen before any paid narration or coding."""
+    private_spec(ctx.pkg['creative']['selection']['selected']['id'])
+    if not os.environ.get('OPENAI_API_KEY') or not os.environ.get('ELEVENLABS_API_KEY'):
+        raise RuntimeError('Configure the coding and voice providers before production')
+    url=os.environ['LEMO_EXECUTOR_URL'].rstrip('/')
+    if not url.startswith('https://') and os.environ.get('LEMO_DEVELOPMENT')!='true':raise RuntimeError('Executor requires authenticated TLS')
+    response=requests.get(url+'/ready',headers={'Authorization':'Bearer '+os.environ['LEMO_EXECUTOR_TOKEN']},timeout=45)
+    if response.status_code!=200:raise RuntimeError('Executor security readiness failed; no provider requests submitted')
+    ready=response.json()
+    if ready.get('ready') is not True or ready.get('image')!=os.environ.get('LEMO_SANDBOX_IMAGE'):
+        raise RuntimeError('Executor image/readiness does not match the approved configuration')
 
 
 def extract(data, folder):

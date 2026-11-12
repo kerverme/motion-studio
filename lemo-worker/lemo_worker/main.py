@@ -4,7 +4,7 @@ from motion_worker import config, pipeline
 from motion_worker.db import DB, Heartbeat
 from motion_worker.storage import get_storage
 from .catalog import enabled, GATES
-from .render import stage_render
+from .render import stage_render, preflight
 
 STOP=threading.Event()
 
@@ -17,6 +17,7 @@ class Health(BaseHTTPRequestHandler):
 
 
 def run(ctx):
+    preflight(ctx)
     stages=[('GENERATING_AUDIO',pipeline.stage_audio),('BUILDING_TIMELINE',pipeline.stage_timeline),('RENDERING',stage_render),('QUALITY_CHECK',pipeline.stage_qa),('UPLOADING_DRIVE',pipeline.stage_upload)]
     for name,fn in stages:
         if name in ctx.r:continue

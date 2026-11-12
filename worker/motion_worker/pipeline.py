@@ -460,7 +460,8 @@ def write_docs(ctx, T, number, folder):
     out = {}
     for name, text in files.items():
         pth = os.path.join(folder, name)
-        open(pth, 'w', encoding='utf-8').write(text)
+        with open(pth, 'w', encoding='utf-8') as file:
+            file.write(text)
         out[name] = pth
     return out
 

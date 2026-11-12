@@ -95,6 +95,12 @@ def validate_archive(data):
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
+        if self.path=='/ready':
+            token=os.environ.get('LEMO_EXECUTOR_TOKEN','')
+            if not token or not compare_digest(self.headers.get('Authorization',''),'Bearer '+token):self.send_error(403);return
+            try:body={'ready':True,'image':os.environ['LEMO_SANDBOX_IMAGE'],'limits':verify_runtime(os.environ['LEMO_SANDBOX_IMAGE'])};status=200
+            except Exception as error:body={'ready':False,'error':str(error)[:300]};status=503
+            self.send_response(status);self.send_header('Content-Type','application/json');self.end_headers();self.wfile.write(json.dumps(body).encode());return
         self.send_response(200 if self.path=='/health' else 404);self.end_headers()
         self.wfile.write(b'{"service":"lemo-executor","runtime":"runsc"}')
     def do_POST(self):

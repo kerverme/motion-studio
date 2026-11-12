@@ -1,4 +1,6 @@
 import concurrent.futures, json, os, sys, threading, time, unittest, uuid
+import tempfile,subprocess
+from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
 ROOT=Path(__file__).resolve().parents[2];sys.path.insert(0,str(ROOT/'worker'))
@@ -60,6 +62,28 @@ class LedgerTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):ledger.reserve('key','elevenlabs','eleven_v4','narration',{'a':2},.2)
         self.db.q("UPDATE jobs SET status='CANCELLED' WHERE id=%s",(self.job['id'],))
         with self.assertRaises(RuntimeError):ledger.reserve('new','elevenlabs','eleven_v4','narration',{},.2)
+    def test_approved_classic_render_is_reserved_and_replayed_without_rendering_twice(self):
+        from motion_worker import pipeline
+        self.db.q('UPDATE creative_approvals SET allocations=%s::jsonb WHERE job_id=%s',(json.dumps({'compute':1}),self.job['id']))
+        ctx=SimpleNamespace(db=self.db,job=self.job,pkg={'scene_code':'fixture scene','creative':{'allocations':{'compute':.6}}},r={'BUILDING_TIMELINE':{'timeline_key':'fixture'}})
+        with patch.object(pipeline,'_stage_render',return_value={'final_key':'final','silent_key':'silent'}) as render:
+            self.assertEqual(pipeline.stage_render(ctx)['final_key'],'final');self.assertEqual(pipeline.stage_render(ctx)['final_key'],'final');self.assertEqual(render.call_count,1)
+    def test_approved_audio_checkpoint_reuses_each_chunk_and_sfx(self):
+        from motion_worker import pipeline,creative_audio,eleven
+        from motion_worker.storage import LocalStorage
+        allocation={'narration':.7,'sfx':.2,'compute':.1}
+        self.db.q('UPDATE creative_approvals SET allocations=%s::jsonb WHERE job_id=%s',(json.dumps(allocation),self.job['id']))
+        tone=subprocess.check_output(['ffmpeg','-v','error','-f','lavfi','-i','sine=frequency=220:duration=0.6','-f','mp3','-'])
+        pkg={'script':[{'id':'s1','text':'แมวพูดได้'},{'id':'s2','text':'เรื่องสมมติ'}],'voice':{'voice_id':'mock-voice','model_id':'eleven_v4'},'sfx':[{'id':'tap','prompt':'fixture-'+str(uuid.uuid4()),'duration':.5,'model_id':'eleven_text_to_sound_v3'}],'music':None,'creative':{'allocations':allocation}}
+        # Voice ID is unique to this test run so a previous test database cache cannot mask dispatches.
+        pkg['voice']['voice_id']='mock-'+str(uuid.uuid4())
+        self.job['package']=pkg;self.db.q('UPDATE jobs SET package=%s::jsonb WHERE id=%s',(json.dumps(pkg),self.job['id']))
+        def voice(text,*args,**kwargs):return tone,{'characters':list(text),'character_start_times_seconds':[i*.4/len(text) for i in range(len(text))],'character_end_times_seconds':[(i+1)*.4/len(text) for i in range(len(text))]},{'model_id':'eleven_v4','mock':True}
+        with tempfile.TemporaryDirectory() as folder,patch.object(config,'WORKDIR',folder+'/work'),patch.object(eleven,'tts_with_timestamps',side_effect=voice) as tts,patch.object(eleven,'sound_effect',return_value=(tone,{'model_id':'eleven_text_to_sound_v3','mock':True})) as sfx:
+            ctx=pipeline.Ctx(self.db,LocalStorage(folder+'/store'),self.job)
+            first=creative_audio.stage_audio(ctx);second=creative_audio.stage_audio(ctx)
+            self.assertEqual(first['narration_key'],second['narration_key']);self.assertEqual(tts.call_count,2);self.assertEqual(sfx.call_count,1)
+            self.assertTrue(all(x['cache_hit'] for x in second['narration_manifest']));self.assertTrue(second['sfx_manifest'][0]['cache_hit'])
 
 
 if __name__=='__main__':unittest.main()

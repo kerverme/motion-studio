@@ -25,6 +25,28 @@ class CodingTests(unittest.TestCase):
             response(ctx,'reservation','same scene');self.assertEqual(get.call_count,1);post.assert_not_called()
     def test_unapproved_default_never_claims_jobs(self):
         with patch.dict('os.environ',{},clear=True):self.assertFalse(enabled())
+    def test_failed_security_preflight_happens_before_paid_audio(self):
+        from lemo_worker import main
+        with patch.object(main,'preflight',side_effect=RuntimeError('unverified limits')),patch.object(main.pipeline,'stage_audio') as audio:
+            with self.assertRaisesRegex(RuntimeError,'unverified'):main.run(SimpleNamespace())
+            audio.assert_not_called()
+    def test_preflight_requires_tls_and_matching_ready_executor(self):
+        from lemo_worker.render import preflight
+        ctx=SimpleNamespace(pkg={'creative':{'selection':{'selected':{'id':'dataviz'}}}})
+        env={'OPENAI_API_KEY':'mock-only','ELEVENLABS_API_KEY':'mock-only','LEMO_EXECUTOR_URL':'https://executor.invalid','LEMO_EXECUTOR_TOKEN':'mock-only','LEMO_SANDBOX_IMAGE':'sha256:fixture'}
+        with patch.dict('os.environ',env,clear=True),patch('lemo_worker.render.private_spec'),patch('lemo_worker.render.requests.get') as get:
+            get.return_value=SimpleNamespace(status_code=503)
+            with self.assertRaisesRegex(RuntimeError,'security readiness'):preflight(ctx)
+            get.return_value=SimpleNamespace(status_code=200,json=lambda:{'ready':True,'image':'sha256:wrong'})
+            with self.assertRaisesRegex(RuntimeError,'does not match'):preflight(ctx)
+            get.return_value=SimpleNamespace(status_code=200,json=lambda:{'ready':True,'image':'sha256:fixture'})
+            preflight(ctx)
+            self.assertEqual(get.call_args.args[0],'https://executor.invalid/ready')
+            self.assertEqual(get.call_args.kwargs['headers']['Authorization'],'Bearer mock-only')
+            get.reset_mock()
+            with patch.dict('os.environ',{'LEMO_EXECUTOR_URL':'http://executor.invalid'}):
+                with self.assertRaisesRegex(RuntimeError,'TLS'):preflight(ctx)
+            get.assert_not_called()
 
 
 if __name__=='__main__':unittest.main()

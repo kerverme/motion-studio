@@ -1,5 +1,6 @@
 """Approved v4 narration and SFX v3, with durable per-request checkpoints."""
 import json, shutil
+from pathlib import Path
 from . import audio, eleven, rendering, timeline
 from .creative_ledger import cached_call, digest
 
@@ -15,7 +16,7 @@ def stage_audio(ctx):
         def generate(_reservation, text=text, payload=payload):
             data, alignment, meta = eleven.tts_with_timestamps(text, voice['voice_id'], voice['model_id'], voice.get('language_code', 'th'), voice.get('stability', .4), voice.get('similarity_boost', .75), speed=voice.get('speed'))
             key = digest(payload)
-            mp3 = ctx.path('audio', key + '.mp3'); open(mp3, 'wb').write(data)
+            mp3 = ctx.path('audio', key + '.mp3'); Path(mp3).write_bytes(data)
             duration = audio.duration(mp3)
             if max(alignment['character_end_times_seconds']) > duration + .15:
                 raise RuntimeError('Provider timestamps exceed audio duration')
@@ -25,7 +26,7 @@ def stage_audio(ctx):
             return {'audio_key': ak, 'alignment_key': jk, 'duration': duration, 'meta': meta, 'usage': meta, 'provider_id': meta.get('request_id'), 'asset_keys': [ak, jk]}
         result = cached_call(ctx, 'narration', voice['model_id'], payload, creative['allocations']['narration'] * len(text) / total_chars, generate)
         mp3 = ctx.fetch(result['audio_key'], ctx.path('audio', f'chunk{i}.mp3'))
-        al = json.load(open(ctx.fetch(result['alignment_key'], ctx.path('audio', f'chunk{i}.json'))))
+        al = json.loads(Path(ctx.fetch(result['alignment_key'], ctx.path('audio', f'chunk{i}.json'))).read_text(encoding='utf-8'))
         chars, st, en = timeline.flatten_alignment(al, offset)
         if flat:
             flat += ' '; starts.append(st[0]); ends.append(st[0])
@@ -37,7 +38,7 @@ def stage_audio(ctx):
     else:
         rendering.concat(paths, vo)
     alpath = ctx.path('audio', 'alignment.json')
-    json.dump({'text': flat, 'start': starts, 'end': ends}, open(alpath, 'w'), ensure_ascii=False)
+    Path(alpath).write_text(json.dumps({'text': flat, 'start': starts, 'end': ends}, ensure_ascii=False), encoding='utf-8')
     sfx, fx_manifest = {}, []
     effects = p.get('sfx', [])
     total_seconds = sum(f['duration'] for f in effects)
@@ -46,7 +47,7 @@ def stage_audio(ctx):
         payload = {'prompt': fx['prompt'], 'duration': fx['duration'], 'model': model, 'loop': False, 'prompt_influence': .5}
         def generate(_reservation, payload=payload, model=model):
             data, meta = eleven.sound_effect(payload['prompt'], payload['duration'], model_id=model)
-            path = ctx.path('audio', digest(payload) + '.mp3'); open(path, 'wb').write(data)
+            path = ctx.path('audio', digest(payload) + '.mp3'); Path(path).write_bytes(data)
             duration = audio.duration(path)
             if duration > payload['duration'] + 1 or duration < .1:
                 raise RuntimeError('Unexpected SFX duration')
