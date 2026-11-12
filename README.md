@@ -13,7 +13,11 @@ Identity and smooth transitions remain generative quality limitations; the owner
 
 Planning never submits media. The owner edits narration, shot prompts and handoffs, then requests an itemised
 fal/ElevenLabs estimate and explicitly confirms it. The estimate records resolution-specific published fal
-rates (verified 2026-11-12), live account base rates, and the owner's USD/1,000-credit ElevenLabs rate.
+rates (verified 2026-11-12), live account base rates, and an explicit USD/1,000-character ElevenLabs API rate.
+The initial voice estimate uses Eleven v3's published API rate of $0.08/1,000 characters (verified 2026-11-12
+at https://elevenlabs.io/pricing/api), with a 10% character allowance. Owners can adjust the rate for their
+account; included quota is never assumed free. UI amounts round upward to cents. Legacy credit-based quote
+requests remain supported for older clients, but the new UI requires a fresh character-based quote before approval.
 Unknown prices block production. Estimates are not provider billing guarantees. H3 uses conservative standard
 rates and allows one extra billed second per shot; Grok includes each bridging image. No paid music or SFX
 are silently added. OpenAI planning charges are separate and disclosed before planning.

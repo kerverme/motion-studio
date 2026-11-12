@@ -5,7 +5,7 @@ import {z} from 'zod';
 import {openaiResponse} from './openai-response.js';
 import {extractWebEvidence,sourceKey} from './source-evidence.js';
 import {narrationPrompt,parseNarration,NARRATION_STYLES} from './narration.js';
-import {VIDEO_MODELS,parseVideoInput,validateVideoPlan,digest,makeVideoQuote,type Rate} from './text-video-contract.js';
+import {VIDEO_MODELS,ELEVEN_API_PRICING,parseVideoInput,validateVideoPlan,digest,makeVideoQuote,type Rate} from './text-video-contract.js';
 
 const PREFIX='/app/api/text-video';
 const UUID=z.string().uuid();
@@ -48,7 +48,7 @@ JSON shape: {title,synopsis,kind:"educational"|"fiction",visual_bible,sources:[{
   async function pump(){if(busy)return;busy=true;try{for(;;){const r=(await pool.query("UPDATE text_video_plans SET status='planning',updated_at=now() WHERE id=(SELECT id FROM text_video_plans WHERE status='queued' ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED) AND status='queued' RETURNING *")).rows[0];if(!r)break;await generate(r);}}finally{busy=false;}}
   const kick=()=>{if(options.autoStart!==false)void pump().catch(()=>{});};
   async function start(){await pool.query("UPDATE text_video_plans SET status='failed',error='ระบบรีสตาร์ทระหว่างส่ง OpenAI ไม่ส่งซ้ำอัตโนมัติ',updated_at=now() WHERE status='planning' AND response_id IS NULL");await pool.query("UPDATE text_video_plans SET status='queued' WHERE status='planning' AND response_id IS NOT NULL");kick();}
-  app.get(PREFIX+'/config',options.guard,async c=>{const w=await worker();return c.json({models:VIDEO_MODELS,brains:options.models,narration_styles:NARRATION_STYLES.map(({id,label})=>({id,label})),durations:[60,90,120],shot_seconds:15,openai_configured:!!env.OPENAI_API_KEY,fal_configured:!!env.FAL_KEY,worker_ready:!!(w?.fal&&w?.eleven),voice_id:w?.voice_id||null});});
+  app.get(PREFIX+'/config',options.guard,async c=>{const w=await worker();return c.json({models:VIDEO_MODELS,brains:options.models,narration_styles:NARRATION_STYLES.map(({id,label})=>({id,label})),durations:[60,90,120],shot_seconds:15,openai_configured:!!env.OPENAI_API_KEY,fal_configured:!!env.FAL_KEY,worker_ready:!!(w?.fal&&w?.eleven),voice_id:w?.voice_id||null,eleven_pricing:ELEVEN_API_PRICING});});
   app.get(PREFIX+'/plans',options.guard,async c=>{const r=await pool.query('SELECT p.*,j.status AS job_status,e.number AS episode_number FROM text_video_plans p LEFT JOIN jobs j ON j.id=p.job_id LEFT JOIN episodes e ON e.id=j.episode_id ORDER BY p.created_at DESC LIMIT 30');return c.json({plans:r.rows.map(shape)});});
   app.post(PREFIX+'/plans',options.guard,async c=>{
     try{const raw=await c.req.json(),id=UUID.parse(c.req.header('idempotency-key')),input=parseVideoInput(raw);if(!options.models.includes(input.model))return c.json({error:'เลือกสมอง OpenAI ที่รองรับ'},422);if(!env.OPENAI_API_KEY)return c.json({error:'ยังไม่ได้ตั้งค่า OpenAI'},503);
@@ -73,7 +73,9 @@ JSON shape: {title,synopsis,kind:"educational"|"fiction",visual_bible,sources:[{
       if(row.job_id){const job=(await pool.query('SELECT status FROM jobs WHERE id=$1',[row.job_id])).rows[0];if(job?.status!=='FAILED')return c.json({error:'งานเดิมยังทำอยู่หรือเสร็จแล้ว'},409);}
       const w=await worker();if(!w?.fal||!w?.eleven||!env.FAL_KEY)return c.json({error:'ยังส่งผลิตไม่ได้: ต้องตั้ง FAL_KEY ที่ API/worker และรอ worker พร้อม ElevenLabs'},503);
       const m=VIDEO_MODELS.find(m=>m.id===row.request.video_model)!,rates=await prices([m.t2v,m.i2v]);const calls=row.job_id?(await pool.query('SELECT * FROM text_video_calls WHERE job_id=$1 ORDER BY created_at DESC',[row.job_id])).rows:[];
-      const rate=z.number().finite().min(0).max(100).parse(raw.eleven_usd_per_1000_credits);const quote=makeVideoQuote(row.request,row.plan,row.revision,w.voice_id,rate,calls,rates);
+      if(raw.eleven_usd_per_1000_characters!==undefined&&raw.eleven_usd_per_1000_credits!==undefined)throw new Error('เลือกหน่วยราคาเสียงเพียงแบบเดียว');
+      const legacy=raw.eleven_usd_per_1000_characters===undefined&&raw.eleven_usd_per_1000_credits!==undefined;
+      const rate=z.number().finite().min(0).max(100).parse(legacy?raw.eleven_usd_per_1000_credits:raw.eleven_usd_per_1000_characters);const quote=makeVideoQuote(row.request,row.plan,row.revision,w.voice_id,rate,calls,rates,Date.now(),legacy?'credits':'characters');
       if(quote.eleven_credits>Number(env.MOTION_MAX_CREDITS_PER_EPISODE||6000))return c.json({error:'ค่าเสียงเกินเพดานเครดิตของระบบ'},402);
       const saved=await pool.query('UPDATE text_video_plans SET quote=$2,updated_at=now() WHERE id=$1 AND revision=$3 AND approval IS NOT DISTINCT FROM $4::jsonb RETURNING id',[id,JSON.stringify(quote),row.revision,row.approval?JSON.stringify(row.approval):null]);if(!saved.rowCount)return c.json({error:'ร่างเปลี่ยนระหว่างคิดราคา กรุณาเปิดใหม่'},409);
       return c.json(quote);

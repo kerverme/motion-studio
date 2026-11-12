@@ -2,6 +2,9 @@ import {createHash,randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {SOURCE_TEXT_LIMIT,parseNarration} from './narration.js';
 
+// API billing uses characters, separately from ElevenCreative website credits.
+export const ELEVEN_API_PRICING={model:'eleven_v3',usd_per_1000_characters:.08,source:'https://elevenlabs.io/pricing/api',verified:'2026-11-12'};
+
 // Verified schemas and published resolution-specific prices, 2026-11-12.
 // The generic fal unit price is NOT the configuration's price (Grok reports $0.01).
 export const VIDEO_MODELS = [
@@ -36,8 +39,8 @@ export function validateVideoPlan(raw:unknown,input:VideoInputT){const p=VideoPl
 export function digest(v:unknown):string {const stable=(x:any):string=>Array.isArray(x)?'['+x.map(stable).join(',')+']':x&&typeof x==='object'?'{'+Object.keys(x).sort().map(k=>JSON.stringify(k)+':'+stable(x[k])).join(',')+'}':JSON.stringify(x);return createHash('sha256').update(stable(v)).digest('hex');}
 export const money=(n:number)=>Math.max(0,Math.ceil((n-1e-10)*10000)/10000);
 export type Rate={endpoint_id:string;unit:string;unit_price:number;currency:string};
-export function makeVideoQuote(input:VideoInputT,plan:VideoPlanT,revision:string,voiceId:string,elevenRate:number,calls:any[],rates:Rate[],now=Date.now()){
-  if(!Number.isFinite(elevenRate)||elevenRate<0||elevenRate>100)throw new Error('ใส่ราคา USD ต่อ 1,000 เครดิต ElevenLabs ตามแพ็กเกจของคุณ');
+export function makeVideoQuote(input:VideoInputT,plan:VideoPlanT,revision:string,voiceId:string,elevenRate:number,calls:any[],rates:Rate[],now=Date.now(),elevenBillingUnit:'characters'|'credits'='characters'){
+  if(!Number.isFinite(elevenRate)||elevenRate<0||elevenRate>100)throw new Error('ใส่อัตราค่าเสียง ElevenLabs ที่ใช้ประมาณการ');
   const m=videoModel(input.video_model);const latest=new Map<string,any>();for(const c of calls)if(!latest.has(c.slot))latest.set(c.slot,c);
   if([...latest.values()].some(c=>c.status==='submitting'||c.status==='unknown'))throw new Error('มีคำขอที่ยังไม่ทราบผล ต้องตรวจ request เดิมก่อนอนุมัติการจ่ายเพิ่ม');
   const pending=plan.shots.flatMap((s,i)=>['fal','eleven'].flatMap(provider=>{const slot=`${provider}:${s.id}`,c=latest.get(slot);return c&&['done','accepted'].includes(c.status)?[]:[{slot,provider,index:i,characters:Array.from(s.narration).length}];}));
@@ -50,8 +53,12 @@ export function makeVideoQuote(input:VideoInputT,plan:VideoPlanT,revision:string
   const eleven=pending.filter(x=>x.provider==='eleven').map(x=>({slot:x.slot,characters:x.characters,credits:Math.ceil(x.characters*1.10)}));
   const credits=eleven.reduce((n,x)=>n+x.credits,0),falUsd=money(fal.reduce((n,x)=>n+x.usd,0)),elevenUsd=money(credits/1000*elevenRate);
   return {id:randomUUID(),revision,plan_hash:digest({input,plan}),created_at:new Date(now).toISOString(),expires_at:new Date(now+15*60_000).toISOString(),
-    currency:'USD',fal_usd:falUsd,eleven_usd:elevenUsd,total_usd:money(falUsd+elevenUsd),eleven_credits:credits,eleven_usd_per_1000_credits:elevenRate,
+    currency:'USD',fal_usd:falUsd,eleven_usd:elevenUsd,total_usd:money(falUsd+elevenUsd),
+    // Keep the worker's existing character-budget ledger; never reinterpret a saved approval.
+    eleven_credits:credits,eleven_characters:eleven.reduce((n,x)=>n+x.characters,0),eleven_budget_characters:credits,eleven_billing_unit:elevenBillingUnit,
+    eleven_usd_per_1000_characters:elevenBillingUnit==='characters'?elevenRate:null,
+    eleven_usd_per_1000_credits:elevenBillingUnit==='credits'?elevenRate:null,eleven_pricing_source:ELEVEN_API_PRICING.source,
     voice_id:voiceId,voice_model:'eleven_v3',fal_rates:live,fal,eleven,
     pricing_source:`https://fal.ai/models/${m.t2v}`,pricing_verified:'2026-11-12',
-    note:'ประมาณการตามโมเดล/ความละเอียด รวมภาพต่อเฟรมแล้ว ใช้ราคามาตรฐานแทนส่วนลดชั่วคราว H3 เผื่อผลลัพธ์ยาวเกิน 15 วินาทีเล็กน้อย ค่า ElevenLabs ใช้อัตราต่อเครดิตที่คุณระบุ บิลจริงขึ้นกับผู้ให้บริการ ไม่รวมค่าสมอง OpenAI ที่ใช้วางบทแล้ว ไม่มีการสร้างเพลงหรือ SFX แบบเสียเงินเพิ่ม'};
+    note:'ประมาณการตามโมเดล/ความละเอียด รวมภาพต่อเฟรมแล้ว ใช้ราคามาตรฐานแทนส่วนลดชั่วคราว H3 เผื่อผลลัพธ์ยาวเกิน 15 วินาทีเล็กน้อย '+(elevenBillingUnit==='characters'?'ค่าเสียงใช้ราคา API ต่อตัวอักษรตามอัตราที่เลือก เผื่อจำนวนตัวอักษร 10%':'ค่าเสียงใช้ราคาเครดิตที่ระบุในแบบเดิม')+' บิลจริงขึ้นกับแพ็กเกจและผู้ให้บริการ ไม่รวมค่าสมอง OpenAI ที่ใช้วางบทแล้ว ไม่มีการสร้างเพลงหรือ SFX แบบเสียเงินเพิ่ม'};
 }

@@ -5,7 +5,7 @@ import {readFileSync,readdirSync} from 'node:fs';
 import {PGlite} from '@electric-sql/pglite';
 import {Hono} from 'hono';
 import {registerTextVideo} from './text-video.js';
-import {parseVideoInput,validateVideoPlan,makeVideoQuote,digest,VIDEO_MODELS} from './text-video-contract.js';
+import {parseVideoInput,validateVideoPlan,makeVideoQuote,digest,VIDEO_MODELS,ELEVEN_API_PRICING} from './text-video-contract.js';
 
 process.env.OPENAI_API_KEY='test-only';process.env.FAL_KEY='test-only';
 const db=new PGlite();let locked=Promise.resolve();
@@ -47,14 +47,14 @@ test('OpenAI evidence cannot be fabricated and saved response IDs survive failur
 
 test('edited, expired or mismatched quotes cannot start production; duplicate approval produces one job',async()=>{
   const {app,service}=server();let p=await ready(app,service);assert.equal(p.status,'ready');
-  let r=await send(app,path+'/'+p.id+'/quote',{eleven_usd_per_1000_credits:.3});assert.equal(r.status,200,await r.clone().text());let q=await r.json();
+  let r=await send(app,path+'/'+p.id+'/quote',{eleven_usd_per_1000_characters:.3});assert.equal(r.status,200,await r.clone().text());let q=await r.json();
   const approval=(quote:any,rev:string)=>({quote_id:quote.id,revision:rev,approved:true,confirmation:'CONFIRM '+quote.id});
   assert.equal((await send(app,path+'/'+p.id+'/produce',{...approval(q,p.revision),approved:false})).status,409);
   r=await send(app,path+'/'+p.id,{revision:p.revision,plan:{...p.plan,title:'ชื่อใหม่'}},'PATCH');assert.equal(r.status,200,await r.clone().text());p=await r.json();
   assert.equal((await send(app,path+'/'+p.id+'/produce',approval(q,p.revision))).status,409);
-  q=await(await send(app,path+'/'+p.id+'/quote',{eleven_usd_per_1000_credits:.3})).json();
+  q=await(await send(app,path+'/'+p.id+'/quote',{eleven_usd_per_1000_characters:.3})).json();
   await query("UPDATE text_video_plans SET quote=jsonb_set(quote,'{expires_at}','\"2000-01-01T00:00:00Z\"') WHERE id=$1",[p.id]);assert.equal((await send(app,path+'/'+p.id+'/produce',approval(q,p.revision))).status,409);
-  q=await(await send(app,path+'/'+p.id+'/quote',{eleven_usd_per_1000_credits:.3})).json();const responses=await Promise.all([send(app,path+'/'+p.id+'/produce',approval(q,p.revision)),send(app,path+'/'+p.id+'/produce',approval(q,p.revision))]);
+  q=await(await send(app,path+'/'+p.id+'/quote',{eleven_usd_per_1000_characters:.3})).json();const responses=await Promise.all([send(app,path+'/'+p.id+'/produce',approval(q,p.revision)),send(app,path+'/'+p.id+'/produce',approval(q,p.revision))]);
   assert.deepEqual(responses.map(r=>r.status),[201,200]);const bodies=await Promise.all(responses.map(r=>r.json()));assert.equal(bodies[0].id,bodies[1].id);
   const jobs=(await query('SELECT * FROM jobs')).rows;assert.equal(jobs.length,1);const job:any=jobs[0];assert.equal(job.kind,'text_video');assert.equal(job.package.generation_model,'gpt-6.1-sol');assert.equal(job.package.text_video.approval.id,q.id);assert.equal(job.package.music,null);assert.equal((await query('SELECT * FROM publish_log')).rows.length,0);
   assert.equal((await send(app,path+'/'+p.id,{revision:p.revision,plan:p.plan},'PATCH')).status,409);
@@ -65,6 +65,19 @@ test('repair quotes charge only missing calls and stop when a paid POST has unkn
   const q=makeVideoQuote(input,p,randomUUID(),'voice',.3,calls,rates);assert.equal(q.fal.length,2);assert.equal(q.eleven.length,3);
   assert.throws(()=>makeVideoQuote(input,p,randomUUID(),'voice',.3,[...calls,{slot:'fal:shot_03',status:'unknown'}],rates),/ยังไม่ทราบผล/);
   assert.throws(()=>makeVideoQuote(input,p,randomUUID(),'voice',.3,[],rates.map(r=>({...r,unit:'1000 tokens'}))),/หน่วยราคา/);
+});
+
+test('voice quotes distinguish API characters from legacy credits without silently reinterpreting approvals',async()=>{
+  const {app,service}=server(),p=await ready(app,service);
+  const cfg=await(await app.request('/app/api/text-video/config',{headers})).json();assert.deepEqual(cfg.eleven_pricing,ELEVEN_API_PRICING);
+  const res=await send(app,path+'/'+p.id+'/quote',{eleven_usd_per_1000_characters:.08});assert.equal(res.status,200);const q=await res.json();
+  const exact=p.plan.shots.reduce((n:number,s:any)=>n+Array.from(s.narration).length,0);
+  const allowance=p.plan.shots.reduce((n:number,s:any)=>n+Math.ceil(Array.from(s.narration).length*1.1),0);
+  assert.equal(q.eleven_characters,exact);assert.equal(q.eleven_budget_characters,allowance);assert.equal(q.eleven_credits,allowance,'worker reservation protocol remains compatible');
+  assert.equal(q.eleven_billing_unit,'characters');assert.equal(q.eleven_usd_per_1000_characters,.08);assert.equal(q.eleven_usd_per_1000_credits,null);
+  assert.equal(q.eleven_usd,Math.ceil((allowance/1000*.08-1e-10)*10000)/10000);
+  const legacy=await(await send(app,path+'/'+p.id+'/quote',{eleven_usd_per_1000_credits:.3})).json();assert.equal(legacy.eleven_billing_unit,'credits');assert.equal(legacy.eleven_usd_per_1000_characters,null);assert.equal(legacy.eleven_usd_per_1000_credits,.3);
+  assert.equal((await send(app,path+'/'+p.id+'/quote',{eleven_usd_per_1000_characters:.08,eleven_usd_per_1000_credits:.3})).status,422);
 });
 
 test('provider readiness and user ElevenLabs rate are required; no assumed free unknown costs',async()=>{

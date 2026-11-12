@@ -2,7 +2,7 @@
 let TV_CONFIG=null;
 const TV_PATH='/app/api/text-video';
 const tvTime=n=>Math.floor(n/60)+':'+String(n%60).padStart(2,'0');
-const tvUsd=n=>'$'+Number(n).toFixed(2)+' USD';
+const tvUsd=n=>'$'+(Math.max(0,Math.ceil((Number(n)-1e-10)*100))/100).toFixed(2)+' USD';
 const tvState=p=>p.job_status==='CANCELLED'?'ยกเลิกการผลิตแล้ว':p.job_status==='FAILED'?'ผลิตไม่สำเร็จ · ตรวจราคาซ่อมเฉพาะส่วน':p.status==='done'?'พร้อมใช้':({queued:'รอสมอง',planning:'กำลังวางบท',ready:'รอตรวจบทและยืนยันราคา',failed:'วางบทไม่สำเร็จ',producing:'กำลังผลิต'})[p.status]||p.status;
 function tvField(label,input,help){return h('label',{class:'tv-field'},h('span',{},label),input,help?h('small',{class:'sub'},help):null);}
 function tvModelSelect(value){return h('select',{'aria-label':'โมเดลวิดีโอ fal.ai'},TV_CONFIG.models.map(m=>h('option',{value:m.id,selected:m.id===value},m.label)));}
@@ -65,11 +65,11 @@ function openTextVideo(id){
           const collect=()=>({...data,title:title.value,visual_bible:bible.value,shots:data.shots.map((s,i)=>({...s,narration:shots[i].narration.value,visual_prompt:shots[i].prompt.value,end_frame:shots[i].end.value}))});
           let revision=p.revision;
           const save=async()=>{const result=await api(TV_PATH+'/plans/'+id,{method:'PATCH',body:JSON.stringify({revision,plan:collect(),video_model:videoModel.value,resolution:resolution.value})});revision=result.revision;dirty=false;return result;};
-          const rate=h('input',{type:'number',min:0,max:100,step:'any',value:p.quote?.eleven_usd_per_1000_credits??'',placeholder:'ใส่อัตราจากแพ็กเกจของคุณ','aria-label':'ราคา ElevenLabs USD ต่อ 1000 เครดิต'});
+          const rate=h('input',{type:'number',min:0,max:100,step:'any',value:p.quote?.eleven_usd_per_1000_characters??TV_CONFIG.eleven_pricing?.usd_per_1000_characters??'',placeholder:'ใส่อัตรา API ของบัญชีคุณ','aria-label':'ราคา ElevenLabs USD ต่อ 1000 ตัวอักษร'});
           rate.addEventListener('input',()=>put(priceBox,h('p',{class:'tv-notice'},'อัตราค่าเสียงเปลี่ยนแล้ว กรุณาตรวจราคาใหม่')));
           const getQuote=h('button',{class:'btn primary',on:{click:async()=>{getQuote.disabled=true;error.textContent='';try{
-            if(rate.value==='')throw new Error('ใส่อัตรา USD ต่อ 1,000 เครดิตจากแพ็กเกจ ElevenLabs ก่อน');
-            if(dirty)await save();const q=await api(TV_PATH+'/plans/'+id+'/quote',{method:'POST',body:JSON.stringify({eleven_usd_per_1000_credits:Number(rate.value)})});showQuote(q);
+            if(rate.value==='')throw new Error('ใส่อัตรา API USD ต่อ 1,000 ตัวอักษรของ ElevenLabs ก่อน');
+            if(dirty)await save();const q=await api(TV_PATH+'/plans/'+id+'/quote',{method:'POST',body:JSON.stringify({eleven_usd_per_1000_characters:Number(rate.value)})});showQuote(q);
           }catch(x){error.textContent=x.message;}finally{getQuote.disabled=false;}}}},p.job_id?'ตรวจราคาซ่อมเฉพาะส่วน':'ตรวจราคาก่อนผลิต');
           function showQuote(q){
             const confirm=h('input',{type:'checkbox','aria-label':'ยืนยันบทและค่าใช้จ่าย Text to Video'});
@@ -80,8 +80,8 @@ function openTextVideo(id){
             confirm.addEventListener('change',()=>send.disabled=!confirm.checked||dirty||Date.now()>Date.parse(q.expires_at));
             put(priceBox,h('section',{class:'tv-panel tv-price',style:'margin-top:18px'},h('h3',{},'สรุปค่าใช้จ่ายก่อนผลิต'),
               h('p',{},`fal.ai: ${tvUsd(q.fal_usd)} · ${q.fal.length} ช็อตที่ยังต้องสร้าง`),
-              h('p',{},`ElevenLabs: ${tvUsd(q.eleven_usd)} · ไม่เกิน ${q.eleven_credits.toLocaleString()} เครดิตตามประมาณการ`),
-              h('strong',{},'รวมประมาณ '+tvUsd(q.total_usd)),h('p',{class:'sub'},q.note),h('a',{href:q.pricing_source,target:'_blank',rel:'noopener'},'ดูราคาต้นทาง fal.ai'),
+              h('p',{},`ElevenLabs: ${tvUsd(q.eleven_usd)} · ${q.eleven_characters.toLocaleString()} ตัวอักษร (คิดเผื่อ ${q.eleven_budget_characters.toLocaleString()})`),
+              h('strong',{},'รวมประมาณ '+tvUsd(q.total_usd)),h('p',{class:'sub'},q.note+' · ยอดแสดงปัดขึ้นถึงเซนต์'),h('a',{href:q.pricing_source,target:'_blank',rel:'noopener'},'ดูราคาต้นทาง fal.ai'),h('a',{href:q.eleven_pricing_source,target:'_blank',rel:'noopener'},'ดูราคา API ของ ElevenLabs'),
               h('p',{class:'sub'},'ราคานี้ใช้ได้ถึง '+new Date(q.expires_at).toLocaleTimeString('th-TH')+' · การแก้บทหรือโมเดลจะยกเลิกราคานี้'),
               h('label',{style:'display:block;margin:16px 0'},confirm,' ฉันตรวจบทและยืนยันค่าใช้จ่ายตามรายการนี้แล้ว'),send));
           }
@@ -90,9 +90,12 @@ function openTextVideo(id){
             h('div',{class:'tv-grid'},tvField('โมเดล fal.ai',videoModel),tvField('ความละเอียด',resBox)),tvField('ลักษณะภาพและตัวละครที่ใช้ต่อเนื่อง',bible),
             h('details',{},h('summary',{},'แหล่งข้อมูล '+p.plan.sources.length+' แห่ง'),p.plan.sources.map(s=>h('p',{},h('a',{href:s.url,target:'_blank',rel:'noopener'},s.title),h('small',{class:'sub'},' · '+s.publisher+' · '+s.published)))),
             shots.map(s=>s.node),editable?h('button',{class:'btn',on:{click:async()=>{try{await save();toast('บันทึกบทแล้ว ต้องตรวจราคาใหม่');refresh();}catch(x){error.textContent=x.message;}}}},'บันทึกการแก้บท'):null,
-            error,canQuote?h('section',{class:'tv-panel'},tvField('ราคา ElevenLabs ต่อ 1,000 เครดิต (USD)',rate,'ใช้อัตราจริงของแพ็กเกจคุณ หากใช้เครดิตรวมและไม่มีค่าใช้จ่ายเพิ่มให้ระบุ 0 ระบบยังแสดงจำนวนเครดิตที่จะใช้'),getQuote,priceBox):
+            error,canQuote?h('section',{class:'tv-panel'},tvField('ราคา API ของ ElevenLabs ต่อ 1,000 ตัวอักษร (USD)',rate,'ค่าเริ่มต้นเป็นราคาสาธารณะของ Eleven v3 ตรวจเมื่อ '+(TV_CONFIG.eleven_pricing?.verified||'')+' ปรับได้หากบัญชีหรือแพ็กเกจของคุณใช้อัตราต่างกัน หากรวมในโควตาและไม่มีค่าใช้จ่ายเพิ่มให้ระบุ 0'),getQuote,priceBox):
               h('p',{class:'tv-notice'},p.job_status==='CANCELLED'?'ยกเลิกการผลิตแล้ว · ไม่มีการส่งคำขอเสียเงินเพิ่ม':p.status==='done'?`คลิปพร้อมใช้แล้ว${p.episode_number?' · EP'+String(p.episode_number).padStart(3,'0'):''}`:'กำลังผลิต · ดูสถานะได้ที่ “กำลังทำ” ไม่มีการโพสต์อัตโนมัติ'));
-          if(canQuote&&p.quote&&!p.approval&&Date.now()<Date.parse(p.quote.expires_at))showQuote(p.quote);
+          if(canQuote&&p.quote&&!p.approval&&Date.now()<Date.parse(p.quote.expires_at)){
+            if(p.quote.eleven_billing_unit==='characters')showQuote(p.quote);
+            else put(priceBox,h('p',{class:'tv-notice'},'ราคาเดิมใช้หน่วยเครดิต กรุณาตรวจราคา API ต่อตัวอักษรใหม่ก่อนยืนยัน'));
+          }
         }
         if(['queued','planning'].includes(p.status)||(p.status==='producing'&&!['FAILED','CANCELLED'].includes(p.job_status)))timer=setTimeout(refresh,5000);
       }catch(x){if(!closed)put(body,h('p',{class:'err'},x.message));}
