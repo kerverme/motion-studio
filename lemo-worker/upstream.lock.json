@@ -1,0 +1,33 @@
+{
+  "repository": "https://github.com/lemomo-ai/lemo-opuscar",
+  "commit": "3a7132b996be0241c1ea0ab180d519f06e6f10b6",
+  "version": "2.0.0",
+  "license_approved": false,
+  "styles": [
+    {
+      "id": "dataviz",
+      "name": "Data Storytelling",
+      "category": "Data & Maps",
+      "spec_sha256": "e94013d5a7c548c8844598a671ff0b49bc78770696cbca0d8d00846336f3c67f",
+      "renderer": "canvas2d",
+      "extra_providers": []
+    },
+    {
+      "id": "firefly-pointillism",
+      "name": "Firefly Pointillism",
+      "category": "Light & Lines",
+      "spec_sha256": "15ab75f6b7f2eebbf24471edb9d4050c2b4db6c8699727a43a9de2dc8c2c6c59",
+      "renderer": "canvas2d",
+      "extra_providers": []
+    },
+    {
+      "id": "rubber-hose",
+      "name": "1930s Rubber Hose Cartoon",
+      "category": "Cartoons",
+      "spec_sha256": "bf850f9cd22e68b2125fed00d1b9804e91479620b44420ba7ec50e570e472a94",
+      "renderer": "canvas2d",
+      "extra_providers": []
+    }
+  ],
+  "code_sha256": "f6aafa10a156d52b066a39b9445b4d23f3261b326042a92b95bdea4ba71bac24"
+}
