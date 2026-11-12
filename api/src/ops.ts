@@ -17,7 +17,7 @@ export async function alertSweep(pool: pg.Pool) {
     SELECT j.id, j.status, j.error, COALESCE(e.title_th, j.package->>'title_th') AS title, j.updated_at,
            CASE WHEN j.status = 'FAILED' THEN 'failed' ELSE 'stuck' END AS why
     FROM jobs j LEFT JOIN episodes e ON e.id = j.episode_id
-    WHERE j.kind = 'episode' AND (
+    WHERE j.kind IN ('episode','lemo') AND (
           j.status = 'FAILED'
        OR (j.status NOT IN ('READY_TO_POST','CANCELLED','NEW') AND j.updated_at < now() - interval '45 minutes' AND (j.locked_until IS NULL OR j.locked_until < now())))
       AND j.updated_at > now() - interval '3 days'

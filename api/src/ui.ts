@@ -113,6 +113,7 @@ export function registerUi(app: Hono, pool: pg.Pool, deps: { API_TOKEN: string; 
            h.files, h.created_at AS delivered_at, j.package->'captions' AS captions, j.package->'thumbnail'->>'mode' AS thumbnail_mode,
            EXTRACT(EPOCH FROM (COALESCE(j.finished_at, h.created_at) - j.created_at))::int AS produce_seconds, j.package->>'series_tag' AS series_tag, j.source_type,
            CASE WHEN j.kind='text_video' THEN j.package->>'generation_model'
+                WHEN j.package ? 'creative' THEN j.package->'creative'->>'model'
                 WHEN creator.log @> '[{"msg":"นำเข้าร่างที่เขียนในแชท (ค้นข้อมูลด้วย Firecrawl แล้ว)"}]'::jsonb
                 THEN NULL ELSE NULLIF(creator.model, 'claude-chat') END AS generation_model,
            j.package->>'video_model' AS video_model,
@@ -148,7 +149,7 @@ export function registerUi(app: Hono, pool: pg.Pool, deps: { API_TOKEN: string; 
     const tab = c.req.query('tab') === 'used' ? 'used' : 'ready';
     const r = await pool.query(`${CLIP_SQL} WHERE e.ui_status = $1 ORDER BY e.number DESC NULLS LAST LIMIT 200`, [tab]);
     const cnt = (await pool.query(`SELECT e.ui_status, count(*)::int AS n FROM episodes e WHERE EXISTS (SELECT 1 FROM publication_handoffs h WHERE h.episode_id = e.id) GROUP BY 1`)).rows;
-    const working = (await pool.query("SELECT count(*)::int AS n FROM jobs WHERE kind IN ('episode','text_video') AND status NOT IN ('READY_TO_POST','CANCELLED')")).rows[0].n;
+    const working = (await pool.query("SELECT count(*)::int AS n FROM jobs WHERE kind IN ('episode','text_video','lemo') AND status NOT IN ('READY_TO_POST','CANCELLED')")).rows[0].n;
     const counts = { ready: cnt.find((x) => x.ui_status === 'ready')?.n ?? 0, used: cnt.find((x) => x.ui_status === 'used')?.n ?? 0, working };
     return c.json({ episodes: r.rows.map(shape).filter((e) => e.video_url), counts });
   });
@@ -195,7 +196,7 @@ export function registerUi(app: Hono, pool: pg.Pool, deps: { API_TOKEN: string; 
         COALESCE((SELECT json_agg(x ORDER BY x.id) FROM (SELECT id, status, level, message, created_at FROM job_events WHERE job_id=j.id ORDER BY id DESC LIMIT 8) x), '[]'::json) AS events,
         (SELECT max(created_at) FROM job_events WHERE job_id=j.id) AS last_event_at
       FROM jobs j LEFT JOIN episodes e ON e.id = j.episode_id LEFT JOIN drafts d ON d.job_id = j.id
-      WHERE j.kind IN ('episode','text_video') AND (j.status NOT IN ('READY_TO_POST','CANCELLED')
+      WHERE j.kind IN ('episode','text_video','lemo') AND (j.status NOT IN ('READY_TO_POST','CANCELLED')
          OR (j.status='CANCELLED' AND j.updated_at > now() - interval '2 days'))
       ORDER BY j.created_at DESC LIMIT 30`);
     // drafts an LLM is writing right now (the only place an LLM runs)

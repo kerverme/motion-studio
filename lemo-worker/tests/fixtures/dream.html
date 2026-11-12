@@ -1,0 +1,19 @@
+<!doctype html><meta charset="utf-8"><style>body{margin:0;overflow:hidden}canvas{display:block}</style><canvas id="film"></canvas><script type="module">
+import {eo,ss} from '/core/lib.js';
+const F={"kind": "dream", "lines": ["หลับแล้วสมองยังทำงาน", "ความฝันมักเกิดในช่วง REM", "ตาขยับ แต่กล้ามเนื้อส่วนใหญ่ผ่อนลง", "ภาพฝันเป็นภาพเล่า ไม่ใช่ภาพตรวจสมอง"], "palette": ["#172D29", "#D2DC72", "#FFF3BB"]},c=document.querySelector('canvas');c.width=innerWidth;c.height=innerHeight;
+const x=c.getContext('2d');const W=c.width,H=c.height;
+function circle(a,b,r,color){x.fillStyle=color;x.beginPath();x.arc(a,b,r,0,Math.PI*2);x.fill();}
+function label(t,a,b,size=55){x.font=`600 ${size}px "Noto Sans Thai",sans-serif`;x.textAlign='center';x.fillStyle=F.palette[2];x.fillText(t,a,b);}
+function cat(a,b,s,t){x.save();x.translate(a,b+Math.sin(t*5)*10);x.scale(s,s);x.strokeStyle=F.palette[1];x.lineWidth=8;circle(0,70,100,F.palette[1]);circle(0,-35,90,F.palette[2]);x.fillStyle=F.palette[2];x.beginPath();x.moveTo(-80,-70);x.lineTo(-80,-160);x.lineTo(-15,-100);x.lineTo(80,-160);x.lineTo(80,-70);x.fill();circle(-30,-45,9,F.palette[1]);circle(30,-45,9,F.palette[1]);x.beginPath();x.arc(0,-5,18,0,Math.PI);x.stroke();x.beginPath();x.moveTo(85,90);x.quadraticCurveTo(180,50+30*Math.sin(t*3),140,-20);x.stroke();x.restore();}
+window.render=t=>{const n=Math.min(3,Math.floor(t/2)),p=t%2;x.fillStyle=F.palette[0];x.fillRect(0,0,W,H);x.save();x.scale(W/1080,H/1920);
+label('MOCK PROVIDERS · DEVELOPMENT',540,100,29);label(['คำถาม','ลองสังเกต','เรื่องกำลังเปลี่ยน','บทสรุป'][n],540,270,55);
+if(F.kind==='nik'){
+ for(let i=0;i<5;i++){const a=170+i*185,b=780-30*Math.sin(p*2+i);circle(a,b,45,F.palette[1]);x.fillStyle=F.palette[1];x.fillRect(a-45,b+55,90,140);}
+ x.strokeStyle=F.palette[1];x.lineWidth=8;x.strokeRect(240,1020,600,250);label(n===3?'ยังไม่ทราบ':'?',540,1190,100);label('ไม่ใช้ยอดประชากรแทนชื่อเล่น',540,1450,40);
+}else if(F.kind==='dream'){
+ circle(800,450,100,F.palette[2]);circle(850,420,90,F.palette[0]);x.fillStyle='#476659';x.fillRect(200,1080,680,110);circle(310,1040,65,F.palette[1]);x.fillStyle=F.palette[1];x.fillRect(380,1010,400,75);
+ for(let i=0;i<110;i++){let a=540+Math.cos(i*.73+p*.6)*220*(.6+.4*Math.sin(i*1.7)),b=740+Math.sin(i*.73+p*.6)*180;circle(a,b,3+(i%4),F.palette[1]);}
+ label(n===1?'REM':'ภาพอธิบาย',540,1380,76);
+}else{cat(410,930,1.8,p);cat(820,1080,.9,p+.7);x.fillStyle=F.palette[1];x.fillRect(240,1320,630,35);circle(700,1280,50,F.palette[2]);x.strokeStyle=F.palette[1];x.lineWidth=8;x.beginPath();x.moveTo(680,1110);x.lineTo(680,1280);x.stroke();circle(680,1090,25,F.palette[1]);label(['สมมติว่า...','ขอปลาทู!','ประชุมด่วน','เหมียว'][n],540,550,80);}
+x.restore();};window.DUR=8;window.READY=true;
+</script>

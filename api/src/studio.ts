@@ -858,6 +858,7 @@ export function buildPackage(topic: string, d: DraftT, research: Seen[]) {
 // ---------------------------------------------------------------- the generator
 type Deps = {
   guard: (c: Context, next: Next) => Promise<any>;
+  signAsset?: (key:string)=>Promise<string|null>;
   createJob: (body: any, idem: string | null) => Promise<{ status: number; body: any }>;
   estimateCredits: (p: unknown) => number;
   researchFreshness: (p: unknown) => string[];
@@ -1020,11 +1021,11 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     pkg.voice={...pkg.voice,voice_id:settings.voice_id||pkg.voice.voice_id,model_id:settings.tts_model,language_code:'th'};
     pkg.sfx=selection.plan.scenes.flatMap(scene=>scene.sound.cues.map(c=>({id:scene.seg+'_'+c.id,prompt:c.prompt,duration:c.duration,model_id:settings.sfx_model,cues:[{seg:scene.seg,word:c.word,n:c.occurrence,offset:c.offset,gain:c.gain}],purpose:c.action})));
     // No unquoted music generation when a default track is unavailable.
-    pkg.music=null;
+    if(row.creative.engine==='lemo')pkg.music={source:row.music_mode==='ai'?'generate':'default',prompt:'Instrumental soundtrack, no vocals. '+selection.plan.analysis.tone,model_id:'music_v1',volume:.2};
     pkg.storyboard=board.shots;
     return pkg;
   }
-  registerCreative(app,pool,{guard:deps.guard,prepare:prepareCreative});
+  registerCreative(app,pool,{guard:deps.guard,prepare:prepareCreative,signAsset:deps.signAsset});
 
   function finalCheck(topic: string, d: DraftT, research: Seen[]) {
     const pkg = buildPackage(topic, d, research);
@@ -1132,7 +1133,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const narration = parseNarration(row);
     const system = systemPrompt(active, storyMode, directionVersion, visualVersion) + (row.creative?creativePrompt(CreativeSettings.parse(row.creative.settings)):'') + '\n\n## Owner-selected narration style\n' + narrationPrompt(narration) + '\n\n## Recurring character policy\n' + characterPolicyPrompt(recurringCharacter, reqChars[0]?.name, presenterKind) +
       (sourceText ? '\nThe complete owner source is supplied for planning. Identify the sections and claims relevant to the chosen topic and preserve their caveats in the angle, narration and source metadata. After plan_story succeeds the raw source is removed from repeated drawing requests; the full original remains available through read_source_material. Do not claim the entire pasted document has been verified.' : '');
-    const depictionInstructions = presenterKind==='context' ? '\n\n## Draw the storyboard examples\nEvery shot must list 1–8 concrete visual subjects in subjects [{id,description}]: include the people or animals, relevant objects, setting details, and the actual example or demonstration the narration describes. Give each a short unique ASCII id. Draw those subjects and actions visibly in the scene; labels, badges, a presenter pointing at a card, or a written description alone do not depict them. For a narrated example such as a child riding a bicycle, draw the child and bicycle in that situation. When draw_scene is complete, acknowledge only the subjects actually drawn in depicted_subjects using the exact planned ids. This acknowledgement is a checklist, not evidence: preview review must still confirm what the pictures show.' : '';
+    const depictionInstructions = presenterKind==='context' && !active.lemo ? '\n\n## Draw the storyboard examples\nEvery shot must list 1–8 concrete visual subjects in subjects [{id,description}]: include the people or animals, relevant objects, setting details, and the actual example or demonstration the narration describes. Give each a short unique ASCII id. Draw those subjects and actions visibly in the scene; labels, badges, a presenter pointing at a card, or a written description alone do not depict them. For a narrated example such as a child riding a bicycle, draw the child and bicycle in that situation. When draw_scene is complete, acknowledge only the subjects actually drawn in depicted_subjects using the exact planned ids. This acknowledgement is a checklist, not evidence: preview review must still confirm what the pictures show.' : '';
     const conv = PROVIDER === 'openai' ? openaiConversation(system+depictionInstructions, userText, model, effort, active, (message) => log(id, message)) : anthropicConversation(system+depictionInstructions, userText, model, active);
     let sourceCompacted = false;
     const compactSource = () => {
@@ -1241,7 +1242,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
             if (referenceProblem) throw new Error(referenceProblem);
             if(row.creative){
               const selection=chooseStyle(plan.creative,row.creative.settings,plan.script);
-              row.creative={...row.creative,selection};
+              row.creative={...row.creative,settings:row.creative.settings.locked?{...row.creative.settings,mode:'manual',manual_style:selection.selected.id}:row.creative.settings,selection};
               await pool.query('UPDATE drafts SET creative=$2 WHERE id=$1',[id,JSON.stringify(row.creative)]);
             }
             artwork = reconcileArtwork(storyboard, plan, artwork);
@@ -1258,7 +1259,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
             const requiredNames = [...new Set(storyboard.shots.flatMap(shot => shot.characters))];
             const savedCharacters = artwork.cast.map(character => character.name);
             await log(id, `${u.name === 'revise_story' ? 'แก้บทเฉพาะฉากแล้ว' : `วางบทและสตอรีบอร์ด ${storyboard.shots.length} ฉากแล้ว`} · เก็บภาพเดิม ${savedScenes.length} ฉาก · ต้องวาด ${missingScenes.length} ฉาก`);
-            results.push({type:'tool_result',tool_use_id:u.id,content:JSON.stringify({status:'saved',saved_scenes:savedScenes,missing_scenes:missingScenes,saved_characters:savedCharacters,missing_characters:requiredNames.filter(name=>!savedCharacters.includes(name)),shared_art_saved:!!(artwork.art_saved || artwork.art),instruction:'Keep saved scenes, portraits and helpers. Draw only reported missing assets, one at a time, then submit metadata only. Use revise_story for further partial narration or shot repairs; do not restate unchanged shots. All affected art must pass preview review again.'})});
+            results.push({type:'tool_result',tool_use_id:u.id,content:JSON.stringify({status:'saved',saved_scenes:savedScenes,missing_scenes:missingScenes,saved_characters:savedCharacters,missing_characters:requiredNames.filter(name=>!savedCharacters.includes(name)),shared_art_saved:!!(artwork.art_saved || artwork.art),instruction:active.lemo?'Storyboard saved. Next call submit_episode with title, angle, sources, claims and captions only. Drawing is deferred until cost approval.':'Keep saved scenes, portraits and helpers. Draw only reported missing assets, one at a time, then submit metadata only. Use revise_story for further partial narration or shot repairs; do not restate unchanged shots. All affected art must pass preview review again.'})});
           } else if (u.name === 'submit_episode') {
             if (!storyboard) { results.push({type:'tool_result',tool_use_id:u.id,is_error:true,content:'First call plan_story with the complete narration and shots. Do not draw before planning.'}); continue; }
             if(row.creative?.engine==='lemo'){
@@ -1746,7 +1747,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const r = await pool.query('INSERT INTO drafts (topic, note, parent_id, auto_produce, model, reasoning, characters, source_type, community_id, style, music_mode, story_mode, source_text, research_job_id, request_key, request_hash, narration_style, narration_custom, recurring_character, presenter_kind, director_version, presentation_version, creative) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23) ON CONFLICT (request_key) DO NOTHING RETURNING id',
       [row.topic, String(b.note ?? row.note ?? '').trim().slice(0, 1000) || null, row.id, row.source_type === 'community'||row.creative ? false : !!b.auto_produce,
         typeof b.model === 'string' && MODEL_RE.test(b.model) ? b.model : row.model, REASONING_LEVELS.includes(b.reasoning) ? b.reasoning : row.reasoning,
-        JSON.stringify(row.characters ?? []), row.source_type || 'studio', row.community_id ?? null, keepStyle, keepMusic, row.story_mode || 'name_story', row.source_text || null, row.research_job_id || row.id, request.key, request.hash, narration.narration_style, narration.narration_custom, recurringCharacter, presenterKind, directionVersion, visualVersion, row.creative?JSON.stringify(row.creative):null]);
+        JSON.stringify(row.characters ?? []), row.source_type || 'studio', row.community_id ?? null, keepStyle, keepMusic, row.story_mode || 'name_story', row.source_text || null, row.research_job_id || row.id, request.key, request.hash, narration.narration_style, narration.narration_custom, recurringCharacter, presenterKind, directionVersion, visualVersion, row.creative?JSON.stringify(b.creative?{engine:row.creative.engine,settings:CreativeSettings.parse({...row.creative.settings,...b.creative})}:row.creative):null]);
     if (!r.rows.length) {
       const old = (await pool.query('SELECT id, request_hash FROM drafts WHERE request_key=$1',[request.key])).rows[0];
       return old?.request_hash === request.hash ? c.json({id:old.id},201) : c.json({error:'idempotency-key already used for different input'},409);

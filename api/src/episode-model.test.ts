@@ -77,3 +77,11 @@ test('Text to Video remains visible while producing or failed, with its plan and
  await db.query("UPDATE jobs SET status='READY_TO_POST' WHERE id=$1",[jobId]);
  assert.ok(!(await(await app.request('/app/api/working',{headers})).json()).jobs.some((j:any)=>j.id===jobId));
 });
+
+test('Lemo jobs appear in production progress and retain their immutable brain label in Ready',async()=>{
+ const id=await episode('เรื่อง Lemo'),jobId=await job(id,'creative:fixture:revision');
+ await db.query("UPDATE jobs SET kind='lemo',status='RENDERING',package=$2 WHERE id=$1",[jobId,JSON.stringify({creative:{engine:'lemo',model:'gpt-6.1-sol'},captions:{facebook:'ข้อความเดิม'}})]);
+ const working=await(await app.request('/app/api/working',{headers})).json();assert.ok(working.jobs.some((j:any)=>j.id===jobId));
+ await db.query("UPDATE jobs SET status='READY_TO_POST' WHERE id=$1",[jobId]);await handoff(id,jobId);
+ const clip=(await list()).find((e:any)=>e.id===id);assert.equal(clip.generation_model,'gpt-6.1-sol');assert.equal(clip.captions.facebook,'ข้อความเดิม');
+});

@@ -1,0 +1,10 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "lemo-worker/Dockerfile"
+watchPatterns = ["/lemo-worker/**", "/worker/motion_worker/**", "/worker/requirements.txt"]
+[deploy]
+healthcheckPath = "/health"
+healthcheckTimeout = 120
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
+numReplicas = 1

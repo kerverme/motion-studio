@@ -159,6 +159,8 @@ def stage_timeline(ctx):
     timeline = tl.build_timeline(ctx.pkg['script'], al['text'], al['start'], al['end'])
     end = round(max(a['narration_duration'], timeline[-1]['e']) + 1.8, 2)
     cues, misses = tl.resolve_cues(timeline, ctx.pkg.get('sfx', []))
+    if ctx.pkg.get('creative') and misses:
+        raise RuntimeError('Sound anchors could not be resolved; fix only these cues: '+json.dumps(misses,ensure_ascii=False))
     data = {'timeline': timeline, 'end': end, 'cues': cues, 'cue_misses': misses}
     lp = ctx.path('timeline.json')
     json.dump(data, open(lp, 'w'), ensure_ascii=False, indent=1)
@@ -196,6 +198,20 @@ def do_mix(ctx, T, gains_scale=None, trim_db=0.0):
 
 
 def stage_render(ctx):
+    if not ctx.pkg.get('creative'):
+        return _stage_render(ctx)
+    from .creative_ledger import Ledger, digest
+    import time
+    def render_approved(_reservation):
+        started = time.monotonic()
+        result = _stage_render(ctx)
+        return {**result, 'usage': {'wall_seconds': time.monotonic() - started}, 'asset_keys': [result['final_key'], result['silent_key']]}
+    return Ledger(ctx).execute('classic-render-v1', 'infrastructure', 'classic', 'compute',
+                               {'scene_code': digest(ctx.pkg['scene_code']), 'timeline': ctx.r['BUILDING_TIMELINE']},
+                               ctx.pkg['creative']['allocations']['compute'], render_approved)
+
+
+def _stage_render(ctx):
     T = load_timeline(ctx)
     code = write_scene_code(ctx)
     lo, hi = PROGRESS['BUILDING_TIMELINE'], PROGRESS['RENDERING']
@@ -431,7 +447,16 @@ def write_docs(ctx, T, number, folder):
     files['storyboard.md'] = '\n'.join(st)
     if p.get('creative'):
         calls = ctx.db.q('SELECT category,model,reserved_usd,actual_usd,status,usage,provider_id FROM creative_calls WHERE job_id=%s', (ctx.job['id'],))
-        files['creative-manifest.json'] = json.dumps({'creative': p['creative'], 'storyboard': p['storyboard'], 'audio': ctx.r.get('GENERATING_AUDIO'), 'render': ctx.r.get('LEMO_RENDER'), 'costs': calls, 'real_provider_test': True}, ensure_ascii=False, indent=2, default=str)
+        files['creative-manifest.json'] = json.dumps({'creative': p['creative'], 'storyboard': p['storyboard'], 'audio': ctx.r.get('GENERATING_AUDIO'), 'render': ctx.r.get('LEMO_RENDER'), 'costs': calls}, ensure_ascii=False, indent=2, default=str)
+        for name, data in {
+            'cost-summary.json': {'calls': calls, 'unreconciled': sum(c.get('actual_usd') is None for c in calls)},
+            'style-director.json': p['creative']['selection'],
+            'storyboard.json': p['storyboard'],
+            'sound-design.json': {'plan': p['creative']['selection']['plan']['scenes'], 'effects': ctx.r.get('GENERATING_AUDIO', {}).get('sfx_manifest', [])},
+            'narration-metadata.json': ctx.r.get('GENERATING_AUDIO', {}).get('narration_manifest', []),
+            'render-metadata.json': ctx.r.get('LEMO_RENDER', {}),
+        }.items():
+            files[name] = json.dumps(data, ensure_ascii=False, indent=2, default=str)
     out = {}
     for name, text in files.items():
         pth = os.path.join(folder, name)
@@ -458,6 +483,10 @@ def make_archive(ctx, T, out):
             for i, scene in enumerate(ctx.r.get('LEMO_RENDER',{}).get('scenes',[])):
                 source = ctx.fetch(scene['source_key'],ctx.path('sources',f'{i}.html'))
                 tar.add(source, f'episode/lemo/scene-{i}.html')
+            if ctx.pkg['creative'].get('engine') == 'lemo':
+                vendor = os.environ.get('LEMO_VENDOR_DIR') or os.path.abspath(os.path.join(ENGINE_DIR, '..', '..', 'lemo-worker', 'vendor', 'lemo'))
+                for rel in ('core/lib.js', 'LICENSE', 'MIT.txt'):
+                    tar.add(os.path.join(vendor, rel), 'episode/lemo/vendor/' + rel)
         tar.add(ENGINE_DIR, 'engine', filter=lambda ti: None if '__pycache__' in ti.name else ti)
     return out
 

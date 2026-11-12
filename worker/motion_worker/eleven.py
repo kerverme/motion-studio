@@ -1,5 +1,5 @@
 """ElevenLabs REST client used directly from the Railway worker (no signed media URLs involved)."""
-import base64, hashlib, json, time
+import base64, hashlib, json, math, time
 import requests
 from . import config
 
@@ -87,8 +87,15 @@ def tts_with_timestamps(text, voice_id, model_id='eleven_v4', language_code='th'
     align, origin = validated_alignment(data, text)
     if not audio:
         raise ElevenError('Narration audio missing')
-    if model_id == 'eleven_v4' and not data.get('voice_segments'):
-        raise ElevenError('v4 response missing voice_segments')
+    if model_id == 'eleven_v4':
+        segments = data.get('voice_segments')
+        if not isinstance(segments, list) or not segments:
+            raise ElevenError('v4 response missing voice_segments')
+        for segment in segments:
+            a, b = segment.get('start_time_seconds'), segment.get('end_time_seconds')
+            lo, hi = segment.get('character_start_index'), segment.get('character_end_index')
+            if segment.get('voice_id') != voice_id or segment.get('dialogue_input_index') != 0 or not all(isinstance(t, (int,float)) and math.isfinite(t) for t in (a,b)) or not 0 <= a <= b or not isinstance(lo,int) or not isinstance(hi,int) or not 0 <= lo <= hi <= len(align['characters']):
+                raise ElevenError('Invalid v4 voice segment timing or speaker identity')
     meta.update(model_id=model_id, alignment_source=origin, voice_segments=data.get('voice_segments', []),
                 speed_ignored=model_id == 'eleven_v4' and bool(speed and speed != 1))
     return audio, align, meta
@@ -111,7 +118,7 @@ def sound_effect(prompt, duration, prompt_influence=0.5, model_id='eleven_text_t
 
 def music(prompt, length_ms, model_id='music_v1'):
     body = {'prompt': prompt, 'music_length_ms': int(max(3000, min(600000, length_ms))), 'model_id': model_id, 'force_instrumental': True}
-    audio, meta = _post('/v1/music', body, {'output_format': 'mp3_44100_128'}, expect_json=False, timeout=600)
+    audio, meta = _post('/v1/music', body, {'output_format': 'mp3_44100_128'}, expect_json=False, timeout=600, attempts=1)
     return audio, meta
 
 

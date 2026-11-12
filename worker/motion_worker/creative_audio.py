@@ -54,5 +54,17 @@ def stage_audio(ctx):
             return {'audio_key': key, 'duration': duration, 'meta': meta, 'usage': meta, 'provider_id': meta.get('request_id'), 'asset_keys': [key]}
         result = cached_call(ctx, 'sfx', model, payload, creative['allocations']['sfx'] * fx['duration'] / total_seconds, generate)
         sfx[fx['id']] = result['audio_key']; fx_manifest.append({**fx, **result})
+    music_key=None
+    if (p.get('music') or {}).get('source')=='default':
+        from .pipeline import default_music_key
+        music_key=default_music_key(ctx)
+        if not music_key:ctx.db.event(ctx.job['id'],'Default music unavailable; continuing without a new paid music request')
+    elif (p.get('music') or {}).get('source')=='generate':
+        music=p['music'];payload={'prompt':music['prompt'],'length_ms':round((audio.duration(vo)+1.8)*1000),'model':music.get('model_id','music_v1')}
+        def generate_music(_reservation):
+            data,meta=eleven.music(payload['prompt'],payload['length_ms'],payload['model'])
+            key='creative/music/'+digest(payload)+'.mp3';ctx.store.put_bytes(key,data,'audio/mpeg')
+            return {'audio_key':key,'meta':meta,'usage':meta,'provider_id':meta.get('request_id'),'asset_keys':[key]}
+        music_key=cached_call(ctx,'music',payload['model'],payload,creative['allocations']['music'],generate_music)['audio_key']
     return {'narration_key': ctx.save('narration', vo), 'alignment_key': ctx.save('alignment', alpath), 'narration_duration': audio.duration(vo),
-            'sfx': sfx, 'music_key': None, 'narration_manifest': manifest, 'sfx_manifest': fx_manifest}
+            'sfx': sfx, 'music_key': music_key, 'narration_manifest': manifest, 'sfx_manifest': fx_manifest}

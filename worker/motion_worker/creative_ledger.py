@@ -32,19 +32,21 @@ class Ledger:
                     raise RuntimeError('Idempotency key changed request')
                 if old['status'] in ('complete', 'reconciled') and old['result']:
                     return old
+                if old['provider']=='openai' and old.get('provider_id') and old['status'] in ('started','uncertain'):
+                    return old  # coding adapter resumes GET of this saved response, never POST
                 raise AmbiguousCall('Previous request needs reconciliation; will not submit twice')
             rows = c.execute('SELECT category,sum(coalesce(actual_usd,reserved_usd)) AS cost FROM creative_calls WHERE job_id=%s GROUP BY category', (self.job['id'],)).fetchall()
             used = {r['category']: float(r['cost']) for r in rows}
             if sum(used.values()) + cap > float(approval['max_usd']) + 1e-8 or used.get(category, 0) + cap > float(approval['allocations'].get(category, 0)) + 1e-8:
                 raise RuntimeError('Approved job/category budget exhausted')
-            return c.execute("INSERT INTO creative_calls(job_id,call_key,provider,model,category,request_hash,reserved_usd,status) VALUES(%s,%s,%s,%s,%s,%s,%s,'reserved') RETURNING *",
+            return c.execute("INSERT INTO creative_calls(job_id,call_key,provider,model,category,request_hash,reserved_usd,status) VALUES(%s,%s,%s,%s,%s,%s,%s,'started') RETURNING *",
                              (self.job['id'], key, provider, model, category, digest(payload), cap)).fetchone()
 
     def execute(self, key, provider, model, category, payload, cap, call):
         row = self.reserve(key, provider, model, category, payload, cap)
         if row['status'] in ('complete', 'reconciled'):
             return row['result']
-        self.db.q("UPDATE creative_calls SET status='started',updated_at=now() WHERE id=%s AND status='reserved'", (row['id'],))
+        self.db.q("UPDATE creative_calls SET status='started',updated_at=now() WHERE id=%s AND status IN ('reserved','uncertain')", (row['id'],))
         try:
             result = call(row['id'])
             # Result contains durable artifact keys, never temporary signed URLs.
@@ -81,6 +83,6 @@ def cached_call(ctx, category, model, payload, cap, generate):
                                  (key, category, Jsonb({'owner': str(ctx.job['id'])}))).fetchone()
             if not inserted:
                 raise AmbiguousCall('Matching asset claim won by another job; retry after it finishes')
-    result = Ledger(ctx).execute(key, 'openai' if category == 'coding' else 'elevenlabs', model, category, payload, cap, generate)
+    result = Ledger(ctx).execute(key, {'coding':'openai','compute':'executor'}.get(category,'elevenlabs'), model, category, payload, cap, generate)
     ctx.db.q('UPDATE creative_cache SET result=%s WHERE cache_key=%s', (Jsonb({'complete': True, 'value': result}), key))
     return {**result, 'cache_hit': False, 'cache_key': key}

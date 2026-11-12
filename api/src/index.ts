@@ -321,6 +321,7 @@ async function retryJob(id: string): Promise<{ ok: boolean; status?: string; err
   const j = await loadJob(id);
   if (!j) return { ok: false, error: 'not found' };
   if (!['FAILED', 'CANCELLED'].includes(j.status)) return { ok: false, error: `job is ${j.status}` };
+  if(j.package?.creative)return {ok:false,error:'เปิดร่าง Creative Motion เพื่อตรวจคำขอและซ่อมจากส่วนที่บันทึกไว้'};
   if (j.kind === 'text_video') return {ok:false,error:'เปิด Text to Video แล้วตรวจราคาซ่อมเฉพาะส่วนและยืนยันใหม่ก่อนลองต่อ'};
   const resume = j.stage || 'GENERATING_AUDIO';
   await pool.query('UPDATE jobs SET status=$2, error=NULL, attempts=0, locked_by=NULL, locked_until=NULL, updated_at=now() WHERE id=$1', [j.id, resume]);
@@ -412,7 +413,7 @@ const ui = registerUi(app, pool, { API_TOKEN, retryJob });
 const suggestions = registerTopicSuggestions(app,pool,{guard:ui.requireUi,models:OPENAI_MODELS});
 const narrationPreviews = registerNarrationPreviews(app,pool,{guard:ui.requireUi,models:OPENAI_MODELS});
 const textVideo = registerTextVideo(app,pool,{guard:ui.requireUi,models:OPENAI_MODELS});
-const studio = registerStudio(app, pool, { guard: ui.requireUi, createJob, estimateCredits: (p: unknown) => estimateCredits(Package.parse(p)), researchFreshness: (p: unknown) => researchFreshness(Package.parse(p)), validate: (p: unknown) => {
+const studio = registerStudio(app, pool, { guard: ui.requireUi, signAsset:async key=>s3&&env.BUCKET?getSignedUrl(s3,new GetObjectCommand({Bucket:env.BUCKET,Key:key}),{expiresIn:3600}):null, createJob, estimateCredits: (p: unknown) => estimateCredits(Package.parse(p)), researchFreshness: (p: unknown) => researchFreshness(Package.parse(p)), validate: (p: unknown) => {
   const r = Package.safeParse(p);
   return r.success ? [] : r.error.issues.slice(0, 10).map((i) => `${i.path.join('.')}: ${i.message}`);
 } });
