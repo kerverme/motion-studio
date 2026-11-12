@@ -66,12 +66,12 @@ test('chat-import authors are never presented as verified model provenance, even
 
 test('Text to Video remains visible while producing or failed, with its plan and model for safe repair',async()=>{
  const id=await episode(),jobId=await job(id,'text-video:working-test'),planId=randomUUID();
- await db.query("UPDATE jobs SET kind='text_video',status='RENDERING',package=$2 WHERE id=$1",[jobId,JSON.stringify({generation_model:'gpt-6.1-sol',text_video:{plan_id:planId}})]);
+ await db.query("UPDATE jobs SET kind='text_video',status='RENDERING',package=$2 WHERE id=$1",[jobId,JSON.stringify({generation_model:'gpt-6.1-sol',video_model:'h3_max',text_video:{plan_id:planId}})]);
  for(const status of ['RENDERING','FAILED']){
   await db.query('UPDATE jobs SET status=$2 WHERE id=$1',[jobId,status]);
   const r=await app.request('/app/api/working',{headers});assert.equal(r.status,200);
   const found=(await r.json()).jobs.find((j:any)=>j.id===jobId);
-  assert.equal(found.status,status);assert.equal(found.kind,'text_video');assert.equal(found.text_video_plan_id,planId);assert.equal(found.draft_model,'gpt-6.1-sol');
+  assert.equal(found.status,status);assert.equal(found.kind,'text_video');assert.equal(found.text_video_plan_id,planId);assert.equal(found.draft_model,'gpt-6.1-sol');assert.equal(found.video_model,'h3_max');
   const clips=await(await app.request('/app/api/episodes?tab=ready',{headers})).json();assert.ok(clips.counts.working>=1);
  }
  await db.query("UPDATE jobs SET status='READY_TO_POST' WHERE id=$1",[jobId]);

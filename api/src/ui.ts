@@ -191,7 +191,7 @@ export function registerUi(app: Hono, pool: pg.Pool, deps: { API_TOKEN: string; 
     const r = await pool.query(`SELECT j.id, j.kind, j.status, j.stage, j.progress, j.error, j.attempts, j.max_attempts, j.created_at, j.updated_at, j.locked_until,
         COALESCE(e.title_th, j.package->>'title_th') AS title,
         d.id AS draft_id, COALESCE(d.model,j.package->>'generation_model') AS draft_model, d.reasoning AS draft_reasoning,
-        j.package->'text_video'->>'plan_id' AS text_video_plan_id,
+        j.package->'text_video'->>'plan_id' AS text_video_plan_id, j.package->>'video_model' AS video_model,
         COALESCE((SELECT json_agg(x ORDER BY x.id) FROM (SELECT id, status, level, message, created_at FROM job_events WHERE job_id=j.id ORDER BY id DESC LIMIT 8) x), '[]'::json) AS events,
         (SELECT max(created_at) FROM job_events WHERE job_id=j.id) AS last_event_at
       FROM jobs j LEFT JOIN episodes e ON e.id = j.episode_id LEFT JOIN drafts d ON d.job_id = j.id
