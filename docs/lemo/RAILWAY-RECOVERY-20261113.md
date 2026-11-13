@@ -1,5 +1,7 @@
 # Railway production work — 2026-11-13 recovery handoff
 
+This is the historical interruption record. Activation, later deployments and real-film results are recorded in [live verification](LIVE-VERIFICATION.md); the pending items below describe the earlier handoff, not the current service state.
+
 The owner explicitly authorized real tests and production deployment. Main API and Classic worker still run their previous healthy deployments. Lemo has NOT been activated, and its migrations have NOT been applied to production. No clip was automatically published.
 
 ## Permission
