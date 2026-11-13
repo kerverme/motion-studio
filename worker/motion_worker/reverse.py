@@ -205,7 +205,7 @@ def recipe(ctx,project,spec):
 
 
 def generate(ctx,project,task,quote):
-    shot=task['shot'];measured=task['measured'];duration=measured['duration_s']
+    shot=task['shot'];measured=task['measured'];duration=task.get('delivery',{}).get('duration_s',measured['duration_s'])
     source=project['analysis']['source'];width,height=(1080,1920) if source['height']>=source['width'] else (1920,1080)
     base=ctx.path('generated',shot['shot_id']+'-base.mp4')
     if task['provider']=='local':code_motion(shot['graphic'],base,duration,width,height)
@@ -220,7 +220,7 @@ def generate(ctx,project,task,quote):
         step=ctx.db.one("SELECT result FROM reverse_steps WHERE job_id=%s AND slot=%s AND status='complete'",(ctx.job['id'],'audio:'+shot['shot_id']+':'+audio['id']))
         if not step:raise ApprovalRequired('Approved audio asset is not ready')
         value=step['result'];asset=_asset(ctx,value['asset_id'],project)
-        if not value.get('fits_approved_slot',True):raise ValueError('Paid audio exceeds its approved slot; asset retained, no speech truncation or automatic regeneration')
+        if value['duration_s']>audio['duration_s']+.05:raise ValueError('Paid audio exceeds its approved slot; asset retained, no speech truncation or automatic regeneration')
         path=fetch_private(ctx,asset,ctx.path('audio',str(asset['id'])+'.mp3'));tracks.append({**audio,'path':str(path)})
         if shot['subtitle_mode']=='generated_alignment' and audio['role'] in ('narration','dialogue'):
             if not value['alignment_asset_id']:raise ValueError('No real provider subtitle alignment')
@@ -287,7 +287,7 @@ def final_assembly(ctx,project,spec):
             if before!=after:raise ValueError('Shot specification changed; approve a repair for this shot only')
         paths.append(str(fetch_private(ctx,asset,ctx.path('assembly',str(i).zfill(4)+'.mp4'))))
     output=ctx.path('assembly','final.mp4');assemble(paths,output,ctx.dir)
-    duration=sum(round(measured[x]['duration_s']*30)/30 for x in wanted)
+    duration=sum(round(measured[x]['end_s']*30)-round(measured[x]['start_s']*30) for x in wanted)/30
     info=project['analysis']['source'];width,height=(1080,1920) if info['height']>=info['width'] else (1920,1080)
     qa=technical_qa(output,duration,width,height)
     if not qa['ok']:raise ValueError('Assembly technical QA failed')

@@ -101,7 +101,8 @@ export function registerReverse(app:Hono,pool:pg.Pool,options:Options){
         for(const c of semantic.characters||[])if(!shot.characters[c.ref]||!shot.characters[c.ref].description.trim()&&!shot.characters[c.ref].keep_source)throw Error('Choose a replacement or explicitly keep each source character');
         if(semantic.location?.description&&(!shot.location||!shot.location.description.trim()&&!shot.location.keep_source))throw Error('Choose the remake location');
         for(const ref of shot.references){const a=(await pool.query('SELECT * FROM reverse_assets WHERE id=$1 AND project_id=$2',[ref.asset_id,p.id])).rows[0];if(!a)throw Error('Reference asset not found');if(['source','source_frame','shot_clip','audio_stem'].includes(a.role)&&!ref.allow_source_reference)throw Error('Source reference needs separate explicit consent');}
-        const task=generationTask(shot,s,rates);tasks.push({slot:'video:'+s.id,role:'video',shot_id:s.id,...task,shot_spec_hash:sha(shot)});
+        const task=generationTask(shot,s,rates),frames=Math.round(s.end_s*30)-Math.round(s.start_s*30);if(frames<1)throw Error('Shot is shorter than the 30fps delivery frame; choose an explicit higher-fps production workflow');
+        tasks.push({slot:'video:'+s.id,role:'video',shot_id:s.id,...task,shot_spec_hash:sha(shot),delivery:{fps:30,frames,duration_s:frames/30,timing_note:'Cumulative frame quantization; original measured timestamps remain unchanged.'}});
         let audioRates:any={};try{audioRates=JSON.parse(process.env.MOTION_CREATIVE_RATES_JSON||'{}');}catch{}
         for(const audio of shot.audio){
           const category=['narration','dialogue'].includes(audio.role)?'narration':audio.role,rate=audioRates[category];

@@ -39,7 +39,7 @@ Docker build clone source ตาม SHA พร้อม LICENSE ติดตั�
 6. Preview/Technical QA/optional paid Vision QA → แก้ฉากที่ผิดแล้วขอ quote ใหม่เฉพาะฉาก ไม่ regenerate ทั้งเรื่องอัตโนมัติ
 7. Assemble ต้องมี new generated assets ครบทุกฉาก ลำดับตามแผน ใช้ผลงานจากเวอร์ชันเก่าได้เมื่อ specification ของฉากนั้นเหมือนเดิม เก็บ output เป็น private asset ไม่ส่ง Buffer โดยอัตโนมัติ
 
-รายการ T2V 120 endpoints มาจาก public Fal catalog ที่ตรวจ 13 พ.ย. เรียงราคาตาม duration ที่เลือก มี maintained preset/schema/price ที่ใช้งานได้ 61 รายการ ณ snapshot รุ่นที่ราคา/ความสามารถยังไม่ยืนยันจะแสดงเหตุผลและถูกบล็อก วันหมดอายุของราคาต้องมีการ refresh metadata ไม่เปลี่ยนค่าตั้งแล้วใช้ราคาเก่า H3 Max/Grok I2V ใช้ adapter เดิมที่ตรวจแล้ว เลือกภาพใหม่หรือ last frame ที่สร้างใหม่อย่างชัดเจน ไม่ส่ง original pixels/voice ให้ generation โดยปริยาย
+รายการ T2V 120 endpoints มาจาก public Fal catalog ที่ตรวจ 13 พ.ย. เรียงราคาตาม duration ที่เลือก มี maintained preset/schema/price ที่ใช้งานได้ 59 รายการใน Motion ณ snapshot (รายการเดิมของ Re:Video มี adapter เพิ่มเติม) รุ่นที่ราคา/ความสามารถยังไม่ยืนยันจะแสดงเหตุผลและถูกบล็อก วันหมดอายุของราคาต้องมีการ refresh metadata ไม่เปลี่ยนค่าตั้งแล้วใช้ราคาเก่า H3 Max/Grok I2V ใช้ adapter เดิมที่ตรวจแล้ว เลือกภาพใหม่หรือ last frame ที่สร้างใหม่อย่างชัดเจน ไม่ส่ง original pixels/voice ให้ generation โดยปริยาย
 
 Planner ใช้ GPT/Claude ผ่าน Fal OpenRouter route โดยไม่ต้องเพิ่ม OpenRouter key ใช้ Fal key เดิม ตัว planner อ่าน VIDEO.md + normalized evidence + instructions + selected Capsule recipe เป็นแผนเดียว versioned ไม่มี agent หลายตัวเขียนแผนแข่งกัน Existing direct OpenAI Motion planning ยังอยู่ตามเดิม
 

@@ -16,7 +16,12 @@ def produce_audio(ctx,project,task,quote):
     if quote['key_fingerprints'].get('eleven')!=fingerprint('ELEVENLABS_API_KEY'):raise ApprovalRequired('ElevenLabs key changed since approval')
     if dt.datetime.now(dt.timezone.utc)>dt.datetime.fromisoformat(quote['valid_until']):raise ApprovalRequired('Audio approval expired')
     if os.environ.get('MOTION_FAKE_ELEVEN')=='1':raise ApprovalRequired('Fake audio is forbidden in actual reverse-production jobs')
-    payload={'project_id':str(project['id']),'task':a,'contract':'motion.reverse.audio.v1'}
+    wire={'role':a['role'],'model':a['model'],'text':a['text']}
+    if a['role'] in ('narration','dialogue'):wire['voice_id']=a['voice_id']
+    else:wire['duration_s']=a['duration_s']
+    # Mix offset/gain and the available speech slot do not change the paid
+    # synthesis request. Reuse its real audio/alignment after timeline edits.
+    payload={'project_id':str(project['id']),'input':wire,'contract':'motion.reverse.audio.v1'}
     def generate(_reservation):
         check_active(ctx)
         if a['role'] in ('narration','dialogue'):

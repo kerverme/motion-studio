@@ -7,6 +7,7 @@ import {Hono} from 'hono';
 import {registerReverse} from './reverse.js';
 import {sha,validatePlan,defaultMethod,validateSemantic} from './reverse-contract.js';
 import {generationTask,routerEstimate} from './reverse-providers.js';
+import {catalogModels,catalogTask} from './reverse-catalog.js';
 const db=new PGlite();let serial=Promise.resolve();
 const query=async(sql:string,args:any[]=[])=>{const r=await db.query<any>(sql,args);return{...r,rowCount:r.affectedRows??r.rows.length};};
 const pool={query,connect:async()=>{const previous=serial;let release!:()=>void;serial=new Promise(r=>release=r);await previous;return{query,release};}};
@@ -48,4 +49,12 @@ test('changed billing units and unverified capabilities block paid quotes; gener
   const app=server(),p=await create(app);priceUnit='tokens';assert.equal((await send(app,'/projects/'+p.id+'/quote',{purpose:'vision',shot_ids:['shot_001']})).status,409);priceUnit='units';
   const s:any=shot();s.human_reviewed=true;s.method='code';assert.throws(()=>generationTask({...s,method:'generative',model:'invented/model'},p.analysis.shots[0],[]),/verified/);assert.equal(defaultMethod({production_method:{label:'motion_graphics'}}),'code');assert.equal(defaultMethod({production_method:{label:'live_action'}}),'generative');
   const estimate=routerEstimate({system_prompt:'abc',prompt:'ภาษาไทย',max_tokens:100},{input:.000001,output:.000004,request:0},8);assert.ok(estimate.usd>.003);assert.equal(estimate.output_token_cap,100);
+});
+test('all catalog entries stay visible and verified prices use a bounded freshness window even without a promotion deadline',t=>{
+  t.mock.method(Date,'now',()=>Date.parse('2026-11-13T12:00:00Z'));const models=catalogModels();assert.equal(models.length,120);assert.equal(models.filter((x:any)=>x.available).length,59);
+  const cheap=models.find((x:any)=>x.id==='fal-ai/ltx-video-13b-distilled');assert.equal(cheap?.available,true);assert.ok(Date.parse(cheap!.price_valid_until)>Date.now());
+  const s:any={...shot(),model:cheap!.id,human_reviewed:true,settings:{resolution:cheap!.preset_resolution,aspect_ratio:'9:16'}};
+  const task=catalogTask(s,{duration_s:1},[{endpoint_id:s.model,unit:'video',unit_price:.04,currency:'USD'}]);assert.equal(task.usd,.04);assert.equal(task.payload.num_frames,121);
+  assert.throws(()=>catalogTask({...s,references:[{asset_id:randomUUID(),role:'first_frame',rights_confirmed:true,allow_source_reference:false}]},{duration_s:1},[]),/text-to-video/);
+  t.mock.method(Date,'now',()=>Date.parse('2026-11-15T12:00:00Z'));assert.equal(catalogModels().filter((x:any)=>x.available).length,0);
 });

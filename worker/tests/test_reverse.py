@@ -108,6 +108,18 @@ def test_subtitles_use_actual_alignment_and_refuse_fabricated_or_outside_timing(
     with pytest.raises(ValueError):reverse_render.subtitles(align,task,.3)
 
 
+def test_audio_cache_identity_ignores_mix_gain_offset_and_speech_slot(monkeypatch):
+    from motion_worker import reverse_audio
+    monkeypatch.delenv('MOTION_FAKE_ELEVEN',raising=False)
+    task={'category':'narration','model':'eleven_v4','usd':.1,'shot_id':'shot_001','payload':{'id':'narration','role':'narration','text':'สวัสดี','model':'eleven_v4','voice_id':'same-voice','start_s':0,'duration_s':2,'gain':.8}}
+    quote={'key_fingerprints':{'eleven':reverse_audio.fingerprint('ELEVENLABS_API_KEY')},'valid_until':'2099-01-01T00:00:00+00:00'}
+    with patch.object(reverse_audio,'check_active'),patch.object(reverse_audio,'cached_call',return_value={'duration_s':1}) as cache:
+        reverse_audio.produce_audio(SimpleNamespace(),{'id':'project'},task,quote);first=cache.call_args.args[3]
+        task['payload'].update(start_s=1,duration_s=3,gain=.3)
+        reverse_audio.produce_audio(SimpleNamespace(),{'id':'project'},task,quote);second=cache.call_args.args[3]
+    assert first==second
+
+
 def test_selected_repair_schedules_no_other_shots():
     task={'slot':'video:shot_002','role':'video','shot_id':'shot_002','provider':'local'}
     quote={'id':'quote','binding':'binding','tasks':[task]}

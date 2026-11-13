@@ -8,11 +8,11 @@ This file distinguishes actual upstream/local execution from HTTP/provider fixtu
 | B meaningful real Vision | Real Gemini adapter, quote, persisted approval, queue ledger, per-shot schema and English prompt implemented; transport fixtures tested | LIVE OWNER APPROVAL REQUIRED |
 | C isolated scene editing | Real Chromium + local HTTP fixtures: change character/location in one shot; other shot byte-for-byte unchanged; UI persistence and version endpoint tested against PGlite | PASS (fixtures; not semantic quality) |
 | D actual Capsule recipe/plan | Actual pinned Python APIs create, validate and build lifecycle/production plan; private-literal leakage rejected; no provider dispatched | LOCAL PASS |
-| E routing | Strict code/generative/hybrid contract, real typed Motion render, verified Fal presets; 120 visible T2V endpoints / 61 maintained ready presets at snapshot | LOCAL/CONTRACT PASS; live generation not yet approved |
+| E routing | Strict code/generative/hybrid contract, real typed Motion render, verified Fal presets; 120 visible T2V endpoints / 59 maintained ready presets in Motion at snapshot; original Re:Video adapters preserved | LOCAL/CONTRACT PASS; live generation not yet approved |
 | F budgets | PGlite persisted quote/source/analysis/key/expiry checks, duplicate approval one job, existing Ledger accepted-ID vs unknown POST tests, single-POST disconnect and GET-only accepted resume | PASS (no paid calls) |
 | G isolated repair | Queue/worker fixture executes only selected shot; unchanged completed assets reusable across revisions | PASS (fixture) |
 | H assembly | Real FFmpeg/Pillow Code Motion assets, actual alignment validator/subtitle overlay path, local ordered assembly with audio track and technical decode/duration/resolution/fps checks | LOCAL PASS; no claim of real-provider full film |
-| I regression | Motion API 143 passed; worker 52 passed / 1 skipped / 13 subtests at first integration checkpoint. Re:Video full regression rerun with writable model cache in progress | See final deployment evidence |
+| I regression | Motion API 143 passed; worker 52 passed / 1 skipped / 13 subtests at first integration checkpoint. Re:Video 519 passed / 6 skipped with writable model cache | See final deployment evidence |
 
 Baseline before edits: Re:Video test suite passed; Motion API 137 passed, worker 44 passed / 1 skipped / 13 subtests; latest rea-video 266 passed; Capsule default pytest collection 1 passed (not broad integration coverage).
 
