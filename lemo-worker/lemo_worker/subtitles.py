@@ -1,5 +1,6 @@
 """Trusted portrait captions. ASS coordinates and bundled font never depend on SRT defaults."""
 from pathlib import Path
+import os
 import shutil
 import subprocess
 from PIL import ImageFont
@@ -90,11 +91,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 def burn(raw, timing, folder):
     folder = Path(folder); folder.mkdir(parents=True, exist_ok=True)
     fonts = folder / 'caption-fonts'; fonts.mkdir(exist_ok=True)
+    cache = folder.resolve() / 'font-cache'; cache.mkdir(exist_ok=True)
     shutil.copyfile(FONT, fonts / FONT.name)  # fail loudly if the bundled font is missing
     (folder / 'subtitles.ass').write_text(ass(timing), encoding='utf-8')
     output = folder / 'video_silent.mp4'
     subprocess.run(['ffmpeg', '-v', 'error', '-y', '-filter_threads', '2', '-i', str(Path(raw).resolve()),
                     '-vf', 'setsar=1,ass=subtitles.ass:fontsdir=caption-fonts', '-an', '-c:v', 'libx264',
                     '-threads', '2', '-preset', 'fast', '-crf', '18', '-pix_fmt', 'yuv420p', '-r', '30',
-                    str(output.resolve())], cwd=folder, check=True, timeout=600)
+                    str(output.resolve())], cwd=folder, env={**os.environ, 'XDG_CACHE_HOME':str(cache)}, check=True, timeout=600)
     return str(output)
