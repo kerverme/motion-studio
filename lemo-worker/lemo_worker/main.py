@@ -21,7 +21,7 @@ def run(ctx):
     stages=[('GENERATING_AUDIO',pipeline.stage_audio),('BUILDING_TIMELINE',pipeline.stage_timeline),('RENDERING',stage_render),('QUALITY_CHECK',pipeline.stage_qa),('UPLOADING_DRIVE',pipeline.stage_upload)]
     for name,fn in stages:
         if name in ctx.r:continue
-        ctx.db.status(ctx.job,name,name,pipeline.PROGRESS[name],name)
+        ctx.db.status(ctx.job,name,name,.25 if name=='RENDERING' else pipeline.PROGRESS[name],name)
         result=fn(ctx);ctx.db.save_stage(ctx.job,name,result)
     result=ctx.r['UPLOADING_DRIVE']
     ctx.db.q('UPDATE jobs SET result=%s WHERE id=%s',(json.dumps(result),ctx.job['id']))

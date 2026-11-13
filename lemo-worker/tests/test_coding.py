@@ -25,6 +25,19 @@ class CodingTests(unittest.TestCase):
             response(ctx,'reservation','same scene');self.assertEqual(get.call_count,1);post.assert_not_called()
     def test_unapproved_default_never_claims_jobs(self):
         with patch.dict('os.environ',{},clear=True):self.assertFalse(enabled())
+    def test_incomplete_response_keeps_usage_and_never_reposts_on_resume(self):
+        ctx,queries=self.ctx('resp_fixture')
+        r=SimpleNamespace(raise_for_status=lambda:None,json=lambda:{'status':'incomplete','incomplete_details':{'reason':'max_output_tokens'},'usage':{'output_tokens':12000}})
+        with patch.dict('os.environ',{'OPENAI_API_KEY':'mock-only'}),patch('lemo_worker.coding.requests.get',return_value=r),patch('lemo_worker.coding.requests.post') as post:
+            with self.assertRaisesRegex(RuntimeError,'max_output_tokens; output_tokens=12000'):response(ctx,'reservation','same scene')
+            post.assert_not_called()
+            self.assertEqual(json.loads(queries[0][1][0])['output_tokens'],12000)
+    def test_configured_generation_limit_is_bounded(self):
+        ctx,_=self.ctx();r=SimpleNamespace(raise_for_status=lambda:None,json=self.data)
+        with patch.dict('os.environ',{'OPENAI_API_KEY':'mock-only','LEMO_CODE_MAX_OUTPUT_TOKENS':'24000'}),patch('lemo_worker.coding.requests.post',return_value=r) as post:
+            response(ctx,'reservation','draw');self.assertEqual(post.call_args.kwargs['json']['max_output_tokens'],24000)
+        with patch.dict('os.environ',{'OPENAI_API_KEY':'mock-only','LEMO_CODE_MAX_OUTPUT_TOKENS':'999999'}),patch('lemo_worker.coding.requests.post',return_value=r) as post:
+            response(ctx,'reservation','draw');self.assertEqual(post.call_args.kwargs['json']['max_output_tokens'],32000)
     def test_failed_security_preflight_happens_before_paid_audio(self):
         from lemo_worker import main
         with patch.object(main,'preflight',side_effect=RuntimeError('unverified limits')),patch.object(main.pipeline,'stage_audio') as audio:
