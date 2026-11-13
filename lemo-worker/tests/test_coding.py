@@ -1,9 +1,9 @@
-import json,sys,unittest
+import json,sys,unittest,tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 sys.path[:0]=[str(Path(__file__).resolve().parents[1]),str(Path(__file__).resolve().parents[2]/'worker')]
-from lemo_worker.coding import response
+from lemo_worker.coding import response,generate_scene
 from lemo_worker.catalog import enabled
 
 
@@ -38,6 +38,26 @@ class CodingTests(unittest.TestCase):
             response(ctx,'reservation','draw');self.assertEqual(post.call_args.kwargs['json']['max_output_tokens'],24000)
         with patch.dict('os.environ',{'OPENAI_API_KEY':'mock-only','LEMO_CODE_MAX_OUTPUT_TOKENS':'999999'}),patch('lemo_worker.coding.requests.post',return_value=r) as post:
             response(ctx,'reservation','draw');self.assertEqual(post.call_args.kwargs['json']['max_output_tokens'],32000)
+    def test_portrait_identity_overrides_style_examples_and_next_scene_gets_canonical_art(self):
+        identity={'palette':['#75CDB5','#FFF2D8'],'characters':'mint robot'}
+        scene={'seg':'second','objective':'open umbrella'}
+        creative={'model':'gpt-6.1-sol','allocations':{'coding':1},'selection':{'selected':{'id':'rubber-hose'},'plan':{'identity':identity,'scenes':[{'seg':'first'},scene]}}}
+        captured=[]
+        def cache(ctx,category,model,payload,cap,generate):
+            captured.append(payload);return generate('mock-reservation')
+        with tempfile.TemporaryDirectory() as folder:
+            canonical=Path(folder)/'first.html';canonical.write_text('<script>function drawMintRobot(){}</script>')
+            ctx=SimpleNamespace(pkg={'creative':creative,'script':[{'id':'first','text':'water'},{'id':'second','text':'umbrella'}]},job={'id':'mock-job'},r={'LEMO_RENDER':{'scenes':[{'seg':'first','source_key':'saved-first-source'}]}},db=SimpleNamespace(q=lambda *args:[]),fetch=lambda *args:str(canonical),path=lambda *parts:str(Path(folder)/parts[-1]),save=lambda *args,**kwargs:'saved-second-source')
+            with patch('lemo_worker.coding.style_spec',return_value='STYLE EXAMPLE: 1000x750 monochrome'),patch('lemo_worker.coding.style_library',return_value='mock'),patch('lemo_worker.coding.cached_call',side_effect=cache),patch('lemo_worker.coding.response',return_value=({'html':'<canvas></canvas>','description':'mock'}, {}, 'resp_mock')) as code:
+                generate_scene(ctx,scene,2)
+                prompt=code.call_args.args[2]
+                self.assertGreater(prompt.index('FINAL DELIVERY REQUIREMENTS'),prompt.index('1000x750 monochrome'))
+                self.assertIn('drawMintRobot',prompt)
+                self.assertIn('#75CDB5',prompt)
+                self.assertEqual(captured[0]['delivery']['width']/captured[0]['delivery']['height'],9/16)
+                self.assertEqual(captured[0]['canonical_source'],'saved-first-source')
+                generate_scene(ctx,{'seg':'first'},2)
+                self.assertIsNone(captured[1]['canonical_source'],'the first scene must not depend on its own cached source')
     def test_failed_security_preflight_happens_before_paid_audio(self):
         from lemo_worker import main
         with patch.object(main,'preflight',side_effect=RuntimeError('unverified limits')),patch.object(main.pipeline,'stage_audio') as audio:
