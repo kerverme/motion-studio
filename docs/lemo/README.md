@@ -1,6 +1,6 @@
 # Lemo Creative Motion — development handoff
 
-This is a disabled development integration, not a production release. Work is on `feat/lemo-creative-motion`. The initial implementation did not change `main` or production. The owner subsequently authorized production deployment and real provider tests; [live verification](LIVE-VERIFICATION.md) records those results and remaining deployment blockers. See [the audit](AUDIT.md) for the original production baseline and [the clarified private film permission](LICENSING-SCOPE.md) for the current licensing scope.
+This integration is deployed but Lemo production remains disabled pending coordinator credential-scope confirmation and a complete live film test. Current code is on `main` and `codex/lemo-production-validation`; the owner authorized production deployment and real provider tests. [Live verification](LIVE-VERIFICATION.md) records exact deployed commits, actual test results and remaining activation blockers. See [the audit](AUDIT.md) for the original production baseline and [the clarified private film permission](LICENSING-SCOPE.md) for the current licensing scope.
 
 See [Railway recovery evidence](RAILWAY-RECOVERY-20261113.md) for the previous runtime verification and handoff.
 
