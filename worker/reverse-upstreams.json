@@ -1,0 +1,18 @@
+{
+  "schema": "motion.reverse.upstreams.v1",
+  "checked_at": "2026-11-13",
+  "rea_video": {
+    "repository": "https://github.com/JuneYaooo/rea-video.git",
+    "commit": "ab8580e38a1255425b0d3b481866590766932079",
+    "version": "0.1.0",
+    "license": "Apache-2.0",
+    "skill": "skills/rea-video/SKILL.md"
+  },
+  "capsule_cinema": {
+    "repository": "https://github.com/JuneYaooo/capsule-cinema.git",
+    "commit": "97229260c96ee8a3fb37db83027bbc1aefd8f073",
+    "version": "2.0.0",
+    "license": "Apache-2.0",
+    "skill": "skills/capsule-cinema/SKILL.md"
+  }
+}

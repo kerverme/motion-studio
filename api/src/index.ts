@@ -16,6 +16,7 @@ import { registerStudio, configured as studioConfigured, OPENAI_MODELS } from '.
 import { registerTopicSuggestions } from './topic-suggestions.js';
 import { registerNarrationPreviews } from './narration-previews.js';
 import { registerTextVideo } from './text-video.js';
+import { registerReverse } from './reverse.js';
 import { registerCommunity } from './community.js';
 import * as notion from './notion.js';
 
@@ -410,6 +411,7 @@ app.get('/internal/google/access-token', async (c) => {
 });
 
 const ui = registerUi(app, pool, { API_TOKEN, retryJob });
+registerReverse(app,pool,{guard:ui.requireUi});
 const suggestions = registerTopicSuggestions(app,pool,{guard:ui.requireUi,models:OPENAI_MODELS});
 const narrationPreviews = registerNarrationPreviews(app,pool,{guard:ui.requireUi,models:OPENAI_MODELS});
 const textVideo = registerTextVideo(app,pool,{guard:ui.requireUi,models:OPENAI_MODELS});

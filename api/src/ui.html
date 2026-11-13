@@ -387,6 +387,7 @@ const VIEWS = [['create','สร้าง'],['text_video','Text to Video'],['com
 let mainEl;
 function frame(){
   const nav = h('nav',{class:'nav','aria-label':'หมวด'}, VIEWS.map(([k,l])=>h('button',{'aria-current':S.view===k?'page':false,on:{click:()=>go(k)}}, h('span',{},l), h('span',{class:'n'}, k!=='analytics' && S.counts[k]!=null ? S.counts[k] : '\u00a0'))));
+  nav.append(h('a',{href:'https://video.cloudbath.co/',class:'btn quiet'},'Reverse Video'));
   mainEl = h('main',{id:'main'});
   put(root, h('div',{class:'app'},
     h('aside',{class:'rail'}, h('div',{class:'brand'},'Motion Studio', h('small',{},'คลังคลิปของ Kerver')), nav,
