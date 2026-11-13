@@ -1,4 +1,4 @@
-import json,sys,unittest,tempfile
+import json,sys,unittest,tempfile,requests
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -23,6 +23,24 @@ class CodingTests(unittest.TestCase):
         ctx,_=self.ctx('resp_fixture');r=SimpleNamespace(raise_for_status=lambda:None,json=self.data)
         with patch.dict('os.environ',{'OPENAI_API_KEY':'mock-only'}),patch('lemo_worker.coding.requests.get',return_value=r) as get,patch('lemo_worker.coding.requests.post') as post:
             response(ctx,'reservation','same scene');self.assertEqual(get.call_count,1);post.assert_not_called()
+    def test_transient_poll_failure_reads_the_same_response_without_reposting(self):
+        ctx,_=self.ctx('resp_fixture')
+        unavailable=SimpleNamespace(status_code=503)
+        done=SimpleNamespace(status_code=200,raise_for_status=lambda:None,json=self.data)
+        with patch.dict('os.environ',{'OPENAI_API_KEY':'mock-only'}),patch('lemo_worker.coding.requests.get',side_effect=[unavailable,requests.Timeout(),done]) as get,patch('lemo_worker.coding.requests.post') as post,patch('lemo_worker.coding.time.sleep'):
+            self.assertEqual(response(ctx,'reservation','same scene')[2],'resp_fixture')
+            self.assertEqual(get.call_count,3);post.assert_not_called()
+            self.assertEqual(len({call.args[0] for call in get.call_args_list}),1)
+    def test_poll_retries_are_bounded_and_authentication_errors_do_not_retry(self):
+        ctx,_=self.ctx('resp_fixture')
+        def failure():raise requests.HTTPError('temporary')
+        unavailable=SimpleNamespace(status_code=503,raise_for_status=failure)
+        with patch.dict('os.environ',{'OPENAI_API_KEY':'mock-only'}),patch('lemo_worker.coding.requests.get',return_value=unavailable) as get,patch('lemo_worker.coding.requests.post') as post,patch('lemo_worker.coding.time.sleep'):
+            with self.assertRaises(requests.HTTPError):response(ctx,'reservation','same scene')
+            self.assertEqual(get.call_count,5);post.assert_not_called()
+            get.reset_mock();unavailable.status_code=401
+            with self.assertRaises(requests.HTTPError):response(ctx,'reservation','same scene')
+            self.assertEqual(get.call_count,1);post.assert_not_called()
     def test_unapproved_default_never_claims_jobs(self):
         with patch.dict('os.environ',{},clear=True):self.assertFalse(enabled())
     def test_incomplete_response_keeps_usage_and_never_reposts_on_resume(self):

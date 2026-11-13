@@ -11,6 +11,19 @@ Render a full-bleed 9:16 portrait composition at 1080x1920. Design in native por
 Use the exact approved film palette and character/prop colors below. A style's sample canvas dimensions, monochrome examples or default colors never override this film identity. For rubber-hose, retain expressive curved limbs and motion while using this film's colors. Preserve returning characters by reusing their drawing functions from the canonical first-scene source when supplied; change camera/action, not their design.
 Approved identity: '''+json.dumps(identity,ensure_ascii=False)
 
+def read_response(url,headers):
+    """Only saved-response GETs may retry; a generation POST is never replayed."""
+    for attempt in range(5):
+        try:
+            result=requests.get(url,headers=headers,timeout=45)
+            if getattr(result,'status_code',200) in (408,429,500,502,503,504) and attempt<4:
+                time.sleep(min(8,2**attempt));continue
+            result.raise_for_status()
+            return result.json()
+        except (requests.ConnectionError,requests.Timeout):
+            if attempt==4:raise
+            time.sleep(min(8,2**attempt))
+
 
 def response(ctx, reservation, prompt, references=()):
     key=os.environ.get('OPENAI_API_KEY')
@@ -20,7 +33,7 @@ def response(ctx, reservation, prompt, references=()):
     old=ctx.db.one('SELECT provider_id FROM creative_calls WHERE id=%s',(reservation,))
     response_id=old.get('provider_id') if old else None
     if response_id:
-        result=requests.get(base+'/'+response_id,headers=headers,timeout=45);result.raise_for_status();data=result.json()
+        data=read_response(base+'/'+response_id,headers)
     else:
         token_limit=min(32000,max(12000,int(os.environ.get('LEMO_CODE_MAX_OUTPUT_TOKENS','12000'))))
         result=requests.post(base,headers=headers,json={'model':ctx.pkg['creative']['model'],'background':True,'store':True,'max_output_tokens':token_limit,
@@ -35,7 +48,7 @@ def response(ctx, reservation, prompt, references=()):
         if state['status']=='CANCELLED':raise RuntimeError('Job cancelled; provider response retained')
         if time.monotonic()>deadline:raise TimeoutError('Background response still running; resume this response id')
         time.sleep(3)
-        result=requests.get(base+'/'+response_id,headers=headers,timeout=45);result.raise_for_status();data=result.json()
+        data=read_response(base+'/'+response_id,headers)
     if data.get('status')!='completed':
         details=data.get('incomplete_details') or {}
         usage={**(data.get('usage') or {}),'provider_status':data.get('status'),'incomplete_details':details}
