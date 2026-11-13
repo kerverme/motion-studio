@@ -7,7 +7,7 @@ const {firefox}=require('playwright'),fs=require('fs'),assert=require('node:asse
     page.on('pageerror',e=>errors.push(e.message));
     const html=fs.readFileSync(process.argv[2],'utf8');
     assert(html.includes('data-trusted-typography-fixture'),'Only the hand-authored test fixture may run locally');
-    await page.route('**/*',r=>r.request().url()==='http://typography.test/fixture'?r.fulfill({status:200,headers:{'content-type':'text/html','content-security-policy':"default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src 'self'; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'"},body:html}):r.abort());
+    await page.route('**/*',r=>r.request().url()==='http://typography.test/fixture'?r.fulfill({status:200,headers:{'content-type':'text/html','content-security-policy':"default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src 'self'; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'"},body:html}):r.request().url()==='http://typography.test/core/lib.js'?r.fulfill({status:200,contentType:'application/javascript',body:'export const clamp=(v,a=0,b=1)=>Math.max(a,Math.min(b,v));'}):r.abort());
     await page.goto('http://typography.test/fixture');
     await page.waitForFunction(()=>window.READY===true);
     const result=await page.evaluate(()=>{

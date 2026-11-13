@@ -14,6 +14,24 @@ function title(){text('หัวเรื่อง',545,433,92,O,I,874);text('�
 
 
 class TypographyTests(unittest.TestCase):
+    def test_global_font_helper_import_is_bound_without_changing_real_library_imports(self):
+        source='''<html><head></head><body><script type="module">
+import { MotionText } from '/core/lib.js';
+await MotionText.ready;
+window.render = () => MotionText.draw(ctx, 'หัวเรื่อง', 540, 400);
+</script></body></html>'''
+        prepared=typography.prepare_source(source)
+        self.assertIn('const MotionText = window.MotionText;',prepared)
+        self.assertNotIn("import { MotionText }",prepared)
+        self.assertIn("window.render = () => MotionText.draw(ctx, 'หัวเรื่อง', 540, 400);",prepared)
+        mixed=source.replace("import { MotionText } from '/core/lib.js';",'import { clamp, MotionText as Text, lerp } from "/core/lib.js";')
+        bound=typography.bind_motion_text_imports(mixed)
+        self.assertIn("import { clamp, lerp } from '/core/lib.js';",bound)
+        self.assertIn('const Text = window.MotionText;',bound)
+        self.assertEqual(typography.bind_motion_text_imports(bound),bound)
+        other=source.replace('/core/lib.js','/other.js')
+        self.assertEqual(typography.bind_motion_text_imports(other),other)
+
     def test_legacy_title_and_every_label_use_the_trusted_helper_once(self):
         clean=typography.repair_source(LEGACY)
         self.assertEqual(clean.count("text('หัวเรื่อง'"),1)

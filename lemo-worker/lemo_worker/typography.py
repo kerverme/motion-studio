@@ -7,9 +7,29 @@ VERSION = 'all-text-kanit-v1'
 MARKER = 'motion-trusted-typography'
 
 
+def bind_motion_text_imports(html):
+    """MotionText is our global API, not an export of the pinned upstream library."""
+    pattern = r'''(?m)^[ \t]*import\s*\{(?P<names>[^{};]+)\}\s*from\s*(?P<quote>['"])/core/lib\.js(?P=quote)[ \t]*;?'''
+    def bind(match):
+        keep, bindings = [], []
+        for item in match['names'].split(','):
+            item = item.strip()
+            if not item: continue
+            helper = re.fullmatch(r'MotionText(?:\s+as\s+([A-Za-z_$][\w$]*))?', item)
+            if helper: bindings.append(f'const {helper[1] or "MotionText"} = window.MotionText;')
+            else: keep.append(item)
+        if not bindings: return match[0]
+        imports = ["import { " + ', '.join(keep) + " } from '/core/lib.js';"] if keep else []
+        return '\n'.join(imports + bindings)
+    # Only script bodies are eligible; retain other imports and all scene drawing code.
+    return re.sub(r'(<script\b[^>]*>)([\s\S]*?)(</script\s*>)',
+                  lambda m: m[1] + re.sub(pattern, bind, m[2]) + m[3], html, flags=re.I)
+
+
 def prepare_source(html):
     if MARKER in html:
         raise ValueError('Source already contains a typography runtime; use its original source')
+    html = bind_motion_text_imports(html)
     js = Path(__file__).with_suffix('.js').read_text()
     for weight in (700, 800):
         js = js.replace(f'__KANIT_{weight}__', base64.b64encode((Path(FD)/f'Kanit-{weight}.ttf').read_bytes()).decode())
