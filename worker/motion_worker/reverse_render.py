@@ -2,6 +2,7 @@
 import json
 import math
 import subprocess
+import re
 from fractions import Fraction
 from pathlib import Path
 from PIL import Image,ImageDraw
@@ -100,7 +101,7 @@ def compose(video,path,duration,audio_tasks,*,overlay=None,cues=None):
     ffmpeg(args);return path
 
 
-def technical_qa(path,expected,width,height,fps=30):
+def technical_qa(path,expected,width,height,fps=30,*,audio_expected=False):
     info=probe(path);video=next(s for s in info['streams'] if s['codec_type']=='video');duration=float(info['format']['duration'])
     errors=[]
     if abs(duration-expected)>max(1/fps+.025,.06):errors.append('duration_mismatch')
@@ -113,9 +114,22 @@ def technical_qa(path,expected,width,height,fps=30):
     # Black frames can be intentional; report them for review, not fabricated failure.
     lines=[l.strip() for l in checks.stderr.splitlines() if any(k in l for k in ['black_start:','Peak level dB:','I:','Peak:'])]
     audio=any(s['codec_type']=='audio' for s in info['streams'])
+    def last(pattern):
+        values=re.findall(pattern,checks.stderr)
+        if not values:return None
+        return float(values[-1])
+    true_peak=last(r'\n\s*Peak:\s+(-?\d+(?:\.\d+)?|-inf)\s+dBFS')
+    loudness=last(r'\n\s*I:\s+(-?\d+(?:\.\d+)?|-inf)\s+LUFS')
+    warnings=[]
+    if true_peak is not None and true_peak>.1:errors.append('audio_clipping')
+    if audio_expected and (not audio or true_peak is None or true_peak==float('-inf')):errors.append('planned_audio_missing_or_silent')
+    if any('black_start:' in line for line in lines):warnings.append('black_interval_needs_review')
+    if loudness is not None and loudness<-30 and audio_expected:warnings.append('quiet_audio_needs_review')
+    def finite(value):return value if value is not None and math.isfinite(value) else None
     return {'schema':'motion.reverse.qa.v1','ok':not errors,'errors':errors,'duration_s':duration,'expected_s':expected,
             'width':video['width'],'height':video['height'],'fps':video['avg_frame_rate'],'codec':video['codec_name'],'audio_present':audio,
-            'audio_blackframe_measurements':lines[-40:],'visual_review':'not_run','uncertainty':['Technical decode cannot establish visual or identity correctness.']}
+            'audio_blackframe_measurements':lines[-40:],'integrated_loudness_lufs':finite(loudness),'true_peak_dbfs':finite(true_peak),'audio_expected':audio_expected,'warnings':warnings,
+            'visual_review':'not_run','uncertainty':['Technical decode cannot establish visual or identity correctness.']}
 
 
 def assemble(paths,output,workspace):

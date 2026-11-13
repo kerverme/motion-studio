@@ -30,6 +30,18 @@ from .creative_ledger import digest,AmbiguousCall
 def schemas():return json.loads(Path(__file__).with_name('reverse-schemas.json').read_text())
 
 
+def source_prompt(value,shot):
+    lines=[f'One continuous shot, {shot["duration_s"]:.6f} seconds, no cuts.','Characters:']
+    lines.extend(f'[{c["ref"]}]: {c["description"]}. Screen position: {c["position"]}.' for c in value['characters'])
+    if not value['characters']:lines.append('No visible characters.')
+    lines.extend(['Location: '+value['location']['description'],'Objects and props: '+('; '.join(o['label']+': '+o['description']+'; position: '+o['position'] for o in value['objects']) or 'None reliably identified.'),
+        'Opening frame: '+value['starting_state'],'Action timeline (measured source seconds):'])
+    lines.extend(f'{a["t0"]:.6f}–{a["t1"]:.6f}s: {a["text"]}' for a in value['character_actions'])
+    lines.extend(['Ending frame: '+value['ending_state'],'Camera: '+'. '.join(value['camera'].values()),'Lighting: '+value['lighting'],'Visual style: '+value['visual_style'],
+        'Preserve these screen positions, action timing and screen direction. Do not add unrequested characters, subtitles, logos or spoken dialogue.'])
+    return '\n'.join(lines)
+
+
 def validate_semantic(value,shot):
     jsonschema.validate(value,schemas()['semantic'])
     if value['shot_id']!=shot['id']:raise ValueError('Vision returned another shot')
@@ -41,6 +53,9 @@ def validate_semantic(value,shot):
         if not 0<=event['t0']<=event['t1']<=shot['clip']['duration_s']+.05:raise ValueError('Vision action time is outside source clip')
         event['t0']/=stretch;event['t1']=min(shot['duration_s'],event['t1']/stretch)
     result['motion_timeline']=copy.deepcopy(result['character_actions'])
+    result['reverse_prompt_model']=result['reverse_prompt']
+    result['reverse_prompt']=source_prompt(result,shot)
+    result['prompt_composition']='Validated Vision fields composed with measured source timing; raw model prompt retained separately.'
     result['timing_basis']='measured_source_relative_seconds'
     result['uncertainty'].append('Reverse prompt is an interpretation, not the original production prompt or verified lens/tool metadata.')
     return result
@@ -231,7 +246,7 @@ def generate(ctx,project,task,quote):
     if shot['method']=='hybrid' or cues:
         overlay=ctx.path('generated',shot['shot_id']+'-overlay.mov');code_motion(shot.get('graphic') if shot['method']=='hybrid' else {'background':'#000000','layers':[]},overlay,duration,width,height,transparent=True,cues=cues)
     final=ctx.path('generated',shot['shot_id']+'.mp4');compose(base,final,duration,tracks,overlay=overlay)
-    qa=technical_qa(final,round(duration*30)/30,width,height)
+    qa=technical_qa(final,round(duration*30)/30,width,height,audio_expected=bool(tracks))
     asset=save_private(ctx,project['id'],final,'generated_shot',shot_id=shot['shot_id'],content_type='video/mp4',metadata={'quote_id':quote['id'],'revision':quote['revision'],'shot_spec_hash':task.get('shot_spec_hash'),'qa':qa,'generated':True})
     timing=frame_timing(final);qa_path=ctx.path('qa-clips',shot['shot_id']+'.mp4')
     qa_meta=clip(final,{'duration_s':timing['end_s'],'start_frame':0,'end_frame_exclusive':len(timing['pts']),'frame_count':len(timing['pts'])},qa_path)
@@ -289,7 +304,7 @@ def final_assembly(ctx,project,spec):
     output=ctx.path('assembly','final.mp4');assemble(paths,output,ctx.dir)
     duration=sum(round(measured[x]['end_s']*30)-round(measured[x]['start_s']*30) for x in wanted)/30
     info=project['analysis']['source'];width,height=(1080,1920) if info['height']>=info['width'] else (1920,1080)
-    qa=technical_qa(output,duration,width,height)
+    qa=technical_qa(output,duration,width,height,audio_expected=any(s['audio'] for s in plan['shots']))
     if not qa['ok']:raise ValueError('Assembly technical QA failed')
     final=save_private(ctx,project['id'],output,'final_video',content_type='video/mp4',metadata={'revision':revision,'qa':qa,'shot_assets':spec['assets']})
     return {'final_asset_id':str(final['id']),'qa':qa,'ordered_shots':wanted,'publishing':'not_requested'}

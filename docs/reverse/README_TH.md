@@ -93,6 +93,8 @@ cd ..
 PYTHAINLP_DATA_DIR=/workspace/work/pythainlp-data MOTION_REA_ROOT=/path/to/actual/rea-video MOTION_CAPSULE_ROOT=/path/to/actual/capsule-cinema .venv/bin/python -m pytest -q worker/tests
 ```
 
+At the deployment smoke checkpoint, actual local/Railway decomposition and actual Capsule validation/planning passed without paid calls. Source prompt composition uses validated Vision fields with measured source times; raw model prompt is retained separately. Delivery uses cumulative 30fps quantization to prevent accumulated timeline drift.
+
 See ACCEPTANCE.md for separation of local/provider evidence. A browser fixture is not proof of Gemini scene accuracy. Character ID matches are estimates with distinctive evidence; reading subsequent shots after the first registry is established supplies known identity context. Initial batch matching is conservative and may produce separate IDs requiring review. Models do not guarantee perfect identity or continuity.
 
 ## Rollback

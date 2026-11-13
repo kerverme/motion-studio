@@ -96,8 +96,9 @@ def test_source_frame_boundaries_and_local_assembly_are_measured(tmp_path):
     overlay=tmp_path/'subtitle.mov';reverse_render.code_motion({'background':'#000000','layers':[]},overlay,1,180,320,transparent=True,cues=cues)
     for i in range(2):
         raw=tmp_path/f'raw{i}.mp4';final=tmp_path/f'part{i}.mp4';reverse_render.code_motion(g,raw,1,180,320);reverse_render.compose(raw,final,1,[{'path':tone,'duration_s':1,'start_s':0,'gain':.5}],overlay=overlay);parts.append(final)
-    output=reverse_render.assemble(parts,tmp_path/'final.mp4',tmp_path);qa=reverse_render.technical_qa(output,2,180,320)
+    output=reverse_render.assemble(parts,tmp_path/'final.mp4',tmp_path);qa=reverse_render.technical_qa(output,2,180,320,audio_expected=True)
     assert qa['ok'];assert qa['audio_present'];assert qa['visual_review']=='not_run'
+    assert qa['true_peak_dbfs'] is not None and qa['true_peak_dbfs']<0;assert qa['integrated_loudness_lufs'] is not None
     mismatch=reverse_render.technical_qa(output,9,180,320);assert not mismatch['ok']
 
 
@@ -106,6 +107,8 @@ def test_subtitles_use_actual_alignment_and_refuse_fabricated_or_outside_timing(
     cues=reverse_render.subtitles(align,task,1);assert cues[0]['start']==.2;assert cues[0]['end']==.7
     with pytest.raises(ValueError):reverse_render.subtitles(align,{'text':'different','start_s':0},1)
     with pytest.raises(ValueError):reverse_render.subtitles(align,task,.3)
+    prompt=reverse.source_prompt({'characters':[],'location':{'description':'Owner test fixture'},'objects':[],'starting_state':'Opening','ending_state':'Closing','character_actions':[{'t0':0,'t1':1.25,'text':'Action'}],'camera':{'framing':'Wide','angle':'Level','motion':'Locked'},'lighting':'Soft','visual_style':'Test fixture'},{'duration_s':1.25})
+    assert '1.250000 seconds' in prompt and '0.000000–1.250000s' in prompt
 
 
 def test_audio_cache_identity_ignores_mix_gain_offset_and_speech_slot(monkeypatch):
