@@ -5,6 +5,7 @@ run a generation runner, arbitrary module, local_script, shell or provider tool.
 """
 import json
 import sys
+import hashlib
 from pathlib import Path
 
 
@@ -15,6 +16,7 @@ def main(request):
     from capsule_package_validate import validate_capsule_dir
     from src.capsules.dispatch import build_dispatch_plan
     from src.capsules.loader import load_definition
+    import yaml
     op, payload = request['operation'], request['payload']
     if op == 'recipe.create':
         name = payload['name']
@@ -34,9 +36,31 @@ def main(request):
             output_root=out, include_source_video=False, overwrite=False)
         report = validate_capsule_dir(path)
         if report.get('errors'): raise ValueError('Upstream capsule validation failed: ' + str(report['errors']))
+        # Episode deny-literals are transient audit inputs, not reusable recipe
+        # content. Upstream's contract otherwise retains those private names in
+        # content_scope.yaml even though it excludes them from active surfaces.
+        scope_path=Path(path)/'contracts/content_scope.yaml'
+        scope=yaml.safe_load(scope_path.read_text())
+        literals=scope.get('forbidden_reusable_literals',[])
+        for surface in Path(path).rglob('*'):
+            if not surface.is_file() or surface==scope_path or surface.suffix not in ('.md','.yaml','.yml','.json','.py'):continue
+            body=surface.read_text().casefold()
+            if any(literal.casefold() in body for literal in literals):raise ValueError('Episode-specific content leaked into a reusable recipe surface')
+        scope['forbidden_reusable_literals']=[]
+        scope_path.write_text(yaml.safe_dump(scope,allow_unicode=True,sort_keys=False))
+        report=validate_capsule_dir(path)
+        if report.get('errors'):raise ValueError('Sanitized reusable capsule failed upstream validation')
         definition = load_definition(path)
-        return {'path': str(path), 'validation': report, 'definition': definition.model_dump(mode='json'),
-                'upstream': 'capsule-cinema', 'paid_requests': 0}
+        definition_data=definition.model_dump(mode='json')
+        resources={}
+        for relative in sorted({r for group in definition_data['read_order'].values() for r in group}):
+            resource=(Path(path)/relative).resolve()
+            if not resource.is_relative_to(Path(path).resolve()) or not resource.is_file():continue
+            if resource.stat().st_size>65536:raise ValueError('Reusable recipe resource is too large')
+            content=resource.read_text()
+            resources[relative]={'sha256':hashlib.sha256(content.encode()).hexdigest(),'content':content}
+        return {'path': str(path), 'validation': report, 'definition': definition_data,'resources':resources,
+                'upstream': 'capsule-cinema', 'scope_audit':{'checked_literal_count':len(literals),'episode_literals_retained':False},'paid_requests': 0}
     if op in ('recipe.validate', 'recipe.plan'):
         path = Path(payload['path']).resolve()
         if not path.is_relative_to(out): raise ValueError('Recipe path escapes the production workspace')

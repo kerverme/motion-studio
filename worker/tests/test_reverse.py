@@ -100,6 +100,10 @@ def test_source_frame_boundaries_and_local_assembly_are_measured(tmp_path):
     assert qa['ok'];assert qa['audio_present'];assert qa['visual_review']=='not_run'
     assert qa['true_peak_dbfs'] is not None and qa['true_peak_dbfs']<0;assert qa['integrated_loudness_lufs'] is not None
     mismatch=reverse_render.technical_qa(output,9,180,320);assert not mismatch['ok']
+    short=tmp_path/'new-generated-short.mp4';fixed=tmp_path/'new-generated-fixed.mp4'
+    reverse_render.ffmpeg(['-i',tmp_path/'raw0.mp4','-frames:v','29','-an','-c:v','copy',short])
+    reverse_render.normalize(short,fixed,1,180,320)
+    assert int(next(s for s in reverse_media.probe(fixed)['streams'] if s['codec_type']=='video')['nb_frames'])==30
 
 
 def test_subtitles_use_actual_alignment_and_refuse_fabricated_or_outside_timing():
@@ -147,6 +151,12 @@ def test_actual_capsule_package_and_supported_plan(tmp_path):
       'capsule_recipe':{'structure_rules':['Preserve measured timing for {{topic}}.'],'visual_rules':['Use {{characters}} and {{locations}}.'],'audio_rules':['Quote separate approved audio.'],'quality_rules':['Check decoded duration, identity and action.']}}
     actual=reverse_runtime.capsule_call('recipe.create',{'name':'local-acceptance','recipe':data},tmp_path)
     assert actual['validation']['ok'];assert actual['upstream']=='capsule-cinema';assert actual['paid_requests']==0
+    assert actual['scope_audit']['episode_literals_retained'] is False
+    assert 'PRIVATE_CHARACTER' not in (Path(actual['path'])/'contracts/content_scope.yaml').read_text()
+    assert '{{characters}}' in actual['resources']['recipes/visual.md']['content']
+    changed=copy.deepcopy(data);changed['capsule_recipe']['visual_rules']=['Use approved {{characters}} with a consistent cool palette.']
+    second=reverse_runtime.capsule_call('recipe.create',{'name':'local-acceptance','recipe':changed},tmp_path/'second-version')
+    assert actual['resources']['recipes/visual.md']['sha256']!=second['resources']['recipes/visual.md']['sha256']
     plan=reverse_runtime.capsule_call('recipe.plan',{'path':actual['path'],'topic':'{{topic}}','params':{}},tmp_path)
     assert plan['production_plan']['digest'];assert plan['generation_dispatch']=='requires_motion_quote_and_approval'
     bad=copy.deepcopy(data);bad['summary']='PRIVATE_CHARACTER is not reusable'

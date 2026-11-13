@@ -63,7 +63,7 @@ def code_motion(graphic,path,duration,width,height,fps=30,*,transparent=False,cu
 def normalize(raw,path,duration,width,height,fps=30):
     info=probe(raw);actual=float(info['format']['duration'])
     if actual+1/fps<duration:raise ValueError('Generated shot is too short; inspect before approving a repair')
-    ffmpeg(['-i',raw,'-an','-vf',f'scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1,fps={fps}',
+    ffmpeg(['-i',raw,'-an','-vf',f'scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1,fps={fps},tpad=stop_mode=clone:stop_duration={1/fps}',
         '-frames:v',max(1,round(duration*fps)),'-c:v','libx264','-preset','fast','-crf','20','-pix_fmt','yuv420p',path])
     return path
 
@@ -107,6 +107,7 @@ def technical_qa(path,expected,width,height,fps=30,*,audio_expected=False):
     if abs(duration-expected)>max(1/fps+.025,.06):errors.append('duration_mismatch')
     if(video['width'],video['height'])!=(width,height):errors.append('resolution_mismatch')
     if abs(float(Fraction(video['avg_frame_rate']))-fps)>.01:errors.append('fps_mismatch')
+    if video.get('nb_frames') and int(video['nb_frames'])!=round(expected*fps):errors.append('frame_count_mismatch')
     decoded=subprocess.run(['ffmpeg','-v','error','-nostdin','-i',str(path),'-f','null','-'],capture_output=True,timeout=300)
     if decoded.returncode or decoded.stderr.strip():errors.append('decode_errors')
     checks=subprocess.run(['ffmpeg','-hide_banner','-nostdin','-i',str(path),'-vf','blackdetect=d=0.25:pix_th=0.02',

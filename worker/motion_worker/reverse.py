@@ -211,11 +211,13 @@ def recipe(ctx,project,spec):
     with tarfile.open(archive,'w:gz') as tar:tar.add(result['path'],arcname=Path(result['path']).name)
     asset=save_private(ctx,project['id'],archive,'capsule_recipe',content_type='application/gzip')
     definition=result['definition'];definition['metadata'].pop('source_path',None)
-    definition_hash=digest(definition)
+    resources=result['resources']
+    definition_hash=digest({'definition':definition,'resource_hashes':{k:v['sha256'] for k,v in resources.items()}})
     with ctx.db.lock,ctx.db.conn.transaction():
         ctx.db.conn.execute('SELECT pg_advisory_xact_lock(hashtext(%s))',(payload['name'],))
         row=ctx.db.conn.execute('INSERT INTO reverse_recipes(name,version,definition_hash,manifest,storage_key,validated,source_project) SELECT %s,coalesce(max(version),0)+1,%s,%s,%s,true,%s FROM reverse_recipes WHERE name=%s ON CONFLICT(definition_hash) DO NOTHING RETURNING *',
-            (payload['name'],definition_hash,Jsonb({'definition':definition,'validation':result['validation'],'production_plan':plan['production_plan'],'asset_id':str(asset['id'])}),asset['storage_key'],project['id'],payload['name'])).fetchone()
+            (payload['name'],definition_hash,Jsonb({'definition':definition,'resources':resources,'validation':result['validation'],'production_plan':plan['production_plan'],'asset_id':str(asset['id'])}),asset['storage_key'],project['id'],payload['name'])).fetchone()
+        if not row:row=ctx.db.conn.execute('SELECT id FROM reverse_recipes WHERE definition_hash=%s',(definition_hash,)).fetchone()
     return {'recipe_id':str(row['id']) if row else None,'validation':result['validation'],'production_plan':plan['production_plan'],'paid_requests':0}
 
 

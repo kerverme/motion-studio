@@ -57,7 +57,11 @@ export function registerReverse(app:Hono,pool:pg.Pool,options:Options){
   app.post(P+'/jobs/:id/resume',guard,async c=>{const cl=await pool.connect();try{await cl.query('BEGIN');const id=UUID.parse(c.req.param('id')),job=(await cl.query("SELECT * FROM jobs WHERE id=$1 AND kind='reverse' FOR UPDATE",[id])).rows[0];if(!job||job.status!=='FAILED')throw Error('Only a failed reverse job can resume');
     const calls=(await cl.query('SELECT * FROM creative_calls WHERE job_id=$1',[id])).rows;
     if(calls.some((x:any)=>['started','uncertain'].includes(x.status)&&!(x.provider==='fal'&&x.provider_id)))throw Error('Unknown POST outcome requires provider reconciliation; no automatic re-send');
-    if(job.package.reverse.quote&&Date.parse(job.package.reverse.quote.valid_until)<=Date.now())throw Error('Approval expired; accepted request can be reconciled separately without starting pending paid steps');
+    if(job.package.reverse.quote&&Date.parse(job.package.reverse.quote.valid_until)<=Date.now()){
+      const q=job.package.reverse.quote,done=new Set((await cl.query("SELECT slot FROM reverse_steps WHERE job_id=$1 AND status='complete'",[id])).rows.map((x:any)=>x.slot));
+      const remaining=q.tasks.filter((t:any)=>t.provider!=='local'&&!done.has(t.slot));
+      if(!remaining.every((t:any)=>t.provider==='fal'&&calls.some((x:any)=>x.call_key==='reverse:'+q.binding+':'+t.slot&&x.provider_id&&['started','uncertain','complete','reconciled'].includes(x.status))))throw Error('Approval expired; only saved accepted requests can be polled, no new paid steps');
+    }
     await cl.query("UPDATE jobs SET status='NEW',attempts=0,error=NULL,locked_by=NULL,locked_until=NULL,updated_at=now() WHERE id=$1",[id]);await cl.query('COMMIT');return c.json({job_id:id,status:'NEW'},202);
   }catch(e){await cl.query('ROLLBACK');return fail(c,e);}finally{cl.release();}});
   app.post(P+'/projects/:id/quote',guard,async c=>{try{
@@ -79,7 +83,7 @@ export function registerReverse(app:Hono,pool:pg.Pool,options:Options){
       const live=rates.find(x=>x.endpoint_id===ROUTER);if(!live||live.unit!=='units'||live.currency!=='USD'||live.unit_price!==.01)throw Error('Router billing contract changed; quote blocked');
       const rate=await tokenRate(model,input.purpose!=='planner');
       if(input.purpose==='planner'){
-        const recipeId=input.recipe_id||planForRates?.recipe_id||null;let recipe=null;if(recipeId){recipe=(await pool.query('SELECT id,name,version,manifest,validated FROM reverse_recipes WHERE id=$1',[recipeId])).rows[0];if(!recipe?.validated)throw Error('Recipe has not passed actual Capsule validation');}
+        const recipeId=input.recipe_id||planForRates?.recipe_id||null;let recipe=null;if(recipeId){recipe=(await pool.query('SELECT id,name,version,manifest,validated FROM reverse_recipes WHERE id=$1',[recipeId])).rows[0];if(!recipe?.validated||!recipe.manifest?.resources)throw Error('Recipe needs a validated version with its actual Capsule resources; save a new version before planning');}
         const payload={model,system_prompt:PLANNER_SYSTEM,prompt:JSON.stringify({project_id:p.id,source_sha256:p.source_sha256,analysis_sha256:sha(p.analysis),base_revision:p.current_revision,recipe_id:recipeId,capsule_recipe:recipe,VIDEO_md:p.analysis.video_md,analysis:p.analysis,selected_shots:input.shot_ids,current_plan:planForRates,instructions:input.instructions,allowed_models:['h3_max','grok_15','motion-typed-graphics-v1',...catalogModels().filter((m:any)=>m.available).map((m:any)=>m.id)]}),temperature:0,max_tokens:16000,reasoning:true,enable_web_search:false};
         tasks.push({slot:'planner',role:'planner',recipe_id:recipeId,provider:'fal',endpoint:ROUTER,model,category:'planning',payload,rate:live,token_rate:rate,...routerEstimate(payload,rate)});
       }else for(const shot of measured){

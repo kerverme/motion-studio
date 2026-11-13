@@ -58,3 +58,12 @@ test('all catalog entries stay visible and verified prices use a bounded freshne
   assert.throws(()=>catalogTask({...s,references:[{asset_id:randomUUID(),role:'first_frame',rights_confirmed:true,allow_source_reference:false}]},{duration_s:1},[]),/text-to-video/);
   t.mock.method(Date,'now',()=>Date.parse('2026-11-15T12:00:00Z'));assert.equal(catalogModels().filter((x:any)=>x.available).length,0);
 });
+test('expired approval resumes saved accepted IDs only; unknown POST cannot be replayed',async()=>{
+  const app=server(),p=await create(app),q=await(await send(app,'/projects/'+p.id+'/quote',{purpose:'vision',shot_ids:['shot_001']})).json();
+  const approved=await(await send(app,'/projects/'+p.id+'/approve',{quote_id:q.id,binding:q.binding,accepted_usd:q.total_usd,source_confirmed:true,rights_confirmed:true})).json(),id=approved.job_id;
+  await query("UPDATE jobs SET status='FAILED',package=jsonb_set(package,'{reverse,quote,valid_until}','\"2000-01-01T00:00:00Z\"') WHERE id=$1",[id]);
+  await query("INSERT INTO creative_calls(job_id,call_key,provider,model,category,request_hash,reserved_usd,status) VALUES($1,$2,'fal','openrouter/router/video','vision','request',.1,'uncertain')",[id,'reverse:'+q.binding+':vision:shot_001']);
+  assert.equal((await send(app,'/jobs/'+id+'/resume',{})).status,409);
+  await query("UPDATE creative_calls SET provider_id='accepted-fixture-id' WHERE job_id=$1",[id]);
+  assert.equal((await send(app,'/jobs/'+id+'/resume',{})).status,202);assert.equal((await query('SELECT count(*)::int AS n FROM creative_calls WHERE job_id=$1',[id])).rows[0].n,1);
+});
