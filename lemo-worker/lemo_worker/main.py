@@ -4,8 +4,9 @@ from motion_worker import config, pipeline
 from motion_worker.db import DB, Heartbeat
 from motion_worker.storage import get_storage
 from .catalog import enabled, GATES
-from .render import stage_render, stage_recompose, preflight
+from .render import stage_render, stage_recompose, stage_retype, preflight
 from .subtitles import VERSION as CAPTION_VERSION
+from .typography import VERSION as TYPOGRAPHY_VERSION
 
 STOP=threading.Event()
 
@@ -18,8 +19,16 @@ class Health(BaseHTTPRequestHandler):
 
 
 def run(ctx):
-    repair=getattr(ctx,'r',{}).get('CAPTION_REPAIR')
-    if repair:
+    text_repair=getattr(ctx,'r',{}).get('TYPOGRAPHY_REPAIR')
+    repair=text_repair or getattr(ctx,'r',{}).get('CAPTION_REPAIR')
+    if text_repair:
+        if repair.get('version')!=TYPOGRAPHY_VERSION:raise RuntimeError('Unsupported typography repair version')
+        preflight(ctx)
+        ctx.dir=os.path.join(ctx.dir,'revisions',TYPOGRAPHY_VERSION)
+        ctx.prefix+='/revisions/'+TYPOGRAPHY_VERSION
+        os.makedirs(ctx.dir,exist_ok=True)
+        stages=[('RENDERING',stage_retype)]
+    elif repair:
         if repair.get('version')!=CAPTION_VERSION:raise RuntimeError('Unsupported caption repair version')
         ctx.dir=os.path.join(ctx.dir,'revisions',CAPTION_VERSION)
         ctx.prefix+='/revisions/'+CAPTION_VERSION

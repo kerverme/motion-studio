@@ -79,7 +79,7 @@ test('approval is revision-bound, gated, budgeted and duplicate-safe under concu
 
 test('caption repair preserves the episode, paid assets and old delivery, and concurrent requests queue once',async()=>{
   const episode=(await query("INSERT INTO episodes(topic,title_th,status,ui_status) VALUES('captions','captions','READY_TO_POST','ready') RETURNING id")).rows[0].id;
-  const stages={GENERATING_AUDIO:{narration_key:'cached-audio'},BUILDING_TIMELINE:{timeline_key:'saved-timeline'},LEMO_RENDER:{scenes:[{seg:'one',video_key:'cached-scene',identity:'scene-hash'}]},RENDERING:{final_key:'old-final'},QUALITY_CHECK:{qa_ok:true},UPLOADING_DRIVE:{folder_name:'EP001_existing',video_url:'https://media.example/old.mp4'}};
+  const stages={GENERATING_AUDIO:{narration_key:'cached-audio'},BUILDING_TIMELINE:{timeline_key:'saved-timeline'},LEMO_RENDER:{scenes:[{seg:'one',video_key:'cached-scene',source_key:'saved-original-source',identity:'scene-hash'}]},RENDERING:{final_key:'old-final'},QUALITY_CHECK:{qa_ok:true},UPLOADING_DRIVE:{folder_name:'EP001_existing',video_url:'https://media.example/old.mp4'}};
   const pkg={creative:{selection:{plan:{scenes:[{seg:'one'}]}}}};
   const job=(await query("INSERT INTO jobs(episode_id,kind,status,package,stage_results,result) VALUES($1,'lemo','READY_TO_POST',$2,$3,$4) RETURNING id",[episode,JSON.stringify(pkg),JSON.stringify(stages),JSON.stringify(stages.UPLOADING_DRIVE)])).rows[0].id;
   const app=new Hono();registerCreative(app,pool as any,{guard:async(c,n)=>c.req.header('x-owner')==='yes'?n():c.json({},401),prepare:r=>r});
@@ -101,5 +101,20 @@ test('caption repair preserves the episode, paid assets and old delivery, and co
   assert.notEqual(saved.stage_results.UPLOADING_DRIVE_partial.folder_name,stages.UPLOADING_DRIVE.folder_name,'new public URL prevents stale CDN/video cache');
   assert.equal((await query('SELECT count(*)::int AS n FROM jobs WHERE episode_id=$1',[episode])).rows[0].n,1);
   assert.equal((await query('SELECT count(*)::int AS n FROM job_events WHERE job_id=$1',[job])).rows[0].n,1);
+  assert.equal((await query('SELECT count(*)::int AS n FROM creative_calls WHERE job_id=$1',[job])).rows[0].n,0);
+  // A subtitle-only revision must not claim that the title and labels were fixed.
+  const captionDone={...stages,RENDERING:{...stages.RENDERING,caption_version:'kanit-portrait-v2'},CAPTION_REPAIR:saved.stage_results.CAPTION_REPAIR};
+  await query("UPDATE jobs SET status='READY_TO_POST',stage_results=$2 WHERE id=$1",[job,JSON.stringify(captionDone)]);
+  const full=()=>app.request('/app/api/creative/jobs/'+job+'/repair-typography',{method:'POST',headers:{'x-owner':'yes'}});
+  const repairs=await Promise.all([full(),full()]);assert.deepEqual(repairs.map(r=>r.status).sort(),[200,202]);
+  const textJob=(await query('SELECT * FROM jobs WHERE id=$1',[job])).rows[0];
+  assert.equal(textJob.episode_id,episode);assert.deepEqual(textJob.package,pkg);
+  assert.equal(textJob.stage_results.TYPOGRAPHY_REPAIR.version,'all-text-kanit-v1');
+  assert.deepEqual(textJob.stage_results.TYPOGRAPHY_REPAIR.previous.LEMO_RENDER,stages.LEMO_RENDER);
+  assert.deepEqual(textJob.stage_results.TYPOGRAPHY_REPAIR.previous.CAPTION_REPAIR,saved.stage_results.CAPTION_REPAIR);
+  assert.equal(textJob.stage_results.LEMO_RENDER,undefined,'all scene text must be rendered again');
+  assert.equal(textJob.stage_results.CAPTION_REPAIR,undefined,'the worker must not take the subtitle-only path');
+  assert.deepEqual(textJob.stage_results.GENERATING_AUDIO,stages.GENERATING_AUDIO);
+  assert.equal((await query('SELECT count(*)::int AS n FROM jobs WHERE episode_id=$1',[episode])).rows[0].n,1);
   assert.equal((await query('SELECT count(*)::int AS n FROM creative_calls WHERE job_id=$1',[job])).rows[0].n,0);
 });

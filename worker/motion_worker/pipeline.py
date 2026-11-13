@@ -482,7 +482,7 @@ def make_archive(ctx, T, out):
             json.dump({'creative':ctx.pkg['creative'],'render':ctx.r.get('LEMO_RENDER',{})},open(manifest,'w'),ensure_ascii=False,default=str)
             tar.add(manifest, 'episode/creative-source.json')
             for i, scene in enumerate(ctx.r.get('LEMO_RENDER',{}).get('scenes',[])):
-                source = ctx.fetch(scene['source_key'],ctx.path('sources',f'{i}.html'))
+                source = ctx.fetch(scene.get('render_source_key') or scene['source_key'],ctx.path('sources',f'{i}.html'))
                 tar.add(source, f'episode/lemo/scene-{i}.html')
             if ctx.pkg['creative'].get('engine') == 'lemo':
                 vendor = os.environ.get('LEMO_VENDOR_DIR') or os.path.abspath(os.path.join(ENGINE_DIR, '..', '..', 'lemo-worker', 'vendor', 'lemo'))
