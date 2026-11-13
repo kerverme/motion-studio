@@ -65,6 +65,11 @@ test('approval is revision-bound, gated, budgeted and duplicate-safe under concu
     const result=await Promise.all([req(id+'/approve',approve),req(id+'/approve',approve)]);assert.deepEqual(result.map(r=>r.status).sort(),[200,201]);
     assert.equal((await query("SELECT count(*)::int AS n FROM jobs WHERE kind='lemo'")).rows[0].n,1);
     const job=(await result[0].json() as any).id;
+    const planningUsage={input_tokens:123,output_tokens:45};
+    await query('UPDATE drafts SET usage=$2 WHERE id=$1',[id,JSON.stringify(planningUsage)]);
+    const repaired=await(await req(id+'/regenerate-scene',{seg:story.creative.scenes[0].seg})).json() as any;
+    assert.equal(repaired.requires_approval,true);
+    assert.deepEqual((await query('SELECT usage FROM drafts WHERE id=$1',[repaired.id])).rows[0].usage,planningUsage,'repair must retain already-incurred planning usage');
     assert.equal((await req('jobs/'+job+'/cancel',{})).status,200);
     assert.equal((await query('SELECT status FROM jobs WHERE id=$1',[job])).rows[0].status,'CANCELLED');
     assert.equal((await req('jobs/'+job+'/retry',{})).status,409);
