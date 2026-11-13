@@ -9,6 +9,7 @@ from hmac import compare_digest
 
 LOCK = threading.BoundedSemaphore(1)
 MAX_OUTPUT = 96 * 1024 * 1024
+MAX_PIDS = 1024  # Includes gVisor's host threads, Chromium and FFmpeg.
 
 
 def command(image, name):
@@ -16,29 +17,54 @@ def command(image, name):
         raise ValueError('LEMO_SANDBOX_IMAGE must be an immutable image digest')
     return ['docker','run','--name',name,'--runtime=runsc','--network=none','--read-only','--user=65534:65534',
             '--cap-drop=ALL','--security-opt=no-new-privileges','--cpus=2','--memory=2g','--memory-swap=2g',
-            '--pids-limit=256','--ulimit=nofile=1024:1024','--ulimit=fsize=134217728:134217728',
+            f'--pids-limit={MAX_PIDS}','--ulimit=nofile=1024:1024','--ulimit=fsize=134217728:134217728',
             '--tmpfs=/tmp:rw,noexec,nosuid,nodev,size=384m,mode=1777','--shm-size=64m','--log-driver=none','-i',image]
 
 
-def verify_runtime(image):
-    """Fail closed unless the runtime exposes the limits actually enforced.
+def kernel_limits(pid, container_id):
+    """Read the running sentry's actual host cgroup, not gVisor's virtual /sys.
 
-    HostConfig is intent, not proof. Development runsc --ignore-cgroups must fail.
+    gVisor need not expose host cgroup files inside its virtual filesystem.
+    Membership and limits are checked in the credential-free executor VM.
     """
-    inspector="const fs=require('fs');for(const p of ['memory.max','cpu.max','pids.max'])console.log(p+'='+fs.readFileSync('/sys/fs/cgroup/'+p,'utf8').trim());"
+    membership=Path(f'/proc/{pid}/cgroup').read_text()
+    group=next((line[3:] for line in membership.splitlines() if line.startswith('0::')),None)
+    if not group or container_id not in group:raise RuntimeError('Container has no dedicated kernel cgroup')
+    root=Path('/sys/fs/cgroup').resolve();path=(root/group.lstrip('/')).resolve()
+    if not path.is_relative_to(root) or path==root:raise RuntimeError('Invalid kernel cgroup path')
+    if str(pid) not in (path/'cgroup.procs').read_text().split():raise RuntimeError('Container PID is not in the verified cgroup')
+    limits={key:(path/key).read_text().strip() for key in ('memory.max','memory.swap.max','cpu.max','pids.max')}
+    if limits['memory.max']!='2147483648' or limits['memory.swap.max']!='0' or limits['pids.max']!=str(MAX_PIDS):
+        raise RuntimeError('Kernel memory, swap or PID limit does not match the approved quota')
+    quota,period=map(int,limits['cpu.max'].split())
+    if quota<=0 or period<=0 or quota/period>2:raise RuntimeError('Kernel CPU quota is not enforced')
+    return {**limits,'evidence':'host-kernel-cgroup-v2','cgroup':str(path)}
+
+
+def verify_runtime(image):
+    """Fail closed unless a running runsc sentry has real kernel-enforced limits."""
     cmd=command(image,'lemo-probe-'+uuid.uuid4().hex)
     name=cmd[cmd.index('--name')+1]
-    cmd=cmd[:-1]+['--entrypoint','node',image,'-e',inspector]
+    cmd.remove('-i')
+    cmd=cmd[:-1]+['-d','--entrypoint','node',image,'-e','setInterval(()=>{},1000)']
     try:
+        info=subprocess.run(['docker','info','--format','{{json .}}'],capture_output=True,text=True,timeout=10)
+        if info.returncode:raise RuntimeError('Docker runtime cannot be inspected')
+        host=json.loads(info.stdout);runtime=host.get('Runtimes',{}).get('runsc',{})
+        if host.get('CgroupDriver') not in ('cgroupfs','systemd') or str(host.get('CgroupVersion'))!='2' or any(str(a).startswith('--ignore-cgroups') for a in runtime.get('runtimeArgs',[])):
+            raise RuntimeError('Docker does not enforce runsc cgroups')
         result=subprocess.run(cmd,capture_output=True,text=True,timeout=25)
-        limits=dict(line.split('=',1) for line in result.stdout.splitlines() if '=' in line)
-        if result.returncode or limits.get('memory.max')!='2147483648' or limits.get('pids.max')!='256':
-            raise RuntimeError('Runtime resource enforcement is unverified; generated code is blocked')
-        quota,period=map(int,limits['cpu.max'].split())
-        if quota/period>2:raise RuntimeError('Runtime CPU quota is not enforced')
-        return limits
+        if result.returncode:raise RuntimeError('Runtime start failed: '+result.stderr[-600:])
+        container_id=result.stdout.strip()
+        if not re.fullmatch('[0-9a-f]{64}',container_id):raise RuntimeError('Invalid runtime container identity')
+        state=subprocess.run(['docker','inspect','--format','{{json .State}}',name],capture_output=True,text=True,timeout=10)
+        running=json.loads(state.stdout)
+        if state.returncode or not running.get('Running') or not isinstance(running.get('Pid'),int) or running['Pid']<=0:
+            raise RuntimeError('Runtime probe is not running')
+        return kernel_limits(running['Pid'],container_id)
+    except Exception as error:
+        raise RuntimeError('Runtime resource enforcement is unverified; generated code is blocked: '+str(error)[:700]) from error
     finally:subprocess.run(['docker','rm','-f',name],capture_output=True,timeout=10)
-
 
 def run(spec, image=None, timeout=300, *, trusted_fixture=False):
     payload=json.dumps(spec).encode()
@@ -75,9 +101,12 @@ def run(spec, image=None, timeout=300, *, trusted_fixture=False):
                     except ValueError:pass
             time.sleep(.1)
         for thread in threads:thread.join(timeout=10)
-        if process.returncode or len(output)>MAX_OUTPUT:raise RuntimeError(bytes(errors).decode(errors='replace')[:2000] or 'Sandbox failed')
+        if process.returncode or len(output)>MAX_OUTPUT:
+            state=subprocess.run(['docker','inspect','--format','{{json .State}}',name],capture_output=True,text=True,timeout=10)
+            detail=bytes(errors).decode(errors='replace')[:1600]
+            raise RuntimeError(f'Sandbox exited {process.returncode}; state={state.stdout.strip()[:600]}; last_stats={json.dumps(stats[-2:])[:1000]}; {detail}')
         validate_archive(bytes(output))
-        return bytes(output),{'wall_seconds':time.monotonic()-start,'docker_stats':stats,'stats_scope':'unverified-host-aggregate' if trusted_fixture else 'container','image':image,'runtime':'runsc','output_bytes':len(output),'trusted_fixture_only':trusted_fixture}
+        return bytes(output),{'wall_seconds':time.monotonic()-start,'docker_stats':stats[-10:],'sample_count':len(stats),'sampled_peak_memory':max(stats,key=lambda s:float(s.get('MemPerc','0%').rstrip('%')),default=None),'sampled_peak_pids':max((int(s.get('PIDs',0)) for s in stats),default=0),'stats_scope':'unverified-host-aggregate' if trusted_fixture else 'container','image':image,'runtime':'runsc','output_bytes':len(output),'trusted_fixture_only':trusted_fixture}
     finally:
         subprocess.run(['docker','rm','-f',name],capture_output=True,timeout=20)
         if process and process.poll() is None:process.kill();process.wait()

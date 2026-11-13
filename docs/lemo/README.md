@@ -1,5 +1,7 @@
 # Lemo Creative Motion — development handoff
 
+**Current status:** the owner has authorized production deployment and real tests. See [Railway test evidence and remaining work](RAILWAY-RECOVERY-20261113.md) and [private film licensing scope](LICENSING-SCOPE.md). The rest of this document records the original development baseline; its earlier licensing/authorization assumptions are superseded by those updates.
+
 This is a disabled development integration, not a production release. Work is on `feat/lemo-creative-motion`. Production and `main` were not changed. No billable OpenAI, ElevenLabs or fal request was made during this implementation. See [the audit](AUDIT.md) for the production baseline and upstream licensing review.
 
 ## Implemented boundaries
