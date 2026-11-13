@@ -30,6 +30,8 @@ Unknown categories require an explicit positive allocation and acknowledgement. 
 
 Delivery reuses the existing R2 upload verification and Notion publication handoff. It does not auto-publish to Buffer. Final H.264/AAC video, thumbnail, script, subtitles, sources, storyboard, narration metadata, SFX manifest, style/rationale, model provenance, costs, render metadata and source archive are saved. The archive includes the pinned MIT helper and licenses, not private STYLE documentation. Reference photos are snapshotted in a private job table; public artifacts contain provenance hashes rather than photos. Ready cards retain the actual brain label, and Lemo appears in the working queue.
 
+On Railway, provision each private STYLE document in `LEMO_PRIVATE_STYLE_DATAVIZ`, `LEMO_PRIVATE_STYLE_FIREFLY_POINTILLISM` and `LEMO_PRIVATE_STYLE_RUBBER_HOSE`. Each fits the 32 KiB variable limit and is checked against the pinned SHA-256. The older combined `LEMO_PRIVATE_STYLES_JSON` and private-directory options remain supported elsewhere; never commit private documents to the repository.
+
 ## Initial development results (before live provider tests)
 
 | Check | Result |

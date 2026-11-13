@@ -38,8 +38,14 @@ def private_spec(style):
     if not item:raise ValueError('Style is not installed in this renderer')
     # Railway can provision these privately on the coordinator without baking
     # the documents into an image or requiring a writable persistent mount.
+    # Railway limits each variable to 32 KiB. Individual pinned styles fit;
+    # their combined JSON bundle can exceed that limit.
+    individual=os.environ.get('LEMO_PRIVATE_STYLE_'+style.upper().replace('-','_'))
     bundle=os.environ.get('LEMO_PRIVATE_STYLES_JSON')
-    if bundle is not None:
+    if individual is not None:
+        if len(individual.encode())>32768:raise ValueError('Private style exceeds variable limit')
+        data=individual.encode()
+    elif bundle is not None:
         if len(bundle)>150000:raise ValueError('Private style bundle exceeds limit')
         specs=json.loads(bundle)
         if not isinstance(specs,dict) or not isinstance(specs.get(style),str):

@@ -35,5 +35,19 @@ class FilmPermissionTests(unittest.TestCase):
             os.environ['LEMO_PRIVATE_STYLES_JSON']='{}'
             with self.assertRaisesRegex(ValueError,'missing'):style_spec('dataviz')
 
+    def test_individual_railway_style_variables_keep_hash_and_size_checks(self):
+        env={'LEMO_STYLE_LIBRARY':'owner-films','LEMO_FILM_USE_APPROVED':'true','LEMO_PRIVATE_OWNER_MODE':'true'}
+        for style in ('dataviz','firefly-pointillism','rubber-hose'):
+            with self.subTest(style=style):
+                spec='Test-only '+style+' direction.'
+                name='LEMO_PRIVATE_STYLE_'+style.upper().replace('-','_')
+                lock={'styles':[{'id':style,'spec_sha256':hashlib.sha256(spec.encode()).hexdigest()}]}
+                with patch.dict(os.environ,{**env,name:spec},clear=True),patch('lemo_worker.catalog.LOCK',lock):
+                    self.assertEqual(style_spec(style),spec)
+                    os.environ[name]=spec+' changed'
+                    with self.assertRaisesRegex(ValueError,'pinned'):style_spec(style)
+                    os.environ[name]='ก'*11000
+                    with self.assertRaisesRegex(ValueError,'limit'):style_spec(style)
+
 
 if __name__=='__main__':unittest.main()
