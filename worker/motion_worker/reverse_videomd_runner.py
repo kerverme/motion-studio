@@ -21,6 +21,12 @@ def main(request):
         shot['vlm']={**(shot.get('vlm') or {}),'description':a['scene_description'],
             'evidence':['Motion per-shot Vision interpretation; not a human review or verified production provenance.']+a['uncertainty'],
             'replication':{'video_prompt':a['reverse_prompt'],'video_prompt_en':a['reverse_prompt']}}
+        # VIDEO.md's per-shot renderer reads the planned replication surface,
+        # not the raw VLM replication field. Map the exact approved observation
+        # there without reclassifying the measured evidence or dispatching it.
+        shot.setdefault('replication',{}).setdefault('capsule',{}).update(
+            prompt=a['reverse_prompt'],prompt_en=a['reverse_prompt'],
+            dispatch_policy='Motion quote and explicit owner approval required')
     b['analysis']['vlm']['used']=bool(observed)
     b['analysis']['motion_vision']={'observed_shots':list(observed),'review':'model_estimated_not_human_reviewed',
         'normalized_schema':'motion.reverse.analysis.v1','timing_authority':'original measured frame indices; upstream display times may be rounded'}

@@ -21,7 +21,7 @@ export function registerReverse(app:Hono,pool:pg.Pool,options:Options){
   };
   const fail=(c:Context,e:unknown)=>c.json({error:e instanceof Error?e.message:'Reverse operation failed'},409);
   const project=async(id:string,cl:any=pool,lock=false)=>{UUID.parse(id);const row=(await cl.query('SELECT * FROM reverse_projects WHERE id=$1'+(lock?' FOR UPDATE':''),[id])).rows[0];if(!row)throw Error('Project not found');return row;};
-  const worker=async()=>{const row=(await pool.query("SELECT data,updated_at FROM integrations WHERE provider='reverse_worker'")).rows[0];if(!row||Date.now()-Date.parse(row.updated_at)>120000)throw Error('Reverse worker not ready');return row.data;};
+  const worker=async(db:any=pool)=>{const row=(await db.query("SELECT data,updated_at FROM integrations WHERE provider='reverse_worker'")).rows[0];if(!row||Date.now()-Date.parse(row.updated_at)>120000)throw Error('Reverse worker not ready');return row.data;};
   async function queue(cl:any,p:any,action:string,data:any,idempotency:string){
     const pkg={creative:{reverse:true},reverse:{schema:'motion.reverse.job.v1',project_id:p.id,source_sha256:p.source_sha256,action,...data}};
     const old=(await cl.query('SELECT * FROM jobs WHERE idempotency_key=$1',[idempotency])).rows[0];
@@ -84,7 +84,12 @@ export function registerReverse(app:Hono,pool:pg.Pool,options:Options){
       const rate=await tokenRate(model,input.purpose!=='planner');
       if(input.purpose==='planner'){
         const recipeId=input.recipe_id||planForRates?.recipe_id||null;let recipe=null;if(recipeId){recipe=(await pool.query('SELECT id,name,version,manifest,validated FROM reverse_recipes WHERE id=$1',[recipeId])).rows[0];if(!recipe?.validated||!recipe.manifest?.resources)throw Error('Recipe needs a validated version with its actual Capsule resources; save a new version before planning');}
-        const payload={model,system_prompt:PLANNER_SYSTEM,prompt:JSON.stringify({project_id:p.id,source_sha256:p.source_sha256,analysis_sha256:sha(p.analysis),base_revision:p.current_revision,recipe_id:recipeId,capsule_recipe:recipe,VIDEO_md:p.analysis.video_md,analysis:p.analysis,selected_shots:input.shot_ids,current_plan:planForRates,instructions:input.instructions,allowed_models:['h3_max','grok_15','motion-typed-graphics-v1',...catalogModels().filter((m:any)=>m.available).map((m:any)=>m.id)]}),temperature:0,max_tokens:16000,reasoning:true,enable_web_search:false};
+        const available=catalogModels().filter((m:any)=>m.available);
+        const payload={model,system_prompt:PLANNER_SYSTEM,prompt:JSON.stringify({project_id:p.id,source_sha256:p.source_sha256,analysis_sha256:sha(p.analysis),base_revision:p.current_revision,recipe_id:recipeId,capsule_recipe:recipe,VIDEO_md:p.analysis.video_md,analysis:p.analysis,selected_shots:input.shot_ids,current_plan:planForRates,instructions:input.instructions,
+          model_capabilities:available.map((m:any)=>({...m,route:'text-to-video',reference_images:false,settings_policy:'Only the verified preset resolution and duration options listed here.'})),
+          reference_routes:[{id:'h3_max',roles:['first_frame','last_frame'],resolutions:['480P','768P','1080P'],max_seconds:15},{id:'grok_15',roles:['first_frame'],resolutions:['480p','720p','1080p'],max_seconds:15,max_prompt_chars:4096}],
+          continuity_policy:'Owner selects a previously generated last frame or owned image explicitly before I2V. Set handoff_previous_frame=false; never invent future asset IDs or copy source pixels.',
+          allowed_models:['h3_max','grok_15','motion-typed-graphics-v1',...available.map((m:any)=>m.id)]}),temperature:0,max_tokens:16000,reasoning:true,enable_web_search:false};
         tasks.push({slot:'planner',role:'planner',recipe_id:recipeId,provider:'fal',endpoint:ROUTER,model,category:'planning',payload,rate:live,token_rate:rate,...routerEstimate(payload,rate)});
       }else for(const shot of measured){
         if(input.purpose==='visual_qa'){
@@ -127,7 +132,7 @@ export function registerReverse(app:Hono,pool:pg.Pool,options:Options){
   }catch(e){return fail(c,e);}});
   app.post(P+'/projects/:id/approve',guard,async c=>{const cl=await pool.connect();try{const input=Approval.parse(await c.req.json());await cl.query('BEGIN');const p=await project(c.req.param('id'),cl,true),row=(await cl.query('SELECT * FROM reverse_quotes WHERE id=$1 AND project_id=$2 FOR UPDATE',[input.quote_id,p.id])).rows[0];if(!row)throw Error('Quote not found');
     const old=(await cl.query('SELECT job_id FROM reverse_approvals WHERE quote_id=$1',[input.quote_id])).rows[0];if(old){await cl.query('COMMIT');return c.json(old);}
-    const q=row.quote;assertApproval(q,input,p);const w=await worker();if(sha(q.key_fingerprints)!==sha(w.key_fingerprints))throw Error('Provider key identity changed; quote again');
+    const q=row.quote;assertApproval(q,input,p);const w=await worker(cl);if(sha(q.key_fingerprints)!==sha(w.key_fingerprints))throw Error('Provider key identity changed; quote again');
     const job=await queue(cl,p,q.purpose,{quote:q},'reverse:approved:'+q.id);
     await cl.query('INSERT INTO reverse_approvals(project_id,quote_id,binding,accepted_usd,source_confirmed,rights_confirmed,approval_origin,job_id) VALUES($1,$2,$3,$4,true,true,$5,$6)',[p.id,q.id,q.binding,q.total_usd,input.approval_origin,job.id]);
     if(q.total_usd>0){const draft=(await cl.query("INSERT INTO drafts(topic,status,creative) VALUES($1,'submitted',$2) RETURNING id",[p.title,JSON.stringify({reverse_project:p.id,quote_id:q.id})])).rows[0];const allocations:Record<string,number>={};for(const t of q.tasks)allocations[t.category]=(allocations[t.category]||0)+t.usd;

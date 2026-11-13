@@ -4,6 +4,8 @@ import json
 import os
 import threading
 import sys
+import io
+import subprocess
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -95,10 +97,17 @@ def test_source_frame_boundaries_and_local_assembly_are_measured(tmp_path):
     cues=reverse_render.subtitles(alignment,{'text':text,'start_s':.1},1)
     overlay=tmp_path/'subtitle.mov';reverse_render.code_motion({'background':'#000000','layers':[]},overlay,1,180,320,transparent=True,cues=cues)
     for i in range(2):
-        raw=tmp_path/f'raw{i}.mp4';final=tmp_path/f'part{i}.mp4';reverse_render.code_motion(g,raw,1,180,320);reverse_render.compose(raw,final,1,[{'path':tone,'duration_s':1,'start_s':0,'gain':.5}],overlay=overlay);parts.append(final)
+        scene=copy.deepcopy(g);scene['background']='#234567' if i==0 else '#673321';scene['layers'][0]['text']='ทดสอบ A' if i==0 else 'ทดสอบ B'
+        raw=tmp_path/f'raw{i}.mp4';final=tmp_path/f'part{i}.mp4';reverse_render.code_motion(scene,raw,1,180,320);reverse_render.compose(raw,final,1,[{'path':tone,'duration_s':1,'start_s':0,'gain':.5}],overlay=overlay);parts.append(final)
     output=reverse_render.assemble(parts,tmp_path/'final.mp4',tmp_path);qa=reverse_render.technical_qa(output,2,180,320,audio_expected=True)
     assert qa['ok'];assert qa['audio_present'];assert qa['visual_review']=='not_run'
     assert qa['true_peak_dbfs'] is not None and qa['true_peak_dbfs']<0;assert qa['integrated_loudness_lufs'] is not None
+    from PIL import Image
+    for second,expected in [(.25,(35,69,103)),(1.25,(103,51,33))]:
+        png=subprocess.check_output(['ffmpeg','-v','error','-ss',str(second),'-i',str(output),'-frames:v','1','-f','image2pipe','-vcodec','png','pipe:1'])
+        img=Image.open(io.BytesIO(png)).convert('RGB')
+        assert all(abs(a-b)<10 for a,b in zip(img.getpixel((5,5)),expected)), 'scene order changed'
+        assert any(min(p)>210 for p in img.crop((0,270,180,310)).getdata()), 'aligned subtitle overlay missing'
     mismatch=reverse_render.technical_qa(output,9,180,320);assert not mismatch['ok']
     short=tmp_path/'new-generated-short.mp4';fixed=tmp_path/'new-generated-fixed.mp4'
     reverse_render.ffmpeg(['-i',tmp_path/'raw0.mp4','-frames:v','29','-an','-c:v','copy',short])
@@ -161,3 +170,19 @@ def test_actual_capsule_package_and_supported_plan(tmp_path):
     assert plan['production_plan']['digest'];assert plan['generation_dispatch']=='requires_motion_quote_and_approval'
     bad=copy.deepcopy(data);bad['summary']='PRIVATE_CHARACTER is not reusable'
     with pytest.raises(RuntimeError):reverse_runtime.capsule_call('recipe.create',{'name':'private-leak','recipe':bad},tmp_path)
+
+
+@pytest.mark.skipif(not os.environ.get('MOTION_REA_ROOT'),reason='actual upstream path not supplied')
+def test_actual_rea_videomd_renders_the_reverse_prompt_in_a_new_derived_package(tmp_path):
+    import shutil
+    source=tmp_path/'owned-synthetic.mp4'
+    reverse_render.ffmpeg(['-f','lavfi','-i','testsrc2=s=180x320:r=24:d=2','-c:v','libx264','-pix_fmt','yuv420p',source])
+    original=tmp_path/'original';real=reverse_runtime.decompose(source,original,audio=False,ocr=False,asr=False)
+    original_hash=reverse_media.file_sha(original/'VIDEO.md');derived=tmp_path/'derived';shutil.copytree(original,derived)
+    sid=real['analysis']['shots'][0]['id']
+    result=reverse_runtime.render_videomd(derived,{'shots':[{'id':sid,'semantic':{'scene_description':'VISIBLE_SCHEMA_FIXTURE_ONLY, not a real Vision result.',
+        'reverse_prompt':'PROMPT_MAPPING_FIXTURE_ONLY, not a real Vision result.','uncertainty':['Schema mapping test only.']}}]})
+    assert result['validated'] and result['human_reviewed'] is False
+    text=(derived/'video/shots/01.md').read_text()
+    assert 'VISIBLE_SCHEMA_FIXTURE_ONLY' in text and 'PROMPT_MAPPING_FIXTURE_ONLY' in text
+    assert reverse_media.file_sha(original/'VIDEO.md')==original_hash
