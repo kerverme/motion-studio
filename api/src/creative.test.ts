@@ -6,6 +6,15 @@ import {Hono} from 'hono';
 import {CreativeSettings,chooseStyle,estimateCreative,hash,releaseGates,creativePrompt} from './creative.js';
 import {registerCreative} from './creative-routes.js';
 const fixtures=['nik','dream','cats'].map(k=>JSON.parse(readFileSync(new URL(`../../lemo-worker/tests/fixtures/${k}.json`,import.meta.url),'utf8')));
+test('private owner film permission does not grant a commercial style service licence',()=>{
+  const env:NodeJS.ProcessEnv={LEMO_ENABLED:'true',LEMO_STYLE_LIBRARY:'owner-films'};
+  for(const gate of releaseGates(env).blockers)env[gate]='true';
+  assert.equal(releaseGates(env).enabled,true);
+  assert.equal(env.LEMO_LICENSE_APPROVED,undefined);
+  assert.equal(releaseGates({...env,LEMO_PRIVATE_OWNER_MODE:'false'}).enabled,false);
+  assert.equal(releaseGates({...env,LEMO_STYLE_LIBRARY:'upstream-licensed'}).enabled,false);
+  assert.equal(releaseGates({...env,LEMO_STYLE_LIBRARY:'unknown'}).enabled,false);
+});
 test('three mocked semantic analyses rank deterministically and reject unknown styles',()=>{
   for(const [i,story] of fixtures.entries()){
     const settings=CreativeSettings.parse({engine:'lemo'}),selection=chooseStyle(story.creative,settings,story.script);

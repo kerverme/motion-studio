@@ -4,17 +4,28 @@ import requests
 from motion_worker import pipeline, rendering, timeline
 from motion_worker.creative_ledger import digest, cached_call, Ledger
 from .coding import generate_scene
-from .catalog import private_spec
+from .catalog import style_spec
+
+
+def executor_tls():
+    """Trust an explicitly provisioned private CA without disabling TLS checks."""
+    certificate=os.environ.get('LEMO_EXECUTOR_CA_PEM')
+    if not certificate:return True
+    import hashlib,tempfile
+    path=Path(tempfile.gettempdir())/('lemo-executor-ca-'+hashlib.sha256(certificate.encode()).hexdigest()+'.pem')
+    if not path.exists():
+        with open(path,'x') as out:out.write(certificate)
+    return str(path)
 
 
 def preflight(ctx):
     """Configuration/security checks happen before any paid narration or coding."""
-    private_spec(ctx.pkg['creative']['selection']['selected']['id'])
+    style_spec(ctx.pkg['creative']['selection']['selected']['id'])
     if not os.environ.get('OPENAI_API_KEY') or not os.environ.get('ELEVENLABS_API_KEY'):
         raise RuntimeError('Configure the coding and voice providers before production')
     url=os.environ['LEMO_EXECUTOR_URL'].rstrip('/')
     if not url.startswith('https://') and os.environ.get('LEMO_DEVELOPMENT')!='true':raise RuntimeError('Executor requires authenticated TLS')
-    response=requests.get(url+'/ready',headers={'Authorization':'Bearer '+os.environ['LEMO_EXECUTOR_TOKEN']},timeout=45)
+    response=requests.get(url+'/ready',headers={'Authorization':'Bearer '+os.environ['LEMO_EXECUTOR_TOKEN']},timeout=60,verify=executor_tls())
     if response.status_code!=200:raise RuntimeError('Executor security readiness failed; no provider requests submitted')
     ready=response.json()
     if ready.get('ready') is not True or ready.get('image')!=os.environ.get('LEMO_SANDBOX_IMAGE'):
@@ -34,7 +45,7 @@ def extract(data, folder):
 def remote_render(spec, folder):
     url=os.environ['LEMO_EXECUTOR_URL'].rstrip('/')
     if not url.startswith('https://') and os.environ.get('LEMO_DEVELOPMENT')!='true':raise RuntimeError('Executor requires authenticated TLS')
-    with requests.post(url+'/render',json=spec,headers={'Authorization':'Bearer '+os.environ['LEMO_EXECUTOR_TOKEN']},timeout=(15,330),stream=True) as r:
+    with requests.post(url+'/render',json=spec,headers={'Authorization':'Bearer '+os.environ['LEMO_EXECUTOR_TOKEN']},timeout=(15,390),verify=executor_tls(),stream=True) as r:
         if not r.ok:raise RuntimeError('Renderer: '+r.text[:1800])
         data=bytearray()
         for chunk in r.iter_content(65536):

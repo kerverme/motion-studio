@@ -1,6 +1,6 @@
 # Lemo development audit — 2026-11-12
 
-Development branch: `feat/lemo-creative-motion`, based on `3e43db1fbab64601b9c8417dc7410825623d5891`. Main and production were inspected before changes. API live deployment `ebc59f72-36d5-41f0-8485-89653828a1ca` serves this commit. Classic worker live deployment `531fd777-bedf-47cb-9965-c7f3f7e6fc0d` serves `40944be8f1d912c48ea1a1e0b0e4d47838a71dc1`; the subsequent commit changes only API/UI. Neither service has pending staged changes. No production migration or deployment is authorized for this feature.
+Initial development baseline: branch `feat/lemo-creative-motion`, based on `3e43db1fbab64601b9c8417dc7410825623d5891`. Main and production were inspected before changes. API live deployment `ebc59f72-36d5-41f0-8485-89653828a1ca` serves this commit. Classic worker live deployment `531fd777-bedf-47cb-9965-c7f3f7e6fc0d` serves `40944be8f1d912c48ea1a1e0b0e4d47838a71dc1`; the subsequent commit changes only API/UI. Neither service had pending staged changes. Production migration/deployment was not authorized at this initial audit; the owner has since explicitly authorized it. See [current live verification](LIVE-VERIFICATION.md).
 
 ## Preserved boundaries
 
@@ -12,7 +12,7 @@ Lemo gets an additive job kind and its own coordinator. Classic claim excludes t
 
 Lemo-Opuscar 2.0.0 is pinned at `3a7132b996be0241c1ea0ab180d519f06e6f10b6`. README, AGENTS, DIRECTOR, TECHNIQUE, plugin workflow, relevant STYLE specifications, renderer, dependency files, LICENSE and REUSE rules were inspected in a separate private checkout. `upstream.lock.json` records exact code and style-spec hashes. Only MIT code and registry identifiers are distributed here. Upstream Markdown style instructions, demo films, prompts, voices, trademark characters and other demo assets are not copied into this product.
 
-The upstream LICENSE says commercial distribution of its style documentation, including adaptations embedded in a service, requires a commercial license. Its separate permission to make commercial films does not grant that service permission. Keep the private style library outside the repository/container image, and keep `LEMO_ENABLED=false` until permission and release gates are satisfied. Contact details and full terms are preserved in `lemo-worker/vendor/lemo/LICENSE`; this audit is not a legal clearance.
+The upstream LICENSE requires separate permission for commercial documentation use beyond its additional film permission. The owner has now clarified that this is a private Studio making their own social videos. The additional permission explicitly covers that owner/team film workflow, including commercial and client films; it does not require a separate commercial service licence. See [clarified scope](LICENSING-SCOPE.md). Keep the private style library outside the repository/container image, and keep unverified runtime release gates disabled. Contact details and full terms are preserved in `lemo-worker/vendor/lemo/LICENSE`.
 
 ## Provider contracts
 

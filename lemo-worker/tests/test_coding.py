@@ -34,7 +34,7 @@ class CodingTests(unittest.TestCase):
         from lemo_worker.render import preflight
         ctx=SimpleNamespace(pkg={'creative':{'selection':{'selected':{'id':'dataviz'}}}})
         env={'OPENAI_API_KEY':'mock-only','ELEVENLABS_API_KEY':'mock-only','LEMO_EXECUTOR_URL':'https://executor.invalid','LEMO_EXECUTOR_TOKEN':'mock-only','LEMO_SANDBOX_IMAGE':'sha256:fixture'}
-        with patch.dict('os.environ',env,clear=True),patch('lemo_worker.render.private_spec'),patch('lemo_worker.render.requests.get') as get:
+        with patch.dict('os.environ',env,clear=True),patch('lemo_worker.render.style_spec'),patch('lemo_worker.render.requests.get') as get:
             get.return_value=SimpleNamespace(status_code=503)
             with self.assertRaisesRegex(RuntimeError,'security readiness'):preflight(ctx)
             get.return_value=SimpleNamespace(status_code=200,json=lambda:{'ready':True,'image':'sha256:wrong'})
