@@ -76,3 +76,30 @@ test('approval is revision-bound, gated, budgeted and duplicate-safe under concu
     assert.equal((await app.request('/app/api/creative/'+id+'/estimate')).status,401);
   }finally{process.env=env;}
 });
+
+test('caption repair preserves the episode, paid assets and old delivery, and concurrent requests queue once',async()=>{
+  const episode=(await query("INSERT INTO episodes(topic,title_th,status,ui_status) VALUES('captions','captions','READY_TO_POST','ready') RETURNING id")).rows[0].id;
+  const stages={GENERATING_AUDIO:{narration_key:'cached-audio'},BUILDING_TIMELINE:{timeline_key:'saved-timeline'},LEMO_RENDER:{scenes:[{seg:'one',video_key:'cached-scene',identity:'scene-hash'}]},RENDERING:{final_key:'old-final'},QUALITY_CHECK:{qa_ok:true},UPLOADING_DRIVE:{folder_name:'EP001_existing',video_url:'https://media.example/old.mp4'}};
+  const pkg={creative:{selection:{plan:{scenes:[{seg:'one'}]}}}};
+  const job=(await query("INSERT INTO jobs(episode_id,kind,status,package,stage_results,result) VALUES($1,'lemo','READY_TO_POST',$2,$3,$4) RETURNING id",[episode,JSON.stringify(pkg),JSON.stringify(stages),JSON.stringify(stages.UPLOADING_DRIVE)])).rows[0].id;
+  const app=new Hono();registerCreative(app,pool as any,{guard:async(c,n)=>c.req.header('x-owner')==='yes'?n():c.json({},401),prepare:r=>r});
+  const url='/app/api/creative/jobs/'+job+'/repair-captions';
+  const req=()=>app.request(url,{method:'POST',headers:{'x-owner':'yes'}});
+  assert.equal((await app.request(url,{method:'POST'})).status,401);
+  await query("UPDATE episodes SET ui_status='deleted' WHERE id=$1",[episode]);assert.equal((await req()).status,409);
+  await query("UPDATE episodes SET ui_status='ready' WHERE id=$1",[episode]);
+  await query("UPDATE jobs SET stage_results=stage_results-'LEMO_RENDER' WHERE id=$1",[job]);assert.equal((await req()).status,409);
+  await query('UPDATE jobs SET stage_results=$2 WHERE id=$1',[job,JSON.stringify(stages)]);
+  const result=await Promise.all([req(),req()]);assert.deepEqual(result.map(r=>r.status).sort(),[200,202]);
+  const saved=(await query('SELECT * FROM jobs WHERE id=$1',[job])).rows[0];
+  assert.equal(saved.episode_id,episode);assert.equal(saved.status,'NEW');assert.deepEqual(saved.package,pkg);
+  assert.deepEqual(saved.stage_results.GENERATING_AUDIO,stages.GENERATING_AUDIO);
+  assert.deepEqual(saved.stage_results.LEMO_RENDER,stages.LEMO_RENDER);
+  assert.deepEqual(saved.stage_results.CAPTION_REPAIR.previous.UPLOADING_DRIVE,stages.UPLOADING_DRIVE);
+  assert.deepEqual(saved.result,stages.UPLOADING_DRIVE,'keep the working video available until the new delivery verifies');
+  assert.equal(saved.stage_results.RENDERING,undefined);
+  assert.notEqual(saved.stage_results.UPLOADING_DRIVE_partial.folder_name,stages.UPLOADING_DRIVE.folder_name,'new public URL prevents stale CDN/video cache');
+  assert.equal((await query('SELECT count(*)::int AS n FROM jobs WHERE episode_id=$1',[episode])).rows[0].n,1);
+  assert.equal((await query('SELECT count(*)::int AS n FROM job_events WHERE job_id=$1',[job])).rows[0].n,1);
+  assert.equal((await query('SELECT count(*)::int AS n FROM creative_calls WHERE job_id=$1',[job])).rows[0].n,0);
+});

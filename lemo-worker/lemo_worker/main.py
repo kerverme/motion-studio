@@ -4,7 +4,8 @@ from motion_worker import config, pipeline
 from motion_worker.db import DB, Heartbeat
 from motion_worker.storage import get_storage
 from .catalog import enabled, GATES
-from .render import stage_render, preflight
+from .render import stage_render, stage_recompose, preflight
+from .subtitles import VERSION as CAPTION_VERSION
 
 STOP=threading.Event()
 
@@ -17,14 +18,25 @@ class Health(BaseHTTPRequestHandler):
 
 
 def run(ctx):
-    preflight(ctx)
-    stages=[('GENERATING_AUDIO',pipeline.stage_audio),('BUILDING_TIMELINE',pipeline.stage_timeline),('RENDERING',stage_render),('QUALITY_CHECK',pipeline.stage_qa),('UPLOADING_DRIVE',pipeline.stage_upload)]
+    repair=getattr(ctx,'r',{}).get('CAPTION_REPAIR')
+    if repair:
+        if repair.get('version')!=CAPTION_VERSION:raise RuntimeError('Unsupported caption repair version')
+        ctx.dir=os.path.join(ctx.dir,'revisions',CAPTION_VERSION)
+        ctx.prefix+='/revisions/'+CAPTION_VERSION
+        os.makedirs(ctx.dir,exist_ok=True)
+        stages=[('RENDERING',stage_recompose)]
+    else:
+        preflight(ctx)
+        stages=[('GENERATING_AUDIO',pipeline.stage_audio),('BUILDING_TIMELINE',pipeline.stage_timeline),('RENDERING',stage_render)]
+    stages += [('QUALITY_CHECK',pipeline.stage_qa),('UPLOADING_DRIVE',pipeline.stage_upload)]
     for name,fn in stages:
         if name in ctx.r:continue
         ctx.db.status(ctx.job,name,name,.25 if name=='RENDERING' else pipeline.PROGRESS[name],name)
         result=fn(ctx);ctx.db.save_stage(ctx.job,name,result)
     result=ctx.r['UPLOADING_DRIVE']
     ctx.db.q('UPDATE jobs SET result=%s WHERE id=%s',(json.dumps(result),ctx.job['id']))
+    if repair:
+        ctx.db.q('UPDATE episodes SET notion_synced_at=NULL,updated_at=now() WHERE id=%s',(ctx.job['episode_id'],))
     ctx.db.status(ctx.job,'READY_TO_POST','READY_TO_POST',1,'Lemo ready for owner review')
     ctx.db.release(ctx.job)
 

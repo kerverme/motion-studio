@@ -3,12 +3,12 @@
 Only the three committed fixture HTML hashes may bypass unavailable dev cgroups.
 This is NOT a successful security gate or a real-provider quality evaluation.
 """
-import base64, json, os, subprocess, sys, time
+import base64, json, os, shutil, subprocess, sys, time
 from pathlib import Path
 from unittest.mock import patch
 import numpy as np
 ROOT=Path(__file__).resolve().parents[2]
-sys.path[:0]=[str(ROOT/'worker'),str(ROOT/'lemo-worker/sandbox')]
+sys.path[:0]=[str(ROOT/'worker'),str(ROOT/'lemo-worker'),str(ROOT/'lemo-worker/sandbox')]
 from executor import run,validate_archive
 from motion_worker import audio,eleven,timeline,rendering,qa
 
@@ -78,7 +78,8 @@ def main():
         artifacts=validate_archive(data)
         for name,content in artifacts.items():(folder/('lemo-'+name)).write_bytes(content)
         lemo_subs=str(folder/'lemo-subtitled.mp4')
-        subprocess.run(['ffmpeg','-v','error','-y','-i',str(folder/'lemo-video.mp4'),'-vf',f"subtitles={folder/'subtitles.srt'}:force_style='Fontname=Noto Sans Thai,Fontsize=16,Outline=2,MarginV=26'",'-c:v','libx264','-threads','2','-preset','fast','-pix_fmt','yuv420p',lemo_subs],check=True)
+        from lemo_worker.subtitles import burn
+        shutil.copyfile(burn(str(folder/'lemo-video.mp4'),{'timeline':tim,'end':8},str(folder/'captions')),lemo_subs)
         lemo=rendering.mux(lemo_subs,mix,str(folder/'lemo-final.mp4'))
         src=folder/'classic-source.py';src.write_text(classic_source(kind));start=time.monotonic()
         parts,frames,misses=rendering.render_all(str(src),tim,8,'MOCK PROVIDERS · DEVELOPMENT',str(folder/'classic-scenes'),1)

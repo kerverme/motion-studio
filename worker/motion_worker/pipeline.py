@@ -447,7 +447,7 @@ def write_docs(ctx, T, number, folder):
     files['storyboard.md'] = '\n'.join(st)
     if p.get('creative'):
         calls = ctx.db.q('SELECT category,model,reserved_usd,actual_usd,status,usage,provider_id FROM creative_calls WHERE job_id=%s', (ctx.job['id'],))
-        files['creative-manifest.json'] = json.dumps({'creative': p['creative'], 'storyboard': p['storyboard'], 'audio': ctx.r.get('GENERATING_AUDIO'), 'render': ctx.r.get('LEMO_RENDER'), 'costs': calls}, ensure_ascii=False, indent=2, default=str)
+        files['creative-manifest.json'] = json.dumps({'creative': p['creative'], 'storyboard': p['storyboard'], 'audio': ctx.r.get('GENERATING_AUDIO'), 'render': ctx.r.get('LEMO_RENDER'), 'composition': ctx.r.get('RENDERING'), 'costs': calls}, ensure_ascii=False, indent=2, default=str)
         for name, data in {
             'cost-summary.json': {'calls': calls, 'unreconciled': sum(c.get('actual_usd') is None for c in calls)},
             'style-director.json': p['creative']['selection'],

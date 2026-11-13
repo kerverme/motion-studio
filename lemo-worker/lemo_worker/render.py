@@ -1,10 +1,11 @@
-import io, json, os, subprocess, tarfile
+import io, json, os, tarfile
 from pathlib import Path
 import requests
 from motion_worker import pipeline, rendering, timeline
 from motion_worker.creative_ledger import digest, cached_call, Ledger
 from .coding import generate_scene
 from .catalog import style_spec
+from . import subtitles
 
 
 def executor_tls():
@@ -86,13 +87,34 @@ def stage_render(ctx, render=remote_render, code=generate_scene):
         done[scene['seg']]=item;partial={'scenes':list(done.values())};ctx.db.save_stage(ctx.job,'LEMO_RENDER',partial)
         ctx.db.status(ctx.job,'RENDERING','RENDERING',.25+.5*(i+1)/len(T['timeline']),f"Lemo rendered {i+1}/{len(T['timeline'])}")
         parts.append(str(Path(folder)/'video.mp4'))
-    def compose(_reservation):
-        import time
-        started=time.monotonic()
-        raw=rendering.concat(parts,ctx.path('raw.mp4'))
-        subs=ctx.path('subtitles.srt');Path(subs).write_text(timeline.srt(T['timeline'],T['end']))
-        silent=ctx.path('video_silent.mp4')
-        subprocess.run(['ffmpeg','-v','error','-y','-i',raw,'-vf',f"subtitles={subs}:force_style='Fontname=Noto Sans Thai,Fontsize=16,Outline=2,MarginV=26'",'-an','-c:v','libx264','-preset','fast','-crf','20','-pix_fmt','yuv420p','-r','30',silent],check=True,timeout=300)
-        mix,*_=pipeline.do_mix(ctx,T);final=rendering.mux(silent,mix,ctx.path('final.mp4'))
-        return {'silent_key':ctx.save('video_silent',silent),'final_key':ctx.save('video',final),'missing_words':[],'frames':round(T['end']*30),'usage':{'wall_seconds':time.monotonic()-started}}
-    return Ledger(ctx).execute('lemo-composition-v1','infrastructure','ffmpeg','compute',{'scenes':[s['identity'] for s in partial['scenes']],'timeline':T},creative['allocations']['compute']/2,compose)
+    return Ledger(ctx).execute('lemo-composition-'+subtitles.VERSION,'infrastructure','ffmpeg','compute',{'scenes':[s['identity'] for s in partial['scenes']],'timeline':T,'captions':subtitles.VERSION},creative['allocations']['compute']/2,lambda _:compose_video(ctx,T,parts))
+
+
+def compose_video(ctx,T,parts):
+    import time
+    started=time.monotonic()
+    raw=rendering.concat(parts,ctx.path('raw.mp4'))
+    Path(ctx.path('subtitles.srt')).write_text(timeline.srt(T['timeline'],T['end']))
+    silent=subtitles.burn(raw,T,ctx.dir)
+    captions_key=ctx.save('captions',ctx.path('subtitles.ass'),ctype='text/x-ssa')
+    mix,*_=pipeline.do_mix(ctx,T);final=rendering.mux(silent,mix,ctx.path('final.mp4'))
+    return {'silent_key':ctx.save('video_silent',silent),'final_key':ctx.save('video',final),'captions_key':captions_key,'caption_version':subtitles.VERSION,'missing_words':[],'frames':round(T['end']*30),'usage':{'wall_seconds':time.monotonic()-started}}
+
+
+def stage_recompose(ctx):
+    """Caption-only repair cannot reach code generation, executor, or audio providers."""
+    if ctx.r.get('CAPTION_REPAIR',{}).get('version')!=subtitles.VERSION:
+        raise RuntimeError('Unsupported caption repair version')
+    for stage in ('GENERATING_AUDIO','BUILDING_TIMELINE','LEMO_RENDER'):
+        if not ctx.r.get(stage):raise RuntimeError('Missing cached stage for caption-only repair: '+stage)
+    T=pipeline.load_timeline(ctx)
+    scenes={s['seg']:s for s in ctx.r['LEMO_RENDER']['scenes']}
+    parts=[]
+    for scene in ctx.pkg['creative']['selection']['plan']['scenes']:
+        saved=scenes.get(scene['seg'])
+        if not saved or not ctx.store.exists(saved['video_key']):
+            raise RuntimeError('Cached scene missing; caption repair will not regenerate it')
+        parts.append(ctx.fetch(saved['video_key'],ctx.path('cached-scenes',saved['identity']+'.mp4')))
+    result=compose_video(ctx,T,parts)
+    ctx.db.event(ctx.job['id'],'Updated captions using saved scene videos and audio; no provider generation',{'caption_version':subtitles.VERSION,**result['usage']},status='RENDERING')
+    return result

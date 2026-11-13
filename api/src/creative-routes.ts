@@ -104,6 +104,31 @@ export function registerCreative(app:Hono,pool:pg.Pool,deps:{guard:(c:Context,n:
       await cl.query("UPDATE jobs SET status='NEW',error=NULL,locked_by=NULL,locked_until=NULL,updated_at=now() WHERE id=$1",[job.id]);await cl.query('COMMIT');return c.json({id:job.id,resumed:true});
     }catch(e){await cl.query('ROLLBACK');return c.json({error:String(e)},409);}finally{cl.release();}
   });
+  app.post('/app/api/creative/jobs/:id/repair-captions',g,async c=>{
+    const version='kanit-portrait-v2',cl=await pool.connect();
+    try{
+      await cl.query('BEGIN');
+      const job=(await cl.query("SELECT * FROM jobs WHERE id=$1 AND kind='lemo' FOR UPDATE",[c.req.param('id')])).rows[0];
+      if(!job)throw Error('Lemo job not found');
+      const stages=job.stage_results||{};
+      if(stages.CAPTION_REPAIR?.version===version||stages.RENDERING?.caption_version===version){
+        await cl.query('COMMIT');return c.json({id:job.id,duplicate:true,status:job.status,caption_version:version});
+      }
+      if(job.status!=='READY_TO_POST'||(job.locked_until&&new Date(job.locked_until).getTime()>Date.now()))throw Error('Only completed, unlocked jobs can repair captions');
+      const episode=(await cl.query('SELECT ui_status FROM episodes WHERE id=$1 FOR UPDATE',[job.episode_id])).rows[0];
+      if(episode?.ui_status!=='ready')throw Error('Only clips in Ready can repair captions');
+      if((await cl.query("SELECT 1 FROM publish_log WHERE episode_id=$1 AND status IN ('pending','sent') LIMIT 1",[job.episode_id])).rowCount)throw Error('This clip has a publication; review it before replacing the video');
+      const scenes=stages.LEMO_RENDER?.scenes||[],plan=job.package?.creative?.selection?.plan?.scenes||[];
+      if(!plan.length||!plan.every((s:any)=>scenes.some((r:any)=>r.seg===s.seg&&r.video_key&&r.identity))||!stages.GENERATING_AUDIO?.narration_key||!stages.BUILDING_TIMELINE?.timeline_key||!stages.UPLOADING_DRIVE?.folder_name)throw Error('Saved scene videos, audio, timeline and delivery are required; no paid regeneration');
+      const previous=Object.fromEntries(['RENDERING','QUALITY_CHECK','UPLOADING_DRIVE','UPLOADING_DRIVE_partial'].map(k=>[k,stages[k]]));
+      for(const key of Object.keys(previous))delete stages[key];
+      stages.CAPTION_REPAIR={version,requested_at:new Date().toISOString(),previous,previous_qa:job.qa_report};
+      stages.UPLOADING_DRIVE_partial={folder_name:previous.UPLOADING_DRIVE.folder_name+'_'+version};
+      await cl.query("UPDATE jobs SET status='NEW',stage='RENDERING',progress=.25,stage_results=$2,error=NULL,locked_by=NULL,locked_until=NULL,finished_at=NULL,updated_at=now() WHERE id=$1",[job.id,JSON.stringify(stages)]);
+      await cl.query("INSERT INTO job_events(job_id,status,level,message,data) VALUES($1,'NEW','info',$2,$3)",[job.id,'Caption-only repair queued; saved scenes and audio retained',JSON.stringify({caption_version:version})]);
+      await cl.query('COMMIT');return c.json({id:job.id,caption_version:version,reuses_scenes:true,reuses_audio:true},202);
+    }catch(e){await cl.query('ROLLBACK');return c.json({error:String(e)},409);}finally{cl.release();}
+  });
   app.post('/app/api/creative/jobs/:id/reconcile',g,async c=>{
     const b=z.object({call_key:z.string().min(1).max(160),actual_usd:z.number().min(0).max(10000),receipt:z.string().min(8).max(2000)}).strict().safeParse(await c.req.json());
     if(!b.success)return c.json({error:'A completed call, actual amount and receipt reference are required'},422);
