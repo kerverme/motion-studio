@@ -1199,17 +1199,17 @@ function patchJob(c, j){
   const last = Math.max(+new Date(j.updated_at), j.last_event_at ? +new Date(j.last_event_at) : 0);
   c.last = last; c.stalledAfter = 120000; c.beat = j.locked_until ? +new Date(j.locked_until) - 600000 : 0;  // worker renews a 10-min lock every 60s
   c.state.className = 'state '+(bad?'bad':'wait'); c.state.textContent = bad ? (STAGE[j.status]+' ที่ขั้น '+(STAGE[j.stage]||j.stage||'')) : (STAGE[j.status]||j.status);
-  const textVideo=j.kind==='text_video', videoLabel=({h3_max:'H3 Max',grok_15:'Grok Imagine Video 1.5'})[j.video_model]||j.video_model||'โมเดลวิดีโอ';
-  const activity=textVideo&&st==='RENDERING'?'fal.ai กำลังสร้างวิดีโอทีละช็อต โดยใช้เฟรมท้ายต่อฉากถัดไป':(WHO[st]||st);
-  const paused=textVideo?'หยุดแล้ว · ตรวจข้อผิดพลาดและราคาซ่อมเฉพาะส่วนก่อนทำต่อ ระบบเก็บส่วนที่สำเร็จแล้วไว้':'หยุดแล้ว — กด "ทำต่อจากขั้นที่ค้าง" ได้ ระบบใช้ผลที่ทำเสร็จแล้วต่อ ไม่เสียเครดิตเสียงซ้ำ';
+  const textVideo=j.kind==='text_video',lemo=j.kind==='lemo', videoLabel=({h3_max:'H3 Max',grok_15:'Grok Imagine Video 1.5'})[j.video_model]||j.video_model||'โมเดลวิดีโอ';
+  const activity=lemo&&st==='RENDERING'?'Lemo กำลังใช้สมองที่เลือกสร้างภาพเคลื่อนไหว และเรนเดอร์ทีละฉาก':textVideo&&st==='RENDERING'?'fal.ai กำลังสร้างวิดีโอทีละช็อต โดยใช้เฟรมท้ายต่อฉากถัดไป':(WHO[st]||st);
+  const paused=lemo?'หยุดแล้ว · เปิดรายละเอียดเพื่อตรวจภาพและซ่อมเฉพาะฉาก ระบบเก็บเสียงและส่วนที่สำเร็จแล้วไว้':textVideo?'หยุดแล้ว · ตรวจข้อผิดพลาดและราคาซ่อมเฉพาะส่วนก่อนทำต่อ ระบบเก็บส่วนที่สำเร็จแล้วไว้':'หยุดแล้ว — กด "ทำต่อจากขั้นที่ค้าง" ได้ ระบบใช้ผลที่ทำเสร็จแล้วต่อ ไม่เสียเครดิตเสียงซ้ำ';
   c.who.replaceChildren(h('div',{},bad?paused:activity),
-    h('small',{},'สคริปต์เขียนโดย: '+whoWrote(j.draft_model,j.draft_reasoning)+' · เสียงพากย์: ElevenLabs · '+(textVideo?'วิดีโอ: fal.ai · '+videoLabel:'ภาพ: โค้ด (ไม่ใช้ AI สร้างภาพ)')));
+    h('small',{},'สคริปต์เขียนโดย: '+whoWrote(j.draft_model,j.draft_reasoning)+' · เสียงพากย์: ElevenLabs · '+(lemo?'ภาพ: Lemo Creative Motion':textVideo?'วิดีโอ: fal.ai · '+videoLabel:'ภาพ: โค้ด (ไม่ใช้ AI สร้างภาพ)')));
   setFeed(c, (j.events||[]).map(e=>({k:e.id, t:tm(e.created_at), m:e.message, lv:e.level})));
   c.created = +new Date(j.created_at); c.ended = bad ? +new Date(j.updated_at) : 0;
   const se = (j.events||[]).filter(e=>e.status===j.status && /started$/.test(e.message)).pop(); c.stageStart = se ? +new Date(se.created_at) : 0;
   if (!c.clock){ c.clock = h('div',{class:'clock'}); c.sub.before(c.clock); }
   c.sub.replaceChildren('ลองแล้ว '+j.attempts+' จาก '+j.max_attempts+' ครั้ง', j.error ? h('div',{style:'color:var(--bad)'},String(j.error).slice(0,280)) : '');
-  c.act.replaceChildren(...(bad ? [j.kind==='text_video' ? h('button',{class:'btn primary',on:{click:()=>openTextVideo(j.text_video_plan_id)}},'ตรวจราคาซ่อมเฉพาะส่วน') : h('button',{class:'btn primary',on:{click:async()=>{ try{ await api('/app/api/jobs/'+j.id+'/retry',{method:'POST'}); toast('เริ่มทำต่อจากขั้นที่ค้างแล้ว'); load(); }catch(x){ toast(x.message); } }}},'ทำต่อจากขั้นที่ค้าง')] : []));
+  c.act.replaceChildren(...(lemo&&j.draft_id?[h('button',{class:'btn primary',on:{click:()=>openDraft(j.draft_id)}},bad?'ตรวจฉากและซ่อมเฉพาะส่วน':'ดูฉากและความคืบหน้า')]:bad ? [j.kind==='text_video' ? h('button',{class:'btn primary',on:{click:()=>openTextVideo(j.text_video_plan_id)}},'ตรวจราคาซ่อมเฉพาะส่วน') : h('button',{class:'btn primary',on:{click:async()=>{ try{ await api('/app/api/jobs/'+j.id+'/retry',{method:'POST'}); toast('เริ่มทำต่อจากขั้นที่ค้างแล้ว'); load(); }catch(x){ toast(x.message); } }}},'ทำต่อจากขั้นที่ค้าง')] : []));
   c.bar.classList.toggle('bad', bad); c.bar.classList.remove('indet');
 }
 function patchDraft(c, d){
