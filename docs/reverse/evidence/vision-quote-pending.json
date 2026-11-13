@@ -1,0 +1,32 @@
+{
+  "id": "d0e1ba32-274b-495e-a30d-7d4d5933d7c7",
+  "project_id": "ff6e8f5c-96fc-458c-8eaa-b4fb474144bd",
+  "purpose": "vision",
+  "source_sha256": "4ca7b6cf2eca6c240a85a3404e958d4410d0e183cde233dcbe8b768bb25d688a",
+  "total_usd": 0.0443,
+  "expires_at": "2026-11-13T13:10:46.139Z",
+  "blockers": [],
+  "approval_status": "pending_owner_reply",
+  "dispatched": false,
+  "note": "Review-only copy. Full binding and credential fingerprints remain private in authoritative PostgreSQL. Estimated token cost; provider bill is not a hard cap. Public upstream shot 002 only; external provider may retain submissions.",
+  "tasks": [
+    {
+      "slot": "vision:shot_002",
+      "role": "vision",
+      "model": "google/gemini-3.8-flash",
+      "usd": 0.0443,
+      "shot_id": "shot_002",
+      "clip": {
+        "bytes": 111613,
+        "width": 360,
+        "height": 640,
+        "sha256": "4740d6f22ed41914f287959f3f18cc6d09891f8a7dddbf8e585a68b41bd0576c",
+        "stretch": 6,
+        "asset_id": "9bb25237-4027-4190-a722-1a4718cf2995",
+        "duration_s": 8.742839,
+        "frame_count": 35,
+        "audio_included": false
+      }
+    }
+  ]
+}

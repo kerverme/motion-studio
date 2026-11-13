@@ -1,0 +1,143 @@
+{
+  "schema": "motion.reverse.deployment.evidence.v1",
+  "verified_at": "2026-11-13T12:57:17.952395+00:00",
+  "acceptance_complete": false,
+  "paid_provider_requests": 0,
+  "deployments": {
+    "motion_api": {
+      "commit": "9b65b98b4959b98b5a7836ffaac848fe6e028f46",
+      "id": "fe7f6ad2-7d46-4bae-92f5-80e50a9acbc0",
+      "status": "SUCCESS"
+    },
+    "motion_worker": {
+      "commit": "9b65b98b4959b98b5a7836ffaac848fe6e028f46",
+      "id": "964acd5c-dcc4-453b-a72b-b6033cff019b",
+      "status": "SUCCESS"
+    },
+    "revideo": {
+      "commit": "b969b6cca561461d09a7348d465088eabde8cae6",
+      "id": "0519d00f-05a8-4635-b62f-cc43dbf00b66",
+      "status": "SUCCESS",
+      "code_fingerprint": "682f6a1c9ad8b1aca05cfb7c4b155d8a7d2e2d7a1e994fc9b1ffd9423691509d"
+    }
+  },
+  "upstreams": {
+    "rea_video": {
+      "commit": "ab8580e38a1255425b0d3b481866590766932079",
+      "version": "0.1.0",
+      "license": "Apache-2.0",
+      "installed": true
+    },
+    "capsule_cinema": {
+      "commit": "97229260c96ee8a3fb37db83027bbc1aefd8f073",
+      "version": "2.0.0",
+      "license": "Apache-2.0",
+      "installed": true
+    }
+  },
+  "tests": {
+    "revideo": {
+      "passed": 525,
+      "skipped": 6
+    },
+    "motion_api": {
+      "passed": 145,
+      "typecheck": "PASS"
+    },
+    "motion_worker": {
+      "passed": 54,
+      "skipped": 1,
+      "subtests": 13
+    },
+    "last_format_worker_regression": {
+      "passed": 10
+    },
+    "revideo_bridge": {
+      "passed": 11
+    },
+    "browser": {
+      "checks": 10,
+      "mode": "actual Chromium / localhost HTTP fixtures",
+      "paid_requests": 0,
+      "semantic_quality_verified": false
+    },
+    "upstream_rea": {
+      "passed": 266
+    }
+  },
+  "production_free_tests": {
+    "project_id": "ff6e8f5c-96fc-458c-8eaa-b4fb474144bd",
+    "shots": 10,
+    "source_frames": 30,
+    "VIDEO_md": "validated by actual upstream",
+    "capsule_versions": [
+      1,
+      2
+    ],
+    "unauthenticated_private_asset": 401,
+    "authenticated_plaintext_readback_sha_matches": true,
+    "owner_ui_session_used": false,
+    "cloudflare_access": 302,
+    "motion_health": 200,
+    "legacy_notion_sync": {
+      "synced": 24,
+      "total": 24,
+      "errors": []
+    }
+  },
+  "revideo_persistence_smoke": {
+    "ok": true,
+    "mode": "persistence_verified",
+    "schema": "rvflow.hosted-smoke.v1",
+    "uid": 10001,
+    "runtime": {
+      "python": "3.12.16",
+      "ffmpeg": "ffmpeg version 5.1.9-0+deb12u1 Copyright (c) 2000-2026 the FFmpeg developers",
+      "hosted_mode": true,
+      "access_verifier_enabled": true
+    },
+    "project": "/data/qa/hosted_smoke_v1",
+    "elapsed_s": 1.157,
+    "detected_shots": 3,
+    "cuts_s": [
+      0,
+      2,
+      4,
+      6
+    ],
+    "output": {
+      "width": 1080,
+      "height": 1920,
+      "fps": "30/1",
+      "frames": 180,
+      "duration_s": 6,
+      "codec": "h264"
+    },
+    "artifacts_verified": 26,
+    "source_sha256": "984818e588a6a2d459a5f02d485ddef01f9daa25e7b54d2d30b2e746149214df",
+    "export_sha256": "37de53c0916e6776633d18f69484e6929ddbd9b86376a507e59651c74b1a4f53",
+    "report_sha256": "fd4ea6d8fb17f8b53a34fe4e3a0710f5bf68838db755763c0ef5213ce06265dd",
+    "proof_sha256": "97cacaac725f68bea9378bbb565e35d07d305efd773114dd4e43aefa25dc6e5b",
+    "paid_calls": false,
+    "http_api_calls": false,
+    "analysis_network_blocked": true,
+    "ocr_enabled": false,
+    "face_detection": "local cached model or offline Haar fallback"
+  },
+  "database_migration": "028_reverse_production.sql \u2014 additive tables/indexes; existing records/ledger preserved",
+  "storage": "Private S3 primary and AES-256-GCM-encrypted R2 replica; authenticated reads",
+  "catalog": {
+    "visible_t2v_endpoints": 120,
+    "motion_ready_presets": 59,
+    "original_revideo_adapters_preserved": true,
+    "sort": "per-shot estimated USD ascending; unknown/stale/unsupported blocked"
+  },
+  "pending": [
+    "Actual representative paid Gemini video reading and owner quality review",
+    "Paid image/video/audio/planner/selective visual QA after separate exact quotes and approvals",
+    "Authenticated production owner browser walkthrough; automated UI flow used explicit local HTTP fixtures",
+    "Long/complex source acceptance and model-specific identity/action fidelity"
+  ],
+  "rollback": "Previous runtime commits may be restored to same services; retain additive DB tables, /data, journals, ciphertext and encryption key. Stop new reverse submissions and drain/cancel active jobs before reverting worker. Do not repeat unknown provider POST.",
+  "runtime_pinning": "Branch may advance with documentation-only evidence commits; Railway remains pinned to runtime commits above. No main-branch changes or DNS changes."
+}

@@ -109,3 +109,5 @@ Deploy previous pinned commits back to the SAME services. Keep database tables, 
 - การลองของจริงแบบเสียเงิน (Vision, planner, image/video, ElevenLabs, visual QA) ยังต้องมีใบราคาและ owner approval แยกตามสิ่งที่จะส่ง ไม่ถือว่า HTTP fixtures พิสูจน์คุณภาพของโมเดลแล้ว
 - เวอร์ชัน recipe ก่อนมี resources ใน manifest เก็บเป็นประวัติ; การใช้กับ planner ต้องบันทึกเวอร์ชันที่ผ่าน adapter ปัจจุบันก่อน
 - Browser owner flow อยู่หลัง Cloudflare OTP เดิม; automated browser tests ใช้ localhost/HTTP fixtures ส่วน production smoke ตรวจ API, storage, queue, upstream runtime และ persistence จริง
+
+Final deployment and exact runtime commits: [DEPLOYMENT_TH.md](DEPLOYMENT_TH.md).
