@@ -3,9 +3,21 @@ import assert from 'node:assert/strict';
 import {readFileSync,readdirSync} from 'node:fs';
 import {PGlite} from '@electric-sql/pglite';
 import {Hono} from 'hono';
-import {CreativeSettings,chooseStyle,estimateCreative,hash,releaseGates,creativePrompt} from './creative.js';
+import {CreativeSettings,CreativePlanToolSchema,creativeSourceEvidence,chooseStyle,estimateCreative,hash,releaseGates,creativePrompt} from './creative.js';
 import {registerCreative} from './creative-routes.js';
 const fixtures=['nik','dream','cats'].map(k=>JSON.parse(readFileSync(new URL(`../../lemo-worker/tests/fixtures/${k}.json`,import.meta.url),'utf8')));
+test('planner receives nested sound constraints and fetched sources retain trusted retrieval evidence',()=>{
+  const schema:any=CreativePlanToolSchema;
+  assert.equal(schema.additionalProperties,false);
+  const cue=schema.properties.scenes.items.properties.sound.properties.cues.items;
+  assert.equal(cue.properties.prompt.minLength,3);
+  assert.equal(cue.additionalProperties,false);
+  const source={url:'https://example.org/story',retrieved_via:'invented',collected:'1900-01-01'};
+  const date='2026-11-13T10:00:00Z';
+  assert.deepEqual(creativeSourceEvidence([source],[{url:source.url,via:'web',collected:date}]),[{...source,retrieved_via:'openai_web_search',collected:date}]);
+  assert.equal(creativeSourceEvidence([source],[{url:source.url,via:'read',collected:date}])[0].retrieved_via,'firecrawl');
+  assert.throws(()=>creativeSourceEvidence([source],[]),/retrieved URL evidence/);
+});
 test('private owner film permission does not grant a commercial style service licence',()=>{
   const env:NodeJS.ProcessEnv={LEMO_ENABLED:'true',LEMO_STYLE_LIBRARY:'owner-films'};
   for(const gate of releaseGates(env).blockers)env[gate]='true';

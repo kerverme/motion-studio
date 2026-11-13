@@ -1,6 +1,8 @@
 import {readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {z} from 'zod';
+import {zodToJsonSchema} from 'zod-to-json-schema';
+import {sourceKey} from './source-evidence.js';
 
 // Registry contains identifiers/metadata only, never upstream style documents.
 export const LEMO_STYLES = [
@@ -36,6 +38,17 @@ export const CreativePlan=z.object({
   }).strict()).min(1).max(14),
 }).strict();
 export type CreativePlanT=z.infer<typeof CreativePlan>;
+// Share the validator's complete field contract with the planner. An opaque
+// object encouraged empty SFX prompts and unsupported renderer fields.
+export const CreativePlanToolSchema=zodToJsonSchema(CreativePlan,{$refStrategy:'none'});
+export function creativeSourceEvidence(sources:any[],seen:any[]){
+  const evidence=new Map(seen.map(x=>[sourceKey(x.url),x]));
+  return sources.map(source=>{
+    const found=evidence.get(sourceKey(source.url));
+    if(!found||!['web','read','search'].includes(found.via))throw Error('Sources must have retrieved URL evidence');
+    return {...source,collected:found.collected,retrieved_via:found.via==='web'?'openai_web_search':'firecrawl'};
+  });
+}
 export function hash(v:unknown):string {
   const canonical=(x:any):any=>Array.isArray(x)?x.map(canonical):x&&typeof x==='object'?Object.fromEntries(Object.keys(x).sort().map(k=>[k,canonical(x[k])])):x;
   return createHash('sha256').update(JSON.stringify(canonical(v))).digest('hex');

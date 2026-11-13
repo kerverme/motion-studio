@@ -1,4 +1,4 @@
-import {CreativeSettings,chooseStyle,creativePrompt,releaseGates,LEMO_STYLES} from './creative.js';
+import {CreativeSettings,CreativePlanToolSchema,creativeSourceEvidence,chooseStyle,creativePrompt,releaseGates,LEMO_STYLES} from './creative.js';
 import {registerCreative} from './creative-routes.js';
 // Content studio: OpenAI Web Search first, budgeted Firecrawl fallback, then the Thai
 // script and a scene spec for the code-drawn template engine (worker/engine/templates.py), and the result waits as a
@@ -218,7 +218,7 @@ type WebFound = { searches: number; queries: string[]; sources: { url: string; t
 // which research tools are usable right now (changes during a draft when Firecrawl runs out of credits or the web search budget is spent)
 type Active = { fc: boolean; ws: boolean; drawing?: boolean; searches?: number; source?: boolean; creative?: boolean; lemo?: boolean };
 const activeTools = (a: Active) => TOOLS.filter(t => t.name !== 'openai_search' || PROVIDER !== 'openai').filter(t => ['submit_episode','plan_story','revise_story',...ARTWORK_TOOLS.map(x=>x.name)].includes(t.name) || (t.name === 'read_source_material' ? !!a.source : t.name === 'read_page' ? !!env.OPENAI_API_KEY : t.name === 'openai_search' && !a.drawing && a.ws)).filter(t=>!a.lemo||!ARTWORK_TOOLS.some(x=>x.name===t.name)).map(t => {
-  if(a.creative&&t.name==='plan_story')return {...t,input_schema:{...t.input_schema,properties:{...t.input_schema.properties,creative:{type:'object',description:'Complete Creative Director analysis, candidates, identity and scene sound plan as specified in system instructions'}},required:[...(t.input_schema.required||[]),'creative']}};
+  if(a.creative&&t.name==='plan_story')return {...t,input_schema:{...t.input_schema,properties:{...t.input_schema.properties,creative:CreativePlanToolSchema},required:[...(t.input_schema.required||[]),'creative']}};
   if (t.name !== 'submit_episode' || !a.drawing) return t;
   const schema:any = t.input_schema;
   const omit = new Set(['script','scenes','cast','art']);
@@ -1012,11 +1012,13 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       if([...checked.problems.filter(p=>!isOwnerSoft(p)),...f.errs].length)throw Error('Classic draft failed validation');pkg=f.pkg;
     }else{
       const meta=z.object({title_th:z.string().min(4).max(90),angle:z.string().max(600).default(''),sources:z.array(z.object({url:z.string().url(),publisher:z.string(),claim:z.string(),published:z.string().optional(),confidence:z.enum(['high','medium','low']),limitations:z.string().optional()}).passthrough()).max(30),claims:z.array(z.object({text:z.string(),source_ids:z.array(z.number().int().min(0)),kind:z.enum(['fact','assumption','opinion'])})).max(80),captions:z.record(z.string()).default({})}).parse(row.draft);
-      const evidence=new Map((row.draft.research_seen||[]).map((x:any)=>[normUrl(x.url),x]));
-      if(meta.sources.some(x=>!evidence.has(normUrl(x.url))))throw Error('Sources must have retrieved URL evidence');
+      const sources=creativeSourceEvidence(meta.sources,row.draft.research_seen||[]);
       if(meta.claims.some(x=>x.kind==='fact'&&(!x.source_ids.length||x.source_ids.some(i=>i>=meta.sources.length))))throw Error('Factual claims need supporting sources; unknown figures must remain unknown');
-      pkg={topic:row.topic,...meta,script:board.script,storyboard:board.shots,scene_code:'# Lemo source is stored separately; never executed by the Classic renderer.\nSCENES = {}',style:'classic',voice:{voice_id:VOICE_ID},sfx:[],music:null,thumbnail:{mode:'opening_frame',seg:board.script[0].id,offset:0},sources:meta.sources.map(x=>({...x,collected:(evidence.get(normUrl(x.url)) as any)?.collected}))};
-      const fresh=deps.researchFreshness(pkg);if(fresh.length)throw Error(fresh.join('; '));
+      pkg={topic:row.topic,...meta,script:board.script,storyboard:board.shots,scene_code:'# Lemo source is stored separately; never executed by the Classic renderer.\nSCENES = {}',style:'classic',voice:{voice_id:VOICE_ID},sfx:[],music:null,thumbnail:{mode:'opening_frame',seg:board.script[0].id,offset:0},sources};
+      // Fiction/opinion without factual claims needs no invented citation.
+      if(sources.length||meta.claims.some(x=>x.kind==='fact')){
+        const fresh=deps.researchFreshness(pkg);if(fresh.length)throw Error(fresh.join('; '));
+      }
     }
     pkg.voice={...pkg.voice,voice_id:settings.voice_id||pkg.voice.voice_id,model_id:settings.tts_model,language_code:'th'};
     pkg.sfx=selection.plan.scenes.flatMap(scene=>scene.sound.cues.map(c=>({id:scene.seg+'_'+c.id,prompt:c.prompt,duration:c.duration,model_id:settings.sfx_model,cues:[{seg:scene.seg,word:c.word,n:c.occurrence,offset:c.offset,gain:c.gain}],purpose:c.action})));
@@ -1153,7 +1155,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     let artwork: ArtworkState = row.artwork || emptyArtwork();
     active.drawing = !!storyboard;
     if (storyboard) compactSource();
-    if (storyboard) conv.say('Resume the saved storyboard and artwork. Only draw missing pieces. Previously retrieved source metadata (open exact pages with read_page if you need the figures): ' + JSON.stringify([...seen.values()]) + '\nSaved plan: ' + JSON.stringify(storyboard) + '\nSaved artwork: ' + JSON.stringify(artwork));
+    if (storyboard) conv.say((active.lemo?'Resume the saved Lemo storyboard. Submit metadata only; drawing happens after production approval. Fiction with only assumptions/opinions needs no external citation.':'Resume the saved storyboard and artwork. Only draw missing pieces.')+' Previously retrieved source metadata (open exact pages with read_page if you need the figures): ' + JSON.stringify([...seen.values()]) + '\nSaved plan: ' + JSON.stringify(storyboard) + '\nSaved artwork: ' + JSON.stringify(artwork));
     const persistArtwork = () => pool.query('UPDATE drafts SET artwork=$2, updated_at=now() WHERE id=$1', [id, JSON.stringify(artwork)]);
     const attemptedVerification = new Set<string>();
     let verificationCalls = 0;
@@ -1169,7 +1171,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       const totalIn = usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens;
       if (totalIn > MAX_INPUT_TOKENS) throw new Error('ครบงบโทเค็นของร่างนี้แล้ว เก็บบทและภาพที่วาดสำเร็จไว้ สามารถลองใหม่เพื่อทำต่อได้');
       const mustSubmit = !!storyboard && artworkComplete(artwork, storyboard) && (turn >= MAX_TURNS - 2 || totalIn > MAX_INPUT_TOKENS * 0.8);
-      await log(id, `รอบที่ ${turn + 1}: ${storyboard ? `วาดทีละส่วน (${artwork.cast.length} ตัวละคร · ${artwork.scenes.length}/${storyboard.shots.length} ฉาก · reasoning ${effort === 'high' ? 'medium' : effort})` : 'ค้นข้อมูล/วางบท'} (${model})`);
+      await log(id, `รอบที่ ${turn + 1}: ${storyboard ? active.lemo ? 'ตรวจบทและสไตล์ Lemo ก่อนอนุมัติผลิต' : `วาดทีละส่วน (${artwork.cast.length} ตัวละคร · ${artwork.scenes.length}/${storyboard.shots.length} ฉาก · reasoning ${effort === 'high' ? 'medium' : effort})` : 'ค้นข้อมูล/วางบท'} (${model})`);
       const { uses, usage: u, web } = await conv.turn(mustSubmit);
       if (web) {
         usage.web_searches += web.searches;
@@ -1628,6 +1630,39 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       return {name:x.name,fields:Object.keys(input),input,issues:parsed && !parsed.success ? parsed.error.issues : []};
     });
     return c.json({status:data.status,incomplete_details:data.incomplete_details,output_types:(data.output || []).map((x:any)=>x.type),calls,text:(data.output || []).filter((x:any)=>x.type==='message').flatMap((x:any)=>x.content || []).map((x:any)=>String(x.text || '')).join('\n').slice(0,6000)});
+  });
+
+  // Recover a completed metadata response after a validation fix/restart.
+  // Only GET an already-recorded response; never submit a second paid request.
+  app.post('/app/api/studio/drafts/:id/recover',g,async(c)=>{
+    const id=c.req.param('id');if(!isId(id))return c.json({error:'not found'},404);
+    const row=(await pool.query('SELECT * FROM drafts WHERE id=$1',[id])).rows[0];
+    if(row?.creative?.engine!=='lemo'||!row.storyboard)return c.json({error:'No saved Lemo storyboard'},409);
+    if(row.status==='ready'||row.status==='submitted')return c.json({id,duplicate:true});
+    if(row.status!=='failed')return c.json({error:'Wait for the current planner to finish'},409);
+    const body=await c.req.json().catch(()=>({})),responseId=String(body.response_id||'');
+    const allowed=(row.log||[]).flatMap((x:any)=>String(x.msg||'').match(/resp_[a-zA-Z0-9_-]+/g)||[]);
+    if(!allowed.includes(responseId))return c.json({error:'response does not belong to this draft'},404);
+    if(PROVIDER!=='openai'||!env.OPENAI_API_KEY)return c.json({error:'provider unavailable'},503);
+    const response=await fetch(OPENAI_URL+'/v1/responses/'+responseId,{headers:{authorization:'Bearer '+env.OPENAI_API_KEY},signal:AbortSignal.timeout(60_000)});
+    if(!response.ok)return c.json({error:'Saved provider response unavailable'},502);
+    const data:any=await response.json();
+    if(data.status!=='completed')return c.json({error:'Recorded response is not complete; no new request submitted'},409);
+    const call=(data.output||[]).find((x:any)=>x.type==='function_call'&&x.name==='submit_episode');
+    if(!call)return c.json({error:'This response has no completed episode metadata'},422);
+    try{
+      const seen=new Map<string,Seen>();
+      for(const event of row.research||[]){
+        const collected=event.collected||event.at;if(!collected)continue;
+        for(const item of event.results||[event])for(const url of [item.url,...(item.source_urls||[])])if(url)seen.set(normUrl(url),{url,title:item.title,collected,via:event.kind==='web'?'web':event.kind==='read'?'read':'search'});
+      }
+      const draft={...JSON.parse(call.arguments),script:row.storyboard.script,storyboard:row.storyboard,research_seen:[...seen.values()]};
+      prepareCreative({...row,draft});
+      const changed=await pool.query("UPDATE drafts SET draft=$2,status='ready',problems='[]',error=NULL,updated_at=now() WHERE id=$1 AND status='failed' RETURNING id",[id,JSON.stringify(draft)]);
+      if(!changed.rowCount)return c.json({error:'Draft changed during recovery'},409);
+      await log(id,'กู้บทจากคำตอบ OpenAI ที่บันทึกไว้แล้ว · ไม่มีการเรียกสร้างใหม่หรือส่งผลิตอัตโนมัติ');
+      return c.json({id,recovered:true,response_id:responseId});
+    }catch(error){return c.json({error:error instanceof Error?error.message:String(error)},422);}
   });
 
   app.post('/app/api/studio/drafts', g, async (c) => {
