@@ -12,7 +12,7 @@ This file distinguishes actual upstream/local execution from HTTP/provider fixtu
 | F budgets | PGlite persisted quote/source/analysis/key/expiry checks, duplicate approval one job, existing Ledger accepted-ID vs unknown POST tests, single-POST disconnect and GET-only accepted resume | PASS (no paid calls) |
 | G isolated repair | Queue/worker fixture executes only selected shot; unchanged completed assets reusable across revisions | PASS (fixture) |
 | H assembly | Real FFmpeg/Pillow Code Motion assets, actual alignment validator/subtitle overlay path, local ordered assembly with audio track and technical decode/duration/resolution/fps checks | LOCAL PASS; no claim of real-provider full film |
-| I regression | Motion API 145 passed; worker 54 passed / 1 skipped / 13 subtests. Re:Video 521 passed / 6 skipped with writable model cache | See final deployment evidence |
+| I regression | Motion API 145 passed; worker 54 passed / 1 skipped / 13 subtests. Re:Video 525 passed / 6 skipped with writable model cache | See final deployment evidence |
 
 Baseline before edits: Re:Video test suite passed; Motion API 137 passed, worker 44 passed / 1 skipped / 13 subtests; latest rea-video 266 passed; Capsule default pytest collection 1 passed (not broad integration coverage).
 

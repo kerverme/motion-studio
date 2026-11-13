@@ -12,7 +12,7 @@ const Finite=z.number().finite();
 const Text=z.string().max(16000);
 export const SourceInput=z.object({
   sha256:Hash, bytes:z.number().int().positive().max(512*1024*1024),
-  filename:z.string().min(1).max(200), content_type:z.enum(['video/mp4','video/webm','video/quicktime']),
+  filename:z.string().min(1).max(200), content_type:z.enum(['video/mp4','video/webm','video/quicktime','video/x-matroska']),
 }).strict();
 export const ProjectInput=z.object({origin_key:z.string().regex(/^[A-Za-z0-9:_-]{1,200}$/),title:z.string().trim().min(1).max(300),source:SourceInput}).strict();
 export const Evidence=z.object({kind:z.enum(['measured','model_estimated','user_edited','unknown']),

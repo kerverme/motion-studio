@@ -87,7 +87,9 @@ def _asset(ctx,ident,project):
 
 def analyze(ctx,project,spec):
     source_asset=_asset(ctx,project['source_asset_id'],project)
-    source=fetch_private(ctx,source_asset,ctx.path('source','reference.mp4'));replicate_private(ctx,source_asset,ctx.dir)
+    suffix=Path(project['source']['filename']).suffix.lower()
+    if suffix not in ('.mp4','.mov','.webm','.mkv','.m4v'):suffix='.mp4'
+    source=fetch_private(ctx,source_asset,ctx.path('source','reference'+suffix));replicate_private(ctx,source_asset,ctx.dir)
     out=Path(ctx.path('rea-package'))
     if project.get('analysis'):return {'cached':True,'analysis':project['analysis']}
     if out.exists() and not (out/'breakdown.json').is_file():

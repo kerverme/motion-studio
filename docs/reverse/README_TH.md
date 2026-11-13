@@ -100,3 +100,12 @@ See ACCEPTANCE.md for separation of local/provider evidence. A browser fixture i
 ## Rollback
 
 Deploy previous pinned commits back to the SAME services. Keep database tables, volumes, provider journals, ciphertext and storage key. Do not run destructive down migrations. Do not requeue unknown POSTs. Existing worker can ignore terminal reverse jobs; before reverting worker, stop new reverse submissions and let active reverse jobs finish/cancel so an older worker cannot claim an unknown kind. Re:Video bridge can be disabled by removing only MOTION_REVERSE_URL; legacy UI/history remains. No DNS changes needed.
+
+## ข้อจำกัดที่ต้องทราบ
+
+- H3/Grok adapter ใช้ช่วงไม่เกิน 15 วินาทีต่อช็อต; รุ่นอื่นใช้ช่วงเวลาตาม preset ที่ตรวจแล้ว ช็อตยาวกว่าขอบเขตจะถูกบล็อกก่อนจ่ายเงิน ต้องเลือกโมเดลที่รองรับหรือออกแบบการแบ่งงานอย่างชัดเจน ไม่ retime ต้นฉบับเงียบ ๆ
+- คลิป Vision จำกัด 4 MiB และ reference image 8 MiB ใน adapter นี้ งานยาว/ซับซ้อนยังต้องทดสอบเพิ่ม
+- Catalog price freshness 24 ชั่วโมง หรือน้อยกว่าวันหมดโปรโมชั่นที่ระบุ ต้อง refresh maintained metadata เมื่อหมดอายุ; live Fal price check ไม่แทนสูตรราคาตาม resolution/duration
+- การลองของจริงแบบเสียเงิน (Vision, planner, image/video, ElevenLabs, visual QA) ยังต้องมีใบราคาและ owner approval แยกตามสิ่งที่จะส่ง ไม่ถือว่า HTTP fixtures พิสูจน์คุณภาพของโมเดลแล้ว
+- เวอร์ชัน recipe ก่อนมี resources ใน manifest เก็บเป็นประวัติ; การใช้กับ planner ต้องบันทึกเวอร์ชันที่ผ่าน adapter ปัจจุบันก่อน
+- Browser owner flow อยู่หลัง Cloudflare OTP เดิม; automated browser tests ใช้ localhost/HTTP fixtures ส่วน production smoke ตรวจ API, storage, queue, upstream runtime และ persistence จริง
