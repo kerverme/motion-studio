@@ -4,7 +4,8 @@ FROM python:3.12-slim-trixie@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg fonts-noto-core libcairo2 libraqm0 ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY worker/requirements.txt /app/requirements.txt
-RUN --mount=type=secret,id=build_ca,target=/tmp/build-ca if [ -f /tmp/build-ca ]; then PIP_CERT=/tmp/build-ca pip install --no-cache-dir -r requirements.txt; else pip install --no-cache-dir -r requirements.txt; fi
+# Railway validates secret mounts before building; this service needs no build secrets.
+RUN pip install --no-cache-dir -r requirements.txt
 COPY worker /app/classic
 COPY lemo-worker /app/lemo
 RUN chmod -R a+rX /app

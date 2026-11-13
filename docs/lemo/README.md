@@ -70,7 +70,7 @@ python lemo-worker/tests/render_comparison.py /tmp/lemo-comparison
 docker build -f lemo-worker/Dockerfile -t cloudbath-lemo-worker:dev .
 ```
 
-Builds behind a corporate certificate proxy can supply `--secret id=build_ca,src=/path/to/approved-ca.crt`; the CA is only mounted during dependency installation. Do not disable TLS verification. The renderer image must have an immutable digest in `LEMO_SANDBOX_IMAGE`. `sandbox/executor.py` runs on a dedicated hardened host behind authenticated TLS, not a Docker-in-Docker Railway container. Railway uses repository root as the build context and `lemo-worker/railway.toml` as its config path. Keep one coordinator replica and its separate workdir. Mount the licensed private library outside the image; every loaded STYLE file must match `upstream.lock.json`.
+Renderer builds behind a corporate certificate proxy can supply `--secret id=build_ca,src=/path/to/approved-ca.crt`; the CA is only mounted during dependency installation. The coordinator uses public certificate authorities and no build-secret mounts, for Railway Dockerfile validation compatibility. Do not disable TLS verification. The renderer image must have an immutable digest in `LEMO_SANDBOX_IMAGE`. `sandbox/executor.py` runs on a dedicated hardened host behind authenticated TLS, not a Docker-in-Docker Railway container. Railway uses repository root as the build context and `lemo-worker/railway.toml` as its config path. Keep one coordinator replica and its separate workdir. Mount the licensed private library outside the image; every loaded STYLE file must match `upstream.lock.json`.
 
 ## Release checklist
 
