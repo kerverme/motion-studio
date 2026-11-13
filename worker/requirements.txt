@@ -6,3 +6,5 @@ boto3==1.35.76
 requests==2.32.3
 cairosvg==2.7.1
 fonttools==4.55.0
+cryptography==46.0.5
+jsonschema==4.26.0

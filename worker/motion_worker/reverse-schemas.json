@@ -1,0 +1,735 @@
+{
+  "semantic": {
+    "type": "object",
+    "properties": {
+      "schema": {
+        "type": "string",
+        "const": "motion.reverse.shot.v1"
+      },
+      "shot_id": {
+        "type": "string",
+        "pattern": "^shot_[0-9]{3,5}$"
+      },
+      "scene_description": {
+        "type": "string",
+        "maxLength": 16000
+      },
+      "summary_th": {
+        "$ref": "#/properties/scene_description"
+      },
+      "characters": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "ref": {
+              "type": "string",
+              "pattern": "^C[1-9][0-9]?$"
+            },
+            "label": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "description": {
+              "$ref": "#/properties/scene_description"
+            },
+            "position": {
+              "$ref": "#/properties/scene_description"
+            },
+            "registry_match": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^char_[0-9]{3,5}$"
+                    },
+                    "confidence": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    "distinctive": {
+                      "type": "boolean"
+                    },
+                    "basis": {
+                      "$ref": "#/properties/scene_description"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "confidence",
+                    "distinctive",
+                    "basis"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "ref",
+            "label",
+            "description",
+            "position"
+          ],
+          "additionalProperties": false
+        },
+        "maxItems": 30
+      },
+      "character_actions": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "t0": {
+              "type": "number",
+              "minimum": 0
+            },
+            "t1": {
+              "type": "number",
+              "minimum": 0
+            },
+            "text": {
+              "$ref": "#/properties/scene_description"
+            },
+            "confidence": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "required": [
+            "t0",
+            "t1",
+            "text",
+            "confidence"
+          ],
+          "additionalProperties": false
+        },
+        "maxItems": 100
+      },
+      "location": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "description": {
+            "$ref": "#/properties/scene_description"
+          },
+          "registry_match": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^loc_[0-9]{3,5}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "label",
+          "description"
+        ],
+        "additionalProperties": false
+      },
+      "objects": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "label": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "description": {
+              "$ref": "#/properties/scene_description"
+            },
+            "position": {
+              "$ref": "#/properties/scene_description"
+            }
+          },
+          "required": [
+            "label",
+            "description",
+            "position"
+          ],
+          "additionalProperties": false
+        },
+        "maxItems": 40
+      },
+      "starting_state": {
+        "$ref": "#/properties/scene_description"
+      },
+      "ending_state": {
+        "$ref": "#/properties/scene_description"
+      },
+      "camera": {
+        "type": "object",
+        "properties": {
+          "framing": {
+            "$ref": "#/properties/scene_description"
+          },
+          "angle": {
+            "$ref": "#/properties/scene_description"
+          },
+          "motion": {
+            "$ref": "#/properties/scene_description"
+          }
+        },
+        "required": [
+          "framing",
+          "angle",
+          "motion"
+        ],
+        "additionalProperties": false
+      },
+      "lighting": {
+        "$ref": "#/properties/scene_description"
+      },
+      "visual_style": {
+        "$ref": "#/properties/scene_description"
+      },
+      "transition_in": {
+        "$ref": "#/properties/scene_description"
+      },
+      "transition_out": {
+        "$ref": "#/properties/scene_description"
+      },
+      "audio": {
+        "type": "object",
+        "properties": {
+          "heard": {
+            "type": "boolean"
+          },
+          "description": {
+            "$ref": "#/properties/scene_description"
+          },
+          "dialogue": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "t0": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "t1": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "speaker": {
+                  "type": "string",
+                  "maxLength": 200
+                },
+                "text": {
+                  "$ref": "#/properties/scene_description"
+                }
+              },
+              "required": [
+                "t0",
+                "t1",
+                "speaker",
+                "text"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 60
+          }
+        },
+        "required": [
+          "heard",
+          "description",
+          "dialogue"
+        ],
+        "additionalProperties": false
+      },
+      "production_method": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string",
+            "enum": [
+              "live_action",
+              "ai_generated",
+              "3d_animation",
+              "2d_animation",
+              "motion_graphics",
+              "screen_recording",
+              "mixed",
+              "unknown"
+            ]
+          },
+          "basis": {
+            "$ref": "#/properties/scene_description"
+          }
+        },
+        "required": [
+          "label",
+          "basis"
+        ],
+        "additionalProperties": false
+      },
+      "uncertainty": {
+        "type": "array",
+        "items": {
+          "$ref": "#/properties/scene_description"
+        },
+        "maxItems": 100
+      },
+      "reverse_prompt": {
+        "$ref": "#/properties/scene_description"
+      }
+    },
+    "required": [
+      "schema",
+      "shot_id",
+      "scene_description",
+      "summary_th",
+      "characters",
+      "character_actions",
+      "location",
+      "objects",
+      "starting_state",
+      "ending_state",
+      "camera",
+      "lighting",
+      "visual_style",
+      "transition_in",
+      "transition_out",
+      "audio",
+      "production_method",
+      "uncertainty",
+      "reverse_prompt"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "plan": {
+    "type": "object",
+    "properties": {
+      "schema": {
+        "type": "string",
+        "const": "motion.reverse.production.v1"
+      },
+      "project_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "source_sha256": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "analysis_sha256": {
+        "$ref": "#/properties/source_sha256"
+      },
+      "base_revision": {
+        "anyOf": [
+          {
+            "type": "string",
+            "maxLength": 100
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "origin": {
+        "type": "string",
+        "enum": [
+          "user",
+          "planner",
+          "repair",
+          "initial"
+        ]
+      },
+      "delivery_promise": {
+        "type": "string",
+        "enum": [
+          "reference_remake",
+          "motion_led",
+          "code_motion",
+          "hybrid"
+        ]
+      },
+      "recipe_id": {
+        "anyOf": [
+          {
+            "type": "string",
+            "format": "uuid"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      },
+      "shots": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "shot_id": {
+              "type": "string",
+              "pattern": "^shot_[0-9]{3,5}$"
+            },
+            "prompt": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 60000
+            },
+            "method": {
+              "type": "string",
+              "enum": [
+                "code",
+                "generative",
+                "hybrid"
+              ]
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 250
+            },
+            "settings": {
+              "type": "object",
+              "additionalProperties": {},
+              "default": {}
+            },
+            "references": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "asset_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "first_frame",
+                      "last_frame",
+                      "identity"
+                    ]
+                  },
+                  "rights_confirmed": {
+                    "type": "boolean",
+                    "const": true
+                  },
+                  "allow_source_reference": {
+                    "type": "boolean",
+                    "default": false
+                  }
+                },
+                "required": [
+                  "asset_id",
+                  "role",
+                  "rights_confirmed"
+                ],
+                "additionalProperties": false
+              },
+              "maxItems": 4,
+              "default": []
+            },
+            "characters": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "description": {
+                    "type": "string",
+                    "maxLength": 16000
+                  },
+                  "keep_source": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "rights_confirmed": {
+                    "type": "boolean",
+                    "default": false
+                  }
+                },
+                "required": [
+                  "description"
+                ],
+                "additionalProperties": false
+              },
+              "default": {}
+            },
+            "location": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "description": {
+                      "$ref": "#/properties/shots/items/properties/characters/additionalProperties/properties/description"
+                    },
+                    "keep_source": {
+                      "type": "boolean",
+                      "default": false
+                    },
+                    "rights_confirmed": {
+                      "type": "boolean",
+                      "default": false
+                    }
+                  },
+                  "required": [
+                    "description"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "graphic": {
+              "type": "object",
+              "properties": {
+                "background": {
+                  "type": "string",
+                  "pattern": "^#[0-9a-fA-F]{6}$"
+                },
+                "layers": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "text",
+                          "rect",
+                          "circle",
+                          "line",
+                          "counter",
+                          "bar"
+                        ]
+                      },
+                      "text": {
+                        "type": "string",
+                        "maxLength": 500,
+                        "default": ""
+                      },
+                      "x": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1
+                      },
+                      "y": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1
+                      },
+                      "width": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1,
+                        "default": 0.5
+                      },
+                      "height": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1,
+                        "default": 0.1
+                      },
+                      "color": {
+                        "type": "string",
+                        "pattern": "^#[0-9a-fA-F]{6}$"
+                      },
+                      "size": {
+                        "type": "number",
+                        "exclusiveMinimum": 0,
+                        "maximum": 150,
+                        "default": 45
+                      },
+                      "from": {
+                        "type": "number",
+                        "default": 0
+                      },
+                      "to": {
+                        "$ref": "#/properties/shots/items/properties/graphic/properties/layers/items/properties/from",
+                        "default": 1
+                      },
+                      "enter": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1,
+                        "default": 0
+                      },
+                      "exit": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1,
+                        "default": 1
+                      },
+                      "motion": {
+                        "type": "string",
+                        "enum": [
+                          "none",
+                          "fade",
+                          "slide_left",
+                          "slide_up",
+                          "grow"
+                        ],
+                        "default": "fade"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "x",
+                      "y",
+                      "color"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "minItems": 1,
+                  "maxItems": 40
+                }
+              },
+              "required": [
+                "background",
+                "layers"
+              ],
+              "additionalProperties": false
+            },
+            "audio": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]{1,80}$"
+                  },
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "narration",
+                      "dialogue",
+                      "sfx",
+                      "music"
+                    ]
+                  },
+                  "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2000
+                  },
+                  "voice_id": {
+                    "type": "string",
+                    "maxLength": 200
+                  },
+                  "model": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 150
+                  },
+                  "start_s": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "duration_s": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "maximum": 60
+                  },
+                  "gain": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1,
+                    "default": 0.6
+                  }
+                },
+                "required": [
+                  "id",
+                  "role",
+                  "text",
+                  "model",
+                  "start_s",
+                  "duration_s"
+                ],
+                "additionalProperties": false
+              },
+              "maxItems": 40,
+              "default": []
+            },
+            "subtitle_mode": {
+              "type": "string",
+              "enum": [
+                "none",
+                "generated_alignment"
+              ],
+              "default": "none"
+            },
+            "continuity_group": {
+              "type": "string",
+              "maxLength": 100,
+              "default": ""
+            },
+            "handoff_previous_frame": {
+              "type": "boolean",
+              "default": false
+            },
+            "qa_criteria": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1000
+              },
+              "minItems": 1,
+              "maxItems": 30
+            },
+            "human_reviewed": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "required": [
+            "shot_id",
+            "prompt",
+            "method",
+            "model",
+            "qa_criteria"
+          ],
+          "additionalProperties": false
+        },
+        "minItems": 1,
+        "maxItems": 200
+      },
+      "uncertainty": {
+        "type": "array",
+        "items": {
+          "$ref": "#/properties/shots/items/properties/characters/additionalProperties/properties/description"
+        },
+        "maxItems": 100,
+        "default": []
+      }
+    },
+    "required": [
+      "schema",
+      "project_id",
+      "source_sha256",
+      "analysis_sha256",
+      "base_revision",
+      "origin",
+      "delivery_promise",
+      "shots"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+}

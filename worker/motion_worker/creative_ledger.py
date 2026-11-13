@@ -34,6 +34,8 @@ class Ledger:
                     return old
                 if old['provider']=='openai' and old.get('provider_id') and old['status'] in ('started','uncertain'):
                     return old  # coding adapter resumes GET of this saved response, never POST
+                if old['provider']=='fal' and old.get('provider_id') and old['status'] in ('started','uncertain'):
+                    return old  # reverse adapter polls the persisted accepted request; no new POST
                 raise AmbiguousCall('Previous request needs reconciliation; will not submit twice')
             rows = c.execute('SELECT category,sum(coalesce(actual_usd,reserved_usd)) AS cost FROM creative_calls WHERE job_id=%s GROUP BY category', (self.job['id'],)).fetchall()
             used = {r['category']: float(r['cost']) for r in rows}

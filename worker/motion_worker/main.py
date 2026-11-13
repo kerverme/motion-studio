@@ -2,7 +2,7 @@
 import json, os, signal, subprocess, sys, threading, time, traceback
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from motion_worker import config, eleven, pipeline, testpkg, audio, drive as drive_mod, text_video
+from motion_worker import config, eleven, pipeline, testpkg, audio, drive as drive_mod, text_video, reverse
 from motion_worker.db import DB, Heartbeat
 from motion_worker.storage import get_storage
 
@@ -53,6 +53,8 @@ def handle(db, store, job):
         job['package'] = testpkg.PACKAGE
         db.q('UPDATE jobs SET package=%s WHERE id=%s', (json.dumps(testpkg.PACKAGE, ensure_ascii=False), job['id']))
     ctx = pipeline.Ctx(db, store, job)
+    if kind == 'reverse':
+        return reverse.run(ctx)
     if kind == 'text_video':
         return text_video.run(ctx)
     if kind == 'episode':
@@ -88,6 +90,7 @@ def main():
     from motion_worker import artcheck
     threading.Thread(target=artcheck.poll_loop, args=(lambda: STOP,), daemon=True, name='art-checks').start()
     threading.Thread(target=text_video.capability_loop, args=(lambda: STOP,), daemon=True, name='text-video-capabilities').start()
+    threading.Thread(target=reverse.capability_loop, args=(lambda: STOP,), daemon=True, name='reverse-capabilities').start()
     while not STOP:
         job = None
         try:
