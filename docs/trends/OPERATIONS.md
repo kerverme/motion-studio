@@ -7,8 +7,9 @@ retain their existing providers, settings and approval gates.
 ## Deployment and rollback
 
 - Branch: `feat/jev-trend-research` in `kerverme/motion-studio`.
-- Baseline includes production commit `d9a61cdeef6bea4de02d0a4b670452a02257be10`
-  (the newer Reverse prompt comparison work), in addition to main `4c0e9ed`.
+- Baseline includes production commit `eba715cad26e0d9b3c1d11d7a48aa4980a4ae1f3`
+  (the newer Reverse prompt comparison and progress work), in addition to main
+  `4c0e9ed`. The concurrent production update was merged without changing its files.
 - Dedicated Railway service: `jev-trend-research`, ID
   `5d5e1bc3-42f9-429c-b86c-84b983abaa2d`, existing motion-studio project and production environment.
 - Build from repository root with `trend-worker/Dockerfile`; private CDP is loopback
@@ -23,7 +24,7 @@ retain their existing providers, settings and approval gates.
   `TREND_RESEARCH_SCHEDULE_ENABLED` on worker. Preserve all research tables/history.
   If API rollback is needed, inspect the current deployment first and restore the
   latest compatible production commit, preserving any subsequent work. The inspected
-  pre-feature API deployment was `99f54bf2-0b49-44cc-8c1c-ce05c0596d06` at `d9a61cd`.
+  latest pre-feature API deployment was `17e1dc73-d428-4a4c-9d78-ac2f2bdba28e` at `eba715c`.
   Do not reset main or redeploy an old Motion/Lemo worker.
 
 ## Dependency and access review
