@@ -77,3 +77,12 @@ test('cancelled provider usage is reconciled once by GET without creating anothe
  await reconcileUsage(pool,request);assert.equal(reads,1);
  const row:any=(await db.query('SELECT * FROM trend_provider_calls WHERE call_key=$1',[run+':cancelled'])).rows[0];assert.equal(row.actual_usd,null);assert.equal(row.status,'failed');
 });
+test('a topic finished by an older API deployment still reconciles its pending provider ledger',async()=>{
+ const id=randomUUID();
+ await db.query("INSERT INTO topic_suggestions(id,request_hash,request,status,response_id) VALUES($1,'prior-release','{}','failed','resp_legacycancel')",[id]);
+ await db.query("INSERT INTO trend_provider_calls(topic_suggestion_id,call_key,model) VALUES($1,$2,'gpt-6.1-terra')",[id,'topic:'+id]);
+ let reads=0;const request:any=async(url:string,init:any)=>{reads++;assert.equal(init.method,undefined);assert.ok(url.endsWith('/resp_legacycancel'));return Response.json({id:'resp_legacycancel',status:'cancelled',usage:{input_tokens:0,output_tokens:0},output:[]});};
+ const result=await reconcileUsage(pool,request);assert.equal(result.length,1);assert.equal(result[0].estimated_usd,0);
+ await reconcileUsage(pool,request);assert.equal(reads,1);
+ const row:any=(await db.query('SELECT * FROM trend_provider_calls WHERE topic_suggestion_id=$1',[id])).rows[0];assert.equal(row.status,'failed');assert.ok(row.finished_at);assert.equal(row.actual_usd,null);
+});

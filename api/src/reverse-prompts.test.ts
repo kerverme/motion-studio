@@ -37,3 +37,13 @@ test('remake changes known entity slots only; A and motion contract immutable',a
  assert.equal((await request('/projects/'+project.id+'/prompt-remake',{version_id:id,replacements:{characters:{},locations:{}},camera:'new'})).status,409);
  assert.equal((await query('SELECT prompt_a FROM reverse_prompt_versions WHERE id=$1',[id])).rows[0].prompt_a,original);assert.equal((await query('SELECT count(*)::int n FROM creative_calls')).rows[0].n,0);assert.equal((await app.request(P+'/projects/'+project.id+'/prompts')).status,401);
 });
+test('progress polling returns measured counts and durable times without source or provider payloads',async()=>{
+ const job=(await query("SELECT * FROM jobs WHERE package->'reverse'->>'action'='prompt_prepare' LIMIT 1")).rows[0];
+ const live={phase:'save_frames',label:'Saving frames',mode:'work_units',completed:10,total:52,started_at:'2026-11-14T06:38:47Z',updated_at:'2026-11-14T06:39:00Z'};
+ await query("UPDATE jobs SET status='RUNNING',progress=$2,stage_results=$3,locked_by='test-worker',locked_until=now()+interval '10 minutes',result=$4 WHERE id=$1",[job.id,10/52,JSON.stringify({_reverse_progress:live}),JSON.stringify({analysis:'DO_NOT_SEND_LARGE_SOURCE_DATA',private_payload:'NOT_PUBLIC'})]);
+ const path=P+'/projects/'+project.id+'/progress',r=await app.request(path,{headers});assert.equal(r.status,200);const data=await r.json();const found=data.jobs.find((j:any)=>j.id===job.id);
+ assert.equal(found.selection_id,selection);assert.deepEqual(found.live_progress,live);assert.equal(found.claimed,true);assert(found.worker_seen_at);assert(found.created_at);assert(found.updated_at);assert(Number.isFinite(Date.parse(data.server_time)));
+ const text=JSON.stringify(data);assert(!text.includes('DO_NOT_SEND_LARGE_SOURCE_DATA'));assert(!text.includes('NOT_PUBLIC'));assert(!text.includes('package'));assert(text.length<10000);
+ assert.equal((await app.request(path)).status,401);
+ assert.equal((await query('SELECT count(*)::int n FROM creative_calls')).rows[0].n,0);
+});

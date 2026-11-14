@@ -36,11 +36,20 @@ def test_real_frame_selection_and_preparation_preserves_absolute_pts(tmp_path):
         q=Mock()
     def path(*parts):
         v=tmp_path.joinpath('job',*parts);v.parent.mkdir(parents=True,exist_ok=True);return str(v)
-    ctx=SimpleNamespace(db=DB(),path=path)
+    ctx=SimpleNamespace(db=DB(),path=path,job={'id':'job','stage_results':{}})
     with patch.object(p,'fetch_private',return_value=source),patch.object(p,'save_private',side_effect=save),patch.object(p,'check_active'):
         result=p.prepare(ctx,{'id':'project','source_asset_id':'source','source_sha256':'a'*64,'analysis':{'shots':shots}},{'selection_id':'selection','range':{'start_s':.12,'end_s':2.12}})
     assert result['frames']==len(indices);assert result['paid_requests']==0;assert calls[-1][0]=='prompt_clip'
-    prepared=ctx.db.q.call_args.args[1][0].obj;assert [f['frame'] for f in prepared['frames']]==indices;assert prepared['frames'][0]['source_s']==.125
+    written=next(c for c in ctx.db.q.call_args_list if 'UPDATE reverse_prompt_selections' in c.args[0])
+    prepared=written.args[1][0].obj;assert [f['frame'] for f in prepared['frames']]==indices;assert prepared['frames'][0]['source_s']==.125
+    updates=[c.args[1][2].obj for c in ctx.db.q.call_args_list if 'jsonb_build_object' in c.args[0]]
+    counted=[u for u in updates if u['mode']=='work_units']
+    assert [u['completed'] for u in counted]==sorted(u['completed'] for u in counted)
+    saved=[u for u in updates if u['phase']=='save_frames']
+    assert len(saved)==len(indices)+1 and saved[-1]['detail']==f'{len(indices)} / {len(indices)} ภาพ'
+    assert counted[-1]['completed']==counted[-1]['total']==len(indices)+6
+    assert len({u['started_at'] for u in updates})==1
+    assert ctx.db.q.call_args_list.index(written)<len(ctx.db.q.call_args_list)-1
 
 
 def test_openai_submission_is_one_post_and_accepted_id_resume_is_get_only(tmp_path,monkeypatch):
@@ -56,6 +65,7 @@ def test_openai_submission_is_one_post_and_accepted_id_resume_is_get_only(tmp_pa
     with patch.object(p,'rate_config',return_value=rate),patch.object(p,'check_active'),patch.object(Ledger,'reserve',return_value=row),patch.object(requests,'get',return_value=Response({'id':'gpt-6.1-sol'})),patch.object(requests,'post',side_effect=requests.ReadTimeout('lost')) as post:
         with pytest.raises(requests.ReadTimeout):p._response_call(ctx,{'id':'project'},task,quote)
         assert post.call_count==1;assert any('uncertain' in c.args[0] for c in ctx.db.q.call_args_list)
+        assert all(c.args[1][2].obj['completed'] is None for c in ctx.db.q.call_args_list if 'jsonb_build_object' in c.args[0])
     saved={**row,'provider_id':'resp_saved'};ctx.db.one.return_value=saved;(tmp_path/'prompt-response').mkdir()
     with patch.object(p,'check_active'),patch.object(Ledger,'reserve',return_value=saved),patch.object(p,'save_private',return_value={'id':'response-asset'}),patch.object(requests,'post') as post,patch.object(requests,'get',return_value=Response({'status':'completed','output':[],'usage':{'input_tokens':100,'output_tokens':10}})) as get:
         result=p._response_call(ctx,{'id':'project'},task,quote);assert not post.called;assert get.call_count==1;assert result['response_asset_id']=='response-asset'

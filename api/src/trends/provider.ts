@@ -3,7 +3,7 @@ import type {Queryable} from './store.js';
 export function estimateTerra(usage:any) {
   if(!usage)return null;
   const input=Number(usage.input_tokens)||0,output=Number(usage.output_tokens)||0,cached=Number(usage.input_tokens_details?.cached_tokens)||0;
-  const write=Number(usage.input_tokens_details?.cache_creation_tokens)||0;
+  const write=Number(usage.input_tokens_details?.cache_write_tokens??usage.input_tokens_details?.cache_creation_tokens)||0;
   // Standard Terra USD rates. Actual billing remains null until reconciled with invoices.
   return ((Math.max(0,input-cached-write))+(cached*.05)+(write*1.25)+output*5)/1e6;
 }
@@ -36,7 +36,9 @@ export async function researchResponse(db:Queryable,runId:string,key:string,body
 /** Reconcile accepted failed/cancelled responses with reads, never another create. */
 export async function reconcileUsage(db:Queryable,request:typeof fetch=fetch){
   const rows=(await db.query(`SELECT c.*,COALESCE(c.response_id,t.response_id) AS saved_response_id FROM trend_provider_calls c LEFT JOIN topic_suggestions t ON t.id=c.topic_suggestion_id
-    WHERE c.status='failed' AND NOT(c.api_usage ? 'reconciled_at') AND COALESCE((c.api_usage->>'reconciliation_attempts')::int,0)<3 AND COALESCE(c.response_id,t.response_id) IS NOT NULL ORDER BY c.created_at LIMIT 4`)).rows;
+    WHERE (c.status='failed' OR (c.status='started' AND t.status IN ('failed','done')))
+      AND NOT(c.api_usage ? 'reconciled_at') AND COALESCE((c.api_usage->>'reconciliation_attempts')::int,0)<3
+      AND COALESCE(c.response_id,t.response_id) IS NOT NULL ORDER BY c.created_at LIMIT 4`)).rows;
   const results=[];
   for(const row of rows){
     if(!/^resp_[a-zA-Z0-9_-]+$/.test(row.saved_response_id))continue;
@@ -47,7 +49,7 @@ export async function reconcileUsage(db:Queryable,request:typeof fetch=fetch){
     const response:any=await r.json();if(['queued','in_progress'].includes(response.status))continue;
     const searches=(response.output||[]).filter((x:any)=>x.type==='web_search_call').length;
     const estimated=response.usage&&row.model==='gpt-6.1-terra'?(estimateTerra(response.usage)??0)+searches*.01:null;
-    await db.query('UPDATE trend_provider_calls SET response_id=$2,usage=$3,estimated_usd=$4,api_usage=$5 WHERE id=$1',[row.id,row.saved_response_id,JSON.stringify(response.usage||null),estimated,JSON.stringify({...row.api_usage,reconciled_at:new Date().toISOString(),provider_status:response.status,response,web_search_calls:searches})]);
+    await db.query("UPDATE trend_provider_calls SET status=CASE WHEN status='started' THEN $6 ELSE status END,response_id=$2,usage=$3,estimated_usd=$4,api_usage=$5,finished_at=COALESCE(finished_at,now()) WHERE id=$1",[row.id,row.saved_response_id,JSON.stringify(response.usage||null),estimated,JSON.stringify({...row.api_usage,reconciled_at:new Date().toISOString(),provider_status:response.status,response,web_search_calls:searches}),response.status==='completed'?'done':'failed']);
     results.push({id:row.id,status:response.status,usage:response.usage||null,estimated_usd:estimated});
   }
   return results;

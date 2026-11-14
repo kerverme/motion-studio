@@ -8,6 +8,7 @@ from .reverse_render import ffmpeg
 from .reverse_provider import fingerprint,asset_uri
 from .creative_ledger import Ledger,AmbiguousCall,digest
 from .text_video import ApprovalRequired,check_active
+from .reverse_progress import report
 
 
 def canonical_hash(value):
@@ -58,22 +59,33 @@ def prepare(ctx,project,spec):
     row=ctx.db.one('SELECT * FROM reverse_prompt_selections WHERE id=%s AND project_id=%s',(spec['selection_id'],project['id']))
     if not row:raise ValueError('Selection not found')
     if row['evidence']:return {'selection_id':row['id'],'cached':True}
+    report(ctx,'source','กำลังอ่านคลิปต้นฉบับ',detail='เตรียมเฉพาะช่วงที่เลือก ไม่มีค่า AI')
     src=ctx.db.one('SELECT * FROM reverse_assets WHERE id=%s AND project_id=%s',(project['source_asset_id'],project['id']))
-    source=fetch_private(ctx,src,ctx.path('prompt-source','reference.mp4'));timing=frame_timing(source)
+    source=fetch_private(ctx,src,ctx.path('prompt-source','reference.mp4'))
+    report(ctx,'measure','กำลังวัดเวลาและตำแหน่งเฟรม')
+    timing=frame_timing(source)
     e,indices=selection_frames(timing,project['analysis']['shots'],**{'start':spec['range']['start_s'],'end':spec['range']['end_s']})
+    total=len(indices)+6
+    report(ctx,'extract_frames','กำลังดึงภาพตามเวลา',completed=2,total=total,mode='work_units',detail=f'{len(e["shots"])} ฉาก · เตรียม {len(indices)} ภาพ')
     folder=Path(ctx.path('prompt-frames'));folder.mkdir(parents=True,exist_ok=True)
     expr='+'.join('eq(n\\,'+str(n)+')' for n in indices)
     ffmpeg(['-i',source,'-vf',"select='"+expr+"',scale=768:768:force_original_aspect_ratio=decrease",'-vsync','0','-q:v','3',folder/'frame-%03d.jpg'])
     files=sorted(folder.glob('frame-*.jpg'))
     if len(files)!=len(indices):raise ValueError('Extracted evidence frame count mismatch')
     e['frames']=[]
-    for idx,path in zip(indices,files):
+    report(ctx,'save_frames','กำลังบันทึกภาพหลักฐาน',completed=3,total=total,mode='work_units',detail=f'0 / {len(indices)} ภาพ')
+    for count,(idx,path) in enumerate(zip(indices,files),1):
         check_active(ctx);a=save_private(ctx,project['id'],path,'prompt_frame',content_type='image/jpeg',metadata={'frame':idx,'source_s':timing['pts'][idx],'selection_id':row['id']})
         e['frames'].append({'asset_id':str(a['id']),'sha256':a['sha256'],'frame':idx,'source_s':timing['pts'][idx],'at_s':round(timing['pts'][idx]-e['start_s'],6)})
+        report(ctx,'save_frames','กำลังบันทึกภาพหลักฐาน',completed=3+count,total=total,mode='work_units',detail=f'{count} / {len(indices)} ภาพ')
+    report(ctx,'preview','กำลังเตรียมคลิปตัวอย่าง',completed=3+len(indices),total=total,mode='work_units')
     preview=ctx.path('prompt-preview.mp4');ffmpeg(['-i',source,'-vf',f'trim=start_frame={e["start_frame"]}:end_frame={e["end_frame_exclusive"]},setpts=PTS-STARTPTS','-an','-c:v','libx264','-preset','fast','-crf','22','-movflags','+faststart',preview])
+    report(ctx,'save_preview','กำลังบันทึกคลิปตัวอย่าง',completed=4+len(indices),total=total,mode='work_units')
     a=save_private(ctx,project['id'],preview,'prompt_clip',content_type='video/mp4',metadata={'selection_id':row['id']});e['preview_asset_id']=str(a['id'])
+    report(ctx,'save_selection','กำลังบันทึกช่วงที่เลือก',completed=5+len(indices),total=total,mode='work_units')
     e.update(requested=spec['range'],source_sha256=project['source_sha256'],sampling='2 fps plus opening/middle/closing frame of each measured shot; no audio',motion_accuracy='model_estimated_from_samples')
     ctx.db.q('UPDATE reverse_prompt_selections SET evidence=%s WHERE id=%s AND evidence IS NULL',(Jsonb(e),row['id']))
+    report(ctx,'prepared','เตรียมช่วงคลิปเสร็จแล้ว',completed=total,total=total,mode='work_units',detail=f'{len(indices)} ภาพพร้อมให้ถอด Prompt A')
     return {'selection_id':row['id'],'frames':len(indices),'paid_requests':0}
 
 
@@ -123,6 +135,7 @@ def rate_config():
 
 
 def _response_call(ctx,project,task,quote):
+    report(ctx,'check_model','กำลังตรวจการเชื่อมต่อ OpenAI')
     if fingerprint('OPENAI_API_KEY')!=quote['key_fingerprints'].get('openai'):raise ApprovalRequired('OpenAI key changed after approval')
     key='reverse:'+quote['binding']+':'+task['slot'];old=ctx.db.one('SELECT * FROM creative_calls WHERE job_id=%s AND call_key=%s',(ctx.job['id'],key))
     if not old:
@@ -146,10 +159,12 @@ def _response_call(ctx,project,task,quote):
     try:
         if row.get('provider_id'):data=read(row['provider_id'])
         else:
+            report(ctx,'build_request','กำลังเตรียมภาพให้ Sol อ่าน')
             content=[{'type':'input_text','text':json.dumps(task['payload']['evidence'])}]
             for frame in task['payload']['evidence']['frames']:
                 content.extend([{'type':'input_text','text':f'Source frame {frame["frame"]}, range time {frame["at_s"]:.6f}s.'},{'type':'input_image','image_url':asset_uri(ctx,project['id'],frame['asset_id']),'detail':'high'}])
             check_active(ctx)
+            report(ctx,'submit','กำลังส่งภาพให้ Sol')
             payload={'model':task['model'],'service_tier':'default','background':True,'store':True,'max_output_tokens':task['payload']['max_output_tokens'],'reasoning':{'effort':task['payload']['reasoning']},'instructions':task['payload']['system'],'input':[{'role':'user','content':content}], 'text':{'format':{'type':'json_schema','name':'reverse_prompt','strict':True,'schema':output_schema()}}}
             r=requests.post(base,headers=headers,json=payload,timeout=60,allow_redirects=False)
             if not r.ok:raise ApprovalRequired('OpenAI submission HTTP '+str(r.status_code)+'; no automatic POST retry')
@@ -159,8 +174,10 @@ def _response_call(ctx,project,task,quote):
         deadline=time.monotonic()+1200
         while data.get('status') in ('queued','in_progress'):
             check_active(ctx)
+            report(ctx,'provider_wait','Sol กำลังอ่านภาพและร่าง Prompt A',detail='OpenAI ไม่รายงานเปอร์เซ็นต์ระหว่างคิด ระบบกำลังติดตามคำขอเดิม')
             if time.monotonic()>deadline:raise TimeoutError('Resume the saved OpenAI response ID')
             time.sleep(3);data=read(row['provider_id'])
+        report(ctx,'save_response','ได้รับคำตอบแล้ว กำลังบันทึกผล')
         raw=Path(ctx.path('prompt-response',str(row['id'])+'.json'));raw.write_text(json.dumps(data,ensure_ascii=False))
         a=save_private(ctx,project['id'],raw,'provider_response',content_type='application/json',metadata={'call_id':str(row['id']),'quote_id':quote['id']})
         usage=data.get('usage') or {};rate=task['rate'];actual=None
@@ -199,6 +216,7 @@ def extract(ctx,project,task,quote):
     paid=response_call(ctx,project,task,quote);data=paid['response']
     if data.get('status')!='completed':raise ValueError('OpenAI response incomplete/refused; raw response saved, no new paid attempt')
     text=''.join(c.get('text','') for o in data.get('output',[]) for c in o.get('content',[]) if c.get('type')=='output_text')
+    report(ctx,'validate_prompt','กำลังตรวจเวลาและบันทึก Prompt A')
     doc=validate_document(json.loads(text),selection['evidence']);prompt=prompt_text(doc)
     provenance={'provider':'openai','model':task['model'],'provider_id':paid['provider_id'],'response_asset_id':paid['response_asset_id'],'source_sha256':project['source_sha256'],'input':'timestamped_sampled_frames','review':'model_estimated_needs_owner_review','quote_id':quote['id']}
     ctx.db.q('INSERT INTO reverse_prompt_versions(id,project_id,selection_id,document,replacements,prompt_a,prompt_b,locks_hash,provenance) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING',(ident,project['id'],selection['id'],Jsonb(doc),Jsonb({'characters':{},'locations':{}}),prompt,prompt,motion_lock(doc),Jsonb(provenance)))

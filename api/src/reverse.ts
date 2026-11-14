@@ -31,6 +31,19 @@ export function registerReverse(app:Hono,pool:pg.Pool,options:Options){
   }
   app.get(P+'/config',guard,async c=>{let w=null;try{w=await worker();}catch{}const recipes=(await pool.query('SELECT id,name,version,validated FROM reverse_recipes ORDER BY name,version DESC')).rows;return c.json({schema:'motion.reverse.api.v1',primary_backend:'motion',worker:w,vision_models:VISION_MODELS,planner_models:PLANNER_MODELS,video_models:catalogModels(),recipes,storage_configured:!!process.env.MOTION_REVERSE_STORAGE_KEY,paid_dispatch:'quote_then_owner_approval',legacy_unchanged:true,prompt_brain:{provider:'openai',model:promptModel(),configured:!!w?.openai,input:'timestamped_frames',max_range_s:15},key_management:'railway'});});
   app.get(P+'/projects',guard,async c=>c.json({projects:(await pool.query('SELECT id,origin_key,title,status,source_sha256,current_revision,created_at,updated_at FROM reverse_projects ORDER BY created_at DESC LIMIT 100')).rows}));
+  // Poll metadata only: a source analysis and its duplicate job result can be large.
+  app.get(P+'/projects/:id/progress',guard,async c=>{try{
+    const id=UUID.parse(c.req.param('id'));
+    if(!(await pool.query('SELECT id FROM reverse_projects WHERE id=$1',[id])).rows[0])throw Error('Project not found');
+    const jobs=(await pool.query(`SELECT id,status,stage,progress,error,created_at,updated_at,finished_at,
+      package->'reverse'->>'action' AS action,
+      COALESCE(package->'reverse'->>'selection_id',package->'reverse'->'quote'->'tasks'->0->>'selection_id') AS selection_id,
+      stage_results->'_reverse_progress' AS live_progress,
+      (locked_by IS NOT NULL) AS claimed,
+      CASE WHEN locked_by IS NOT NULL THEN locked_until - interval '10 minutes' END AS worker_seen_at
+      FROM jobs WHERE kind='reverse' AND package->'reverse'->>'project_id'=$1 ORDER BY created_at DESC LIMIT 50`,[id])).rows;
+    return c.json({jobs,server_time:new Date().toISOString()});
+  }catch(e){return fail(c,e);}});
   app.post(P+'/projects',guard,async c=>{try{const input=ProjectInput.parse(await c.req.json()),old=(await pool.query('SELECT * FROM reverse_projects WHERE origin_key=$1',[input.origin_key])).rows[0];if(old){if(old.source_sha256!==input.source.sha256)throw Error('Original source changed; create a new project');return c.json(old);}
     const p=(await pool.query('INSERT INTO reverse_projects(origin_key,title,source_sha256,source) VALUES($1,$2,$3,$4) RETURNING *',[input.origin_key,input.title,input.source.sha256,JSON.stringify(input.source)])).rows[0];return c.json(p,201);
   }catch(e){return fail(c,e);}});
