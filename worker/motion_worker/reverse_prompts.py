@@ -22,7 +22,16 @@ def canonical_hash(value):
 
 def motion_lock(doc):
     return canonical_hash({'duration_s':doc['duration_s'],'characters':[x['id'] for x in doc['characters']],
-        'locations':[x['id'] for x in doc['locations']],'shots':doc['shots'],'compatibility':doc['compatibility']})
+        'locations':[x['id'] for x in doc['locations']],'shots':doc['shots'],'compatibility':doc['compatibility'],**({'audio':doc['audio']} if doc.get('audio') else {})})
+
+
+def audio_prompt_lines(audio):
+    if not audio:return []
+    if audio['status']=='no_audio':return ['SOURCE AUDIO','The source has no audio track. Do not invent dialogue.']
+    return ['LOCKED SOURCE DIALOGUE',f'Source audio window: {audio["source_start_s"]:.6f}–{audio["source_end_s"]:.6f}s. Range time: 0.000000–{audio["duration_s"]:.6f}s.',
+        'Timing marks the selected audio window only, not word-level timing. Speaker identity is unknown; do not assign speech to a visible character without review.',
+        'Spoken words in the original language (ASR draft, preserve wording; do not translate): '+json.dumps(audio['text'],ensure_ascii=False,separators=(',',':')) if audio['text'] else 'No intelligible speech was detected by ASR. Verify against the source audio.',
+        'Keep these spoken words in the same order in A and B. This text does not clone the source voice or provide exact lip sync.']
 
 
 def prompt_text(doc,replacements=None):
@@ -35,7 +44,8 @@ def prompt_text(doc,replacements=None):
         lines.extend([f'{s["id"]} | {s["start_s"]:.6f}–{s["end_s"]:.6f}s','Setting: ['+s['location_id']+']','Opening: '+s['opening'],'Actions:'])
         lines.extend(f'{a["t0"]:.6f}–{a["t1"]:.6f}s: {a["text"]}' for a in s['actions'])
         lines.extend(['Ending: '+s['ending'],'Camera: '+s['camera'],'Lighting: '+s['lighting'],'Style: '+s['style'],'Required props and interactions: '+s['props']])
-    lines.append('Do not add, remove or reorder actions, shots or characters. Keep screen direction, poses, camera and timing. No added captions, logos or dialogue.')
+    lines.extend(audio_prompt_lines(doc.get('audio')))
+    lines.append('Do not add, remove or reorder actions, shots or characters. Keep screen direction, poses, camera and timing. No added captions or logos. Use only the source dialogue above; do not invent additional speech.' if doc.get('audio') else 'Do not add, remove or reorder actions, shots or characters. Keep screen direction, poses, camera and timing. No added captions, logos or dialogue.')
     return '\n'.join(lines)
 
 
@@ -56,14 +66,19 @@ def selection_frames(timing,shots,start,end):
 
 
 def prepare(ctx,project,spec):
+    from .reverse_prompt_audio import prepare_audio
     row=ctx.db.one('SELECT * FROM reverse_prompt_selections WHERE id=%s AND project_id=%s',(spec['selection_id'],project['id']))
     if not row:raise ValueError('Selection not found')
-    if row['evidence']:return {'selection_id':row['id'],'cached':True}
+    if row['evidence'] and row.get('audio'):return {'selection_id':row['id'],'cached':True}
     report(ctx,'source','กำลังอ่านคลิปต้นฉบับ',detail='เตรียมเฉพาะช่วงที่เลือก ไม่มีค่า AI')
     src=ctx.db.one('SELECT * FROM reverse_assets WHERE id=%s AND project_id=%s',(project['source_asset_id'],project['id']))
     source=fetch_private(ctx,src,ctx.path('prompt-source','reference.mp4'))
     report(ctx,'measure','กำลังวัดเวลาและตำแหน่งเฟรม')
     timing=frame_timing(source)
+    if row['evidence']:
+        audio=prepare_audio(ctx,project,row,source,timing,row['evidence'])
+        report(ctx,'prepared','ภาพและเสียงพร้อมแล้ว',completed=1,total=1,mode='work_units')
+        return {'selection_id':row['id'],'audio_status':audio['status'],'paid_requests':0}
     e,indices=selection_frames(timing,project['analysis']['shots'],**{'start':spec['range']['start_s'],'end':spec['range']['end_s']})
     total=len(indices)+6
     report(ctx,'extract_frames','กำลังดึงภาพตามเวลา',completed=2,total=total,mode='work_units',detail=f'{len(e["shots"])} ฉาก · เตรียม {len(indices)} ภาพ')
@@ -85,7 +100,8 @@ def prepare(ctx,project,spec):
     report(ctx,'save_selection','กำลังบันทึกช่วงที่เลือก',completed=5+len(indices),total=total,mode='work_units')
     e.update(requested=spec['range'],source_sha256=project['source_sha256'],sampling='2 fps plus opening/middle/closing frame of each measured shot; no audio',motion_accuracy='model_estimated_from_samples')
     ctx.db.q('UPDATE reverse_prompt_selections SET evidence=%s WHERE id=%s AND evidence IS NULL',(Jsonb(e),row['id']))
-    report(ctx,'prepared','เตรียมช่วงคลิปเสร็จแล้ว',completed=total,total=total,mode='work_units',detail=f'{len(indices)} ภาพพร้อมให้ถอด Prompt A')
+    prepare_audio(ctx,project,row,source,timing,e)
+    report(ctx,'prepared','เตรียมภาพและเสียงเสร็จแล้ว',completed=total,total=total,mode='work_units',detail=f'{len(indices)} ภาพพร้อมให้ถอด Prompt A')
     return {'selection_id':row['id'],'frames':len(indices),'paid_requests':0}
 
 
@@ -96,6 +112,11 @@ def output_schema():
     entity=obj({'id':string,'description':string})
     shot=obj({'id':string,'start_s':number,'end_s':number,'location_id':string,'opening':string,'actions':arr(obj({'t0':number,'t1':number,'text':string})),'ending':string,'camera':string,'lighting':string,'style':string,'props':string})
     return obj({'summary_th':string,'characters':arr(entity),'locations':arr(entity),'shots':arr(shot),'compatibility':arr(string),'uncertainty':arr(string)})
+
+
+def character_schema():
+    fields={k:{'type':'string'} for k in ('appearance','clothing','reason_th')}
+    return {'type':'object','properties':fields,'required':list(fields),'additionalProperties':False}
 
 
 def validate_document(raw,evidence):
@@ -159,13 +180,14 @@ def _response_call(ctx,project,task,quote):
     try:
         if row.get('provider_id'):data=read(row['provider_id'])
         else:
-            report(ctx,'build_request','กำลังเตรียมภาพให้ Sol อ่าน')
-            content=[{'type':'input_text','text':json.dumps(task['payload']['evidence'])}]
-            for frame in task['payload']['evidence']['frames']:
+            character=task.get('role')=='prompt_character'
+            report(ctx,'build_request','กำลังเตรียมเรื่องและไอเดียตัวละคร' if character else 'กำลังเตรียมภาพให้ Sol อ่าน')
+            content=[{'type':'input_text','text':json.dumps(task['payload']['context'] if character else task['payload']['evidence'],ensure_ascii=False)}]
+            for frame in task['payload'].get('evidence',{}).get('frames',[]):
                 content.extend([{'type':'input_text','text':f'Source frame {frame["frame"]}, range time {frame["at_s"]:.6f}s.'},{'type':'input_image','image_url':asset_uri(ctx,project['id'],frame['asset_id']),'detail':'high'}])
             check_active(ctx)
-            report(ctx,'submit','กำลังส่งภาพให้ Sol')
-            payload={'model':task['model'],'service_tier':'default','background':True,'store':True,'max_output_tokens':task['payload']['max_output_tokens'],'reasoning':{'effort':task['payload']['reasoning']},'instructions':task['payload']['system'],'input':[{'role':'user','content':content}], 'text':{'format':{'type':'json_schema','name':'reverse_prompt','strict':True,'schema':output_schema()}}}
+            report(ctx,'submit','กำลังส่งไอเดียตัวละครให้ Sol' if character else 'กำลังส่งภาพให้ Sol')
+            payload={'model':task['model'],'service_tier':'default','background':True,'store':True,'max_output_tokens':task['payload']['max_output_tokens'],'reasoning':{'effort':task['payload']['reasoning']},'instructions':task['payload']['system'],'input':[{'role':'user','content':content}], 'text':{'format':{'type':'json_schema','name':'reverse_prompt','strict':True,'schema':character_schema() if character else output_schema()}}}
             r=requests.post(base,headers=headers,json=payload,timeout=60,allow_redirects=False)
             if not r.ok:raise ApprovalRequired('OpenAI submission HTTP '+str(r.status_code)+'; no automatic POST retry')
             data=r.json();ident=data.get('id')
@@ -174,7 +196,7 @@ def _response_call(ctx,project,task,quote):
         deadline=time.monotonic()+1200
         while data.get('status') in ('queued','in_progress'):
             check_active(ctx)
-            report(ctx,'provider_wait','Sol กำลังอ่านภาพและร่าง Prompt A',detail='OpenAI ไม่รายงานเปอร์เซ็นต์ระหว่างคิด ระบบกำลังติดตามคำขอเดิม')
+            report(ctx,'provider_wait','Sol กำลังออกแบบรูปลักษณ์และชุด' if task.get('role')=='prompt_character' else 'Sol กำลังอ่านภาพและร่าง Prompt A',detail='OpenAI ไม่รายงานเปอร์เซ็นต์ระหว่างคิด ระบบกำลังติดตามคำขอเดิม')
             if time.monotonic()>deadline:raise TimeoutError('Resume the saved OpenAI response ID')
             time.sleep(3);data=read(row['provider_id'])
         report(ctx,'save_response','ได้รับคำตอบแล้ว กำลังบันทึกผล')
@@ -192,9 +214,11 @@ def _response_call(ctx,project,task,quote):
 
 
 
-def response_call(ctx,project,task,quote):
+def response_call(ctx,project,task,quote,invoke=None):
     # A different quote for identical source/model/instructions must not bill twice.
-    key='reverse-openai:'+digest({'source':project['source_sha256'],'project':str(project['id']),'payload':task['payload'],'key':quote['key_fingerprints'].get('openai')})
+    cache_payload=task['payload']
+    if task.get('role')=='prompt_transcribe':cache_payload={k:v for k,v in cache_payload.items() if k!='version_id'}
+    key='reverse-openai:'+digest({'source':project['source_sha256'],'project':str(project['id']),'payload':cache_payload,'key':quote['key_fingerprints'].get('openai')})
     with ctx.db.lock,ctx.db.conn.transaction():
         c=ctx.db.conn;hit=c.execute('SELECT * FROM creative_cache WHERE cache_key=%s FOR UPDATE',(key,)).fetchone()
         if hit and hit['result'].get('complete'):return hit['result']['value']
@@ -202,7 +226,7 @@ def response_call(ctx,project,task,quote):
         if not hit:
             inserted=c.execute('INSERT INTO creative_cache(cache_key,category,result) VALUES(%s,%s,%s) ON CONFLICT DO NOTHING RETURNING cache_key',(key,'planning',Jsonb({'owner':str(ctx.job['id'])}))).fetchone()
             if not inserted:raise AmbiguousCall('Matching OpenAI analysis claimed; no duplicate POST')
-    value=_response_call(ctx,project,task,quote)
+    value=(invoke or _response_call)(ctx,project,task,quote)
     ctx.db.q('UPDATE creative_cache SET result=%s WHERE cache_key=%s',(Jsonb({'complete':True,'value':value}),key))
     return value
 
@@ -217,7 +241,36 @@ def extract(ctx,project,task,quote):
     if data.get('status')!='completed':raise ValueError('OpenAI response incomplete/refused; raw response saved, no new paid attempt')
     text=''.join(c.get('text','') for o in data.get('output',[]) for c in o.get('content',[]) if c.get('type')=='output_text')
     report(ctx,'validate_prompt','กำลังตรวจเวลาและบันทึก Prompt A')
-    doc=validate_document(json.loads(text),selection['evidence']);prompt=prompt_text(doc)
+    doc=validate_document(json.loads(text),selection['evidence'])
+    if (selection.get('audio') or {}).get('status')=='no_audio':doc['audio']={'status':'no_audio'}
+    prompt=prompt_text(doc)
     provenance={'provider':'openai','model':task['model'],'provider_id':paid['provider_id'],'response_asset_id':paid['response_asset_id'],'source_sha256':project['source_sha256'],'input':'timestamped_sampled_frames','review':'model_estimated_needs_owner_review','quote_id':quote['id']}
     ctx.db.q('INSERT INTO reverse_prompt_versions(id,project_id,selection_id,document,replacements,prompt_a,prompt_b,locks_hash,provenance) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING',(ident,project['id'],selection['id'],Jsonb(doc),Jsonb({'characters':{},'locations':{}}),prompt,prompt,motion_lock(doc),Jsonb(provenance)))
     return {'version_id':ident,'selection_id':selection['id'],'model':task['model']}
+
+
+def character(ctx,project,task,quote):
+    import jsonschema
+    payload=task['payload'];context=payload['context']
+    old=ctx.db.one('SELECT * FROM reverse_prompt_versions WHERE id=%s AND project_id=%s AND selection_id=%s',(payload['version_id'],project['id'],task['selection_id']))
+    if not old or old['document']!=context['document'] or motion_lock(old['document'])!=old['locks_hash']:raise ApprovalRequired('Original character context changed')
+    target=context['character_id'];known={x['id'] for x in old['document']['characters']}
+    if target not in known:raise ApprovalRequired('Unknown character')
+    for group in ('characters','locations'):
+        ids={x['id'] for x in old['document'][group]}
+        if any(k not in ids for k in context['replacements'][group]):raise ApprovalRequired('Unknown replacement slot')
+    ident=canonical_hash({'character_quote':quote['id'],'parent':old['id']})
+    if ctx.db.one('SELECT id FROM reverse_prompt_versions WHERE id=%s',(ident,)):return {'version_id':ident,'cached':True}
+    paid=response_call(ctx,project,task,quote);data=paid['response']
+    if data.get('status')!='completed':raise ValueError('Character response incomplete; raw response saved, no new paid attempt')
+    text=''.join(c.get('text','') for o in data.get('output',[]) for c in o.get('content',[]) if c.get('type')=='output_text')
+    design=json.loads(text);jsonschema.validate(design,character_schema())
+    if any(not v.strip() or len(v)>1500 or re.search(r'[\r\n\[\]\x00-\x1f]',v) for v in design.values()):raise ValueError('Invalid character design; inspect saved response')
+    description=design['appearance'].strip()+' Clothing: '+design['clothing'].strip()
+    if len(description)>3000:raise ValueError('Character description too long')
+    replacements=copy.deepcopy(context['replacements']);replacements['characters'][target]=description
+    provenance={**old['provenance'],'operation':'character_design','character_design':{**design,'character_id':target,'brief':context['brief'],'model':task['model'],'quote_id':quote['id'],'response_asset_id':paid['response_asset_id'],'review':'creative_draft_needs_owner_review'}}
+    report(ctx,'save_character','กำลังบันทึกตัวละครหลักและ Prompt B')
+    ctx.db.q('INSERT INTO reverse_prompt_versions(id,project_id,selection_id,parent_id,document,replacements,prompt_a,prompt_b,locks_hash,provenance) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING',
+        (ident,project['id'],old['selection_id'],old['id'],Jsonb(old['document']),Jsonb(replacements),old['prompt_a'],prompt_text(old['document'],replacements),old['locks_hash'],Jsonb(provenance)))
+    return {'version_id':ident,'selection_id':old['selection_id'],'character_id':target}

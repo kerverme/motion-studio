@@ -4,9 +4,9 @@
 
 ## สิ่งที่ระบบทำ
 
-1. วัดเวลาและขอบเขตช็อตในเครื่อง เลือกช่วงยาวไม่เกิน 15 วินาที ตัดภาพตัวอย่างและคลิปดูตัวอย่างโดยไม่เรียก LLM
-2. ตรวจราคาและสิทธิ์เข้าถึงโมเดล เมื่อเจ้าของยืนยันจึงเรียก OpenAI Responses API หนึ่งครั้งเพื่อสร้าง **Prompt A**: ตัวละคร สถานที่ ท่าเริ่ม การกระทำตามเวลา ท่าจบ กล้อง แสง สไตล์ และสิ่งที่ยังไม่แน่ใจ
-3. แก้คำอธิบายตัวละคร `[C1]` / สถานที่ `[L1]` เพื่อสร้าง **Prompt B** ด้วยการแทนช่องข้อความ ไม่เรียก LLM เพิ่ม ไม่ให้แก้ท่าทางหรือเวลา เก็บแต่ละเวอร์ชันแยกกัน และคง A เดิม
+1. วัดเวลาและขอบเขตช็อตในเครื่อง เลือกช่วงยาวไม่เกิน 15 วินาที ตัดภาพตัวอย่าง คลิปพร้อมเสียง และเสียง WAV เฉพาะช่วงโดยไม่เรียก LLM
+2. ตรวจราคาและสิทธิ์เข้าถึงโมเดล เมื่อเจ้าของยืนยันจึงให้ Sol สร้าง **Prompt A** จากภาพ และ GPT-Transcribe ถอดบทพูดจากเสียงช่วงที่เลือก เก็บภาษาต้นฉบับ A เดิมที่ยังไม่มีบทพูดใช้คำอธิบายภาพเดิมได้โดยจ่ายเฉพาะค่าถอดเสียง
+3. เลือกตัวละครหลักแล้วพิมพ์ไอเดีย เช่น `young man` ให้ Sol ออกแบบรูปลักษณ์กับชุดที่เหมาะกับเรื่อง หลังดูราคาและยืนยันจึงสร้าง **Prompt B** อีกทางหนึ่งคือแก้ Character prompt / สถานที่เองแล้วบันทึก B ฟรี โครงท่าทาง เวลา กล้อง แสง อุปกรณ์ และบทพูดคงเดิม ตัวละครอื่นไม่เปลี่ยน เก็บแต่ละเวอร์ชันแยกกัน
 4. คัดลอกหรือดาวน์โหลด prompt ไปใช้กับโมเดลสร้างวิดีโอ การทำ prompt ในหน้านี้ไม่ได้เรียกสร้างวิดีโออัตโนมัติ
 
 โครงคำสั่งใน B เหมือน A ตรวจด้วย hash และเทียบข้อความ แต่ **ไม่มีโมเดล text-to-video ที่รับประกันวิดีโอเหมือนต้นฉบับ 100% จากข้อความเพียงอย่างเดียว** เมื่อเปลี่ยนร่างกายหรือโครงสถานที่ อาจทำท่าเดิมไม่ได้ ต้องอ่านเงื่อนไขความเข้ากันได้และตรวจผลจริง
@@ -15,7 +15,7 @@
 
 `gpt-6.1-sol` รับภาพได้ แต่ไม่รับ native video/audio ตามเอกสารที่ตรวจ 14 พฤศจิกายน 2026: https://developers.openai.com/api/docs/models/gpt-6.1-sol
 
-ส่งภาพประมาณ 2 ภาพต่อวินาที และภาพต้น/กลาง/ท้ายของแต่ละช็อต สูงสุด 64 ภาพ ภาพมี frame index และ timestamp จริง หากเกินให้เลือกช่วงสั้นลง ไม่ลดภาพเงียบ ๆ ขอบเขตช่วงจะเลื่อนไปเฟรมที่เริ่มตรงหรือหลังเวลาที่เลือก และแสดงเวลาจริง ไม่เปลี่ยน shot boundaries ต้นฉบับ ภาพส่งย่อด้านยาวไม่เกิน 768 px คลิป preview ไม่มีเสียง ไม่ส่งทั้งคลิปหรือเสียงให้ OpenAI
+ส่งภาพประมาณ 2 ภาพต่อวินาที และภาพต้น/กลาง/ท้ายของแต่ละช็อต สูงสุด 64 ภาพ ภาพมี frame index และ timestamp จริง หากเกินให้เลือกช่วงสั้นลง ไม่ลดภาพเงียบ ๆ ขอบเขตช่วงจะเลื่อนไปเฟรมที่เริ่มตรงหรือหลังเวลาที่เลือก และแสดงเวลาจริง ไม่เปลี่ยน shot boundaries ต้นฉบับ ภาพส่งย่อด้านยาวไม่เกิน 768 px คลิป preview รุ่นใหม่มีเสียง ส่งเฉพาะเสียงช่วงที่เลือกไป OpenAI Transcriptions แยกจาก Sol ไม่ส่งวิดีโอทั้งไฟล์ไปโมเดล
 
 การตีความการเคลื่อนไหวระหว่างภาพอาจผิด จึงแสดงเป็นร่างจาก AI ต้องตรวจ ไม่ใช่ prompt ดั้งเดิม ไม่ใช่ผลที่เจ้าของตรวจแล้ว ID ตัวละครต่อเนื่องภายในช่วงที่เลือก การถอดคนละช่วงยังไม่ได้ยืนยันว่าเป็นตัวละครเดียวกันข้ามช่วง
 
@@ -27,6 +27,8 @@ Motion API และ Motion worker ใช้ตัวแปรเดียวก
 OPENAI_API_KEY=<existing server secret>
 MOTION_REVERSE_BRAIN_MODEL=gpt-6.1-sol
 MOTION_REVERSE_OPENAI_RATE_JSON=<reviewed JSON price snapshot>
+MOTION_REVERSE_TRANSCRIBE_MODEL=gpt-transcribe
+MOTION_REVERSE_TRANSCRIBE_RATE_JSON=<reviewed duration price snapshot>
 ```
 
 Worker ใช้ reference `${{motion-api.OPENAI_API_KEY}}` เพื่อใช้ key เดียวกับ API ไม่มี secret ใหม่ใน repository หรือเบราว์เซอร์ Re:Video ไม่จำเป็นต้องมี OpenAI key เพราะเรียก Motion ผ่าน private bridge ช่องกรอก API keys ถูกถอดจาก UI และ settings POST เดิมถูกปิดด้วย 403 ข้อมูลเก่าไม่ถูกลบ
@@ -37,10 +39,10 @@ Price snapshot ปัจจุบัน: USD/1M tokens input 2, cache-write rese
 
 ## โครงสร้างและความทนทาน
 
-Re:Video UI → authenticated same-origin bridge → Motion API/Postgres → Motion queue/worker → OpenAI → structured immutable Prompt A → deterministic Prompt B
+Re:Video UI → authenticated same-origin bridge → Motion API/Postgres → Motion queue/worker → OpenAI frames + selected-audio transcription → immutable Prompt A → optional character design → slot-only Prompt B
 
-- Migration `029_reverse_prompt_pairs.sql` เพิ่ม selections และ versions เท่านั้น
-- Routes: `POST prompt-range`, `GET prompts`, `POST prompt-quote`, `POST prompt-remake` ภายใต้ `/app/api/reverse/projects/:id/`; ใช้ `approve` และ `resume` เดิม
+- Migration `029_reverse_prompt_pairs.sql` เพิ่ม selections และ versions; `030_reverse_prompt_audio.sql` เพิ่ม audio evidence แยกจาก visual evidence จึงไม่แก้หลักฐานของใบราคาเดิม
+- Routes: `POST prompt-range`, `GET prompts`, `POST prompt-quote`, `POST prompt-character-quote`, `POST prompt-remake` ภายใต้ `/app/api/reverse/projects/:id/`; ใช้ `approve` และ `resume` เดิม
 - ผูกใบราคากับ source/evidence/model/system/schema/key/price/expiry ก่อนบันทึกอนุมัติใน ledger เดิม
 - หนึ่ง submission หนึ่ง POST; มี response ID แล้วติดตามด้วย GET เท่านั้น; ถ้าไม่ทราบผล POST จะบล็อกการส่งซ้ำ
 - เก็บ response ดิบแบบเข้ารหัสก่อนตรวจ schema; refusal/incomplete ไม่ถูกแทนด้วยข้อความจำลอง
@@ -71,3 +73,18 @@ Worker บันทึก `jobs.stage_results._reverse_progress` โดยไม
 ช่วง OpenAI กำลังคิดไม่มีเปอร์เซ็นต์จากผู้ให้บริการ จะแสดงการรอผลพร้อมเวลาจริงและติดตาม response ID เดิม เมื่อเชื่อมต่อขัดข้อง จะลองอ่านสถานะอีกครั้ง ไม่ส่งคำขอสร้างงานเพิ่ม งานเสร็จแสดง 100% และหยุดนาฬิกา งานล้มเหลวแสดงข้อผิดพลาด โดยยังต้องใช้กฎ resume/approval เดิม
 
 การเตรียมภาพยังใช้ FFmpeg กับขอบเขต/หลักฐานจาก rea-video จริง ส่วน Capsule ใช้ในเครื่องมือวางแผนเพิ่มเติม ไม่ต้องรันซ้ำเพื่อแสดงความคืบหน้าหรือแทนค่าตัวละคร/สถานที่
+
+## บทพูดและตัวละครหลัก (14 พฤศจิกายน 2026, รอบแก้ไขเพิ่มเติม)
+
+- สาเหตุเดิม: Sol อ่านภาพอย่างเดียว และ prompt compiler เขียน “No added … dialogue.” ตอนนี้ถอดเสียงด้วย GPT-Transcribe แล้วแนบบทพูดเดิมไว้ใน A และ B พร้อมล็อก hash รวมเสียง ไม่เดาคำพูดจากภาพ
+- GPT-Transcribe ตามเอกสารปัจจุบันมีราคา $0.0045/นาที: https://developers.openai.com/api/docs/models/gpt-transcribe ตรวจ 14 พ.ย. 2026 ใช้ JSON transcript กับ languages ไม่ส่งพารามิเตอร์ word timestamps ที่รุ่นนี้ไม่รองรับ
+- เวลาเป็นขอบเขตคลิปเสียงที่วัดจริง **ไม่ใช่เวลารายคำ** ผู้พูดยังเป็น unknown ไม่จับคู่กับ C1 จากการเดา การถอดเสียงอาจผิดจากดนตรี/เสียงรบกวน ต้องฟังตรวจ ผลไม่ใช่ voice clone หรือ lip sync
+- โมเดล Whisper/SenseVoice ใน upstream ไม่ได้ถูกใช้ถอดเสียงในโหมดนี้ (SenseVoice ที่ pin ไว้ไม่รองรับภาษาไทย) rea-video ยังใช้แยกฉาก/เก็บหลักฐานจริง; Sol อ่านภาพและแต่งตัวละคร; GPT-Transcribe อ่านเสียง
+- เสียง WAV mono 16 kHz เก็บแบบเข้ารหัส พร้อม SHA256 และเวลาเทียบต้นฉบับ รักษา offset เสียงกับภาพ รวมกรณี audio track เริ่มช้า
+- การเพิ่มเสียงให้ A เก่าสร้างเวอร์ชันลูก ไม่แก้ A/B เก่า ไม่วิเคราะห์ภาพซ้ำ แคชเสียงผูกกับ source/model/audio/key โดยไม่ใช้ parent-version เป็นเหตุให้เสียเงินซ้ำ
+- ASR เป็น synchronous POST ถ้าผลไม่แน่ชัดจะหยุดรอตรวจสอบ ไม่ส่งซ้ำ และไม่มี response ID ที่ตามผลได้เหมือน Responses API
+- ตัวละครหลักเริ่มจากช่องที่ถูกอ้างถึงบ่อยสุด ผู้ใช้เปลี่ยนได้ ไม่อ้างว่า AI ยืนยันบทบาทหลักแล้ว AI ออกแบบ appearance + clothing (เสื้อ กางเกง รองเท้า ฯลฯ) จากเนื้อเรื่อง/สถานที่/ท่าทางและเงื่อนไข รักษาตัวละครอื่นและบทพูดเดิม รายละเอียดชุดเป็นความคิดสร้างสรรค์ใหม่ ไม่ใช่หลักฐานต้นฉบับ
+- พิมพ์ไอเดียไม่มีค่าใช้จ่าย กดออกแบบจะเห็นราคา/โมเดล/ข้อมูลที่ส่งก่อนยืนยัน แก้ข้อความหลังขอราคาทำให้ใบราคาใน UI ใช้ต่อไม่ได้; การแก้ช่องตัวละครเองยังฟรี
+- Deploy API/migration ก่อน worker ใหม่; API บล็อกเตรียมเสียง/ออกแบบตัวละครถ้า heartbeat ยังเป็น worker รุ่นเก่า แล้วค่อยอัปเดต Re:Video
+
+ทดสอบด้วย FFmpeg จริงและ HTTP fixtures เท่านั้นในรอบพัฒนา ไม่มี paid inference หรือ paid generation และไม่ถือข้อความจำลองเป็นหลักฐานคุณภาพ ASR/LLM จริง รายงาน deployment แยกตรวจ service, audio SHA/duration/private access และ model availability โดยไม่กดยืนยันค่าใช้จ่ายแทนผู้ใช้

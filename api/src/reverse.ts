@@ -9,9 +9,9 @@ import {sealUpload,readPrivateAsset,streamPrivateAsset,keyId} from './reverse-st
 import {VISION_MODELS,PLANNER_MODELS,ROUTER,PLANNER_SYSTEM,QA_SYSTEM,visionPayload,routerRate,routerEstimate,generationTask} from './reverse-providers.js';
 import {falPrices} from './text-video.js';
 import {catalogModels} from './reverse-catalog.js';
-import {registerPromptRoutes,promptModel,verifyOpenAIModel} from './reverse-prompts.js';
+import {registerPromptRoutes,promptModel,transcriptionModel,verifyOpenAIModel} from './reverse-prompts.js';
 const P='/app/api/reverse',UUID=z.string().uuid();
-type Options={openaiModelCheck?:()=>Promise<void>;guard:(c:Context,next:Next)=>Promise<any>;prices?:typeof falPrices;tokenRate?:typeof routerRate;upload?:typeof sealUpload;asset?:typeof readPrivateAsset};
+type Options={openaiModelCheck?:(model?:string)=>Promise<void>;guard:(c:Context,next:Next)=>Promise<any>;prices?:typeof falPrices;tokenRate?:typeof routerRate;upload?:typeof sealUpload;asset?:typeof readPrivateAsset};
 export function registerReverse(app:Hono,pool:pg.Pool,options:Options){
   const prices=options.prices||falPrices,tokenRate=options.tokenRate||routerRate;
   const guard=async(c:Context,next:Next)=>{
@@ -29,7 +29,7 @@ export function registerReverse(app:Hono,pool:pg.Pool,options:Options){
     if(old){if(old.package_sha256!==sha(pkg))throw Error('Idempotency key belongs to different inputs');return old;}
     return (await cl.query("INSERT INTO jobs(kind,status,package,package_sha256,idempotency_key,budget_credits,max_attempts) VALUES('reverse','NEW',$1,$2,$3,0,3) RETURNING *",[JSON.stringify(pkg),sha(pkg),idempotency])).rows[0];
   }
-  app.get(P+'/config',guard,async c=>{let w=null;try{w=await worker();}catch{}const recipes=(await pool.query('SELECT id,name,version,validated FROM reverse_recipes ORDER BY name,version DESC')).rows;return c.json({schema:'motion.reverse.api.v1',primary_backend:'motion',worker:w,vision_models:VISION_MODELS,planner_models:PLANNER_MODELS,video_models:catalogModels(),recipes,storage_configured:!!process.env.MOTION_REVERSE_STORAGE_KEY,paid_dispatch:'quote_then_owner_approval',legacy_unchanged:true,prompt_brain:{provider:'openai',model:promptModel(),configured:!!w?.openai,input:'timestamped_frames',max_range_s:15},key_management:'railway'});});
+  app.get(P+'/config',guard,async c=>{let w=null;try{w=await worker();}catch{}const recipes=(await pool.query('SELECT id,name,version,validated FROM reverse_recipes ORDER BY name,version DESC')).rows;return c.json({schema:'motion.reverse.api.v1',primary_backend:'motion',worker:w,vision_models:VISION_MODELS,planner_models:PLANNER_MODELS,video_models:catalogModels(),recipes,storage_configured:!!process.env.MOTION_REVERSE_STORAGE_KEY,paid_dispatch:'quote_then_owner_approval',legacy_unchanged:true,prompt_brain:{provider:'openai',model:promptModel(),configured:!!w?.openai,input:'timestamped_frames_and_separate_audio_transcription',transcription_model:transcriptionModel(),max_range_s:15},key_management:'railway'});});
   app.get(P+'/projects',guard,async c=>c.json({projects:(await pool.query('SELECT id,origin_key,title,status,source_sha256,current_revision,created_at,updated_at FROM reverse_projects ORDER BY created_at DESC LIMIT 100')).rows}));
   // Poll metadata only: a source analysis and its duplicate job result can be large.
   app.get(P+'/projects/:id/progress',guard,async c=>{try{
