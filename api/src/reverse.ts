@@ -9,8 +9,9 @@ import {sealUpload,readPrivateAsset,streamPrivateAsset,keyId} from './reverse-st
 import {VISION_MODELS,PLANNER_MODELS,ROUTER,PLANNER_SYSTEM,QA_SYSTEM,visionPayload,routerRate,routerEstimate,generationTask} from './reverse-providers.js';
 import {falPrices} from './text-video.js';
 import {catalogModels} from './reverse-catalog.js';
+import {registerPromptRoutes,promptModel,verifyOpenAIModel} from './reverse-prompts.js';
 const P='/app/api/reverse',UUID=z.string().uuid();
-type Options={guard:(c:Context,next:Next)=>Promise<any>;prices?:typeof falPrices;tokenRate?:typeof routerRate;upload?:typeof sealUpload;asset?:typeof readPrivateAsset};
+type Options={openaiModelCheck?:()=>Promise<void>;guard:(c:Context,next:Next)=>Promise<any>;prices?:typeof falPrices;tokenRate?:typeof routerRate;upload?:typeof sealUpload;asset?:typeof readPrivateAsset};
 export function registerReverse(app:Hono,pool:pg.Pool,options:Options){
   const prices=options.prices||falPrices,tokenRate=options.tokenRate||routerRate;
   const guard=async(c:Context,next:Next)=>{
@@ -28,8 +29,21 @@ export function registerReverse(app:Hono,pool:pg.Pool,options:Options){
     if(old){if(old.package_sha256!==sha(pkg))throw Error('Idempotency key belongs to different inputs');return old;}
     return (await cl.query("INSERT INTO jobs(kind,status,package,package_sha256,idempotency_key,budget_credits,max_attempts) VALUES('reverse','NEW',$1,$2,$3,0,3) RETURNING *",[JSON.stringify(pkg),sha(pkg),idempotency])).rows[0];
   }
-  app.get(P+'/config',guard,async c=>{let w=null;try{w=await worker();}catch{}const recipes=(await pool.query('SELECT id,name,version,validated FROM reverse_recipes ORDER BY name,version DESC')).rows;return c.json({schema:'motion.reverse.api.v1',primary_backend:'motion',worker:w,vision_models:VISION_MODELS,planner_models:PLANNER_MODELS,video_models:catalogModels(),recipes,storage_configured:!!process.env.MOTION_REVERSE_STORAGE_KEY,paid_dispatch:'quote_then_owner_approval',legacy_unchanged:true});});
+  app.get(P+'/config',guard,async c=>{let w=null;try{w=await worker();}catch{}const recipes=(await pool.query('SELECT id,name,version,validated FROM reverse_recipes ORDER BY name,version DESC')).rows;return c.json({schema:'motion.reverse.api.v1',primary_backend:'motion',worker:w,vision_models:VISION_MODELS,planner_models:PLANNER_MODELS,video_models:catalogModels(),recipes,storage_configured:!!process.env.MOTION_REVERSE_STORAGE_KEY,paid_dispatch:'quote_then_owner_approval',legacy_unchanged:true,prompt_brain:{provider:'openai',model:promptModel(),configured:!!w?.openai,input:'timestamped_frames',max_range_s:15},key_management:'railway'});});
   app.get(P+'/projects',guard,async c=>c.json({projects:(await pool.query('SELECT id,origin_key,title,status,source_sha256,current_revision,created_at,updated_at FROM reverse_projects ORDER BY created_at DESC LIMIT 100')).rows}));
+  // Poll metadata only: a source analysis and its duplicate job result can be large.
+  app.get(P+'/projects/:id/progress',guard,async c=>{try{
+    const id=UUID.parse(c.req.param('id'));
+    if(!(await pool.query('SELECT id FROM reverse_projects WHERE id=$1',[id])).rows[0])throw Error('Project not found');
+    const jobs=(await pool.query(`SELECT id,status,stage,progress,error,created_at,updated_at,finished_at,
+      package->'reverse'->>'action' AS action,
+      COALESCE(package->'reverse'->>'selection_id',package->'reverse'->'quote'->'tasks'->0->>'selection_id') AS selection_id,
+      stage_results->'_reverse_progress' AS live_progress,
+      (locked_by IS NOT NULL) AS claimed,
+      CASE WHEN locked_by IS NOT NULL THEN locked_until - interval '10 minutes' END AS worker_seen_at
+      FROM jobs WHERE kind='reverse' AND package->'reverse'->>'project_id'=$1 ORDER BY created_at DESC LIMIT 50`,[id])).rows;
+    return c.json({jobs,server_time:new Date().toISOString()});
+  }catch(e){return fail(c,e);}});
   app.post(P+'/projects',guard,async c=>{try{const input=ProjectInput.parse(await c.req.json()),old=(await pool.query('SELECT * FROM reverse_projects WHERE origin_key=$1',[input.origin_key])).rows[0];if(old){if(old.source_sha256!==input.source.sha256)throw Error('Original source changed; create a new project');return c.json(old);}
     const p=(await pool.query('INSERT INTO reverse_projects(origin_key,title,source_sha256,source) VALUES($1,$2,$3,$4) RETURNING *',[input.origin_key,input.title,input.source.sha256,JSON.stringify(input.source)])).rows[0];return c.json(p,201);
   }catch(e){return fail(c,e);}});
@@ -56,11 +70,11 @@ export function registerReverse(app:Hono,pool:pg.Pool,options:Options){
   app.get(P+'/projects/:id/versions',guard,async c=>{try{const p=await project(c.req.param('id'));return c.json({versions:(await pool.query('SELECT * FROM reverse_versions WHERE project_id=$1 ORDER BY created_at DESC LIMIT 100',[p.id])).rows});}catch(e){return fail(c,e);}});
   app.post(P+'/jobs/:id/resume',guard,async c=>{const cl=await pool.connect();try{await cl.query('BEGIN');const id=UUID.parse(c.req.param('id')),job=(await cl.query("SELECT * FROM jobs WHERE id=$1 AND kind='reverse' FOR UPDATE",[id])).rows[0];if(!job||job.status!=='FAILED')throw Error('Only a failed reverse job can resume');
     const calls=(await cl.query('SELECT * FROM creative_calls WHERE job_id=$1',[id])).rows;
-    if(calls.some((x:any)=>['started','uncertain'].includes(x.status)&&!(x.provider==='fal'&&x.provider_id)))throw Error('Unknown POST outcome requires provider reconciliation; no automatic re-send');
+    if(calls.some((x:any)=>['started','uncertain'].includes(x.status)&&!(['fal','openai'].includes(x.provider)&&x.provider_id)))throw Error('Unknown POST outcome requires provider reconciliation; no automatic re-send');
     if(job.package.reverse.quote&&Date.parse(job.package.reverse.quote.valid_until)<=Date.now()){
       const q=job.package.reverse.quote,done=new Set((await cl.query("SELECT slot FROM reverse_steps WHERE job_id=$1 AND status='complete'",[id])).rows.map((x:any)=>x.slot));
       const remaining=q.tasks.filter((t:any)=>t.provider!=='local'&&!done.has(t.slot));
-      if(!remaining.every((t:any)=>t.provider==='fal'&&calls.some((x:any)=>x.call_key==='reverse:'+q.binding+':'+t.slot&&x.provider_id&&['started','uncertain','complete','reconciled'].includes(x.status))))throw Error('Approval expired; only saved accepted requests can be polled, no new paid steps');
+      if(!remaining.every((t:any)=>['fal','openai'].includes(t.provider)&&calls.some((x:any)=>x.call_key==='reverse:'+q.binding+':'+t.slot&&x.provider_id&&['started','uncertain','complete','reconciled'].includes(x.status))))throw Error('Approval expired; only saved accepted requests can be polled, no new paid steps');
     }
     await cl.query("UPDATE jobs SET status='NEW',attempts=0,error=NULL,locked_by=NULL,locked_until=NULL,updated_at=now() WHERE id=$1",[id]);await cl.query('COMMIT');return c.json({job_id:id,status:'NEW'},202);
   }catch(e){await cl.query('ROLLBACK');return fail(c,e);}finally{cl.release();}});
@@ -141,5 +155,6 @@ export function registerReverse(app:Hono,pool:pg.Pool,options:Options){
   }catch(e){await cl.query('ROLLBACK');return fail(c,e);}finally{cl.release();}});
   app.post(P+'/projects/:id/recipe',guard,async c=>{try{const p=await project(c.req.param('id')),input=z.object({name:z.string().regex(/^[a-z0-9_-]{1,80}$/),display_name:z.string().max(120).optional(),recipe:z.record(z.unknown()),reviewed:z.literal(true)}).strict().parse(await c.req.json());if(JSON.stringify(input).length>100000)throw Error('Recipe too large');const job=await queue(pool,p,'recipe',{recipe:input},'reverse:recipe:'+p.id+':'+sha(input));return c.json({job_id:job.id,paid_requests:0},202);}catch(e){return fail(c,e);}});
   app.post(P+'/projects/:id/assemble',guard,async c=>{try{const p=await project(c.req.param('id'));const input=z.object({revision:z.string().length(64),assets:z.record(z.string().uuid()),rights_confirmed:z.literal(true)}).strict().parse(await c.req.json());if(input.revision!==p.current_revision)throw Error('Plan changed before assembly');const job=await queue(pool,p,'assemble',input,'reverse:assemble:'+sha({project:p.id,...input}));return c.json({job_id:job.id,paid_requests:0},202);}catch(e){return fail(c,e);}});
+  registerPromptRoutes(app,pool,{P,guard,project,worker,queue,fail,checkOpenAI:options.openaiModelCheck||verifyOpenAIModel});
   return {project,queue};
 }

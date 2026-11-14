@@ -25,6 +25,7 @@ from .reverse_render import code_motion,normalize,compose,technical_qa,assemble,
 from .reverse_audio import produce_audio
 from .text_video import ApprovalRequired,check_active,download_video
 from .creative_ledger import digest,AmbiguousCall
+from . import reverse_prompts
 
 
 def schemas():return json.loads(Path(__file__).with_name('reverse-schemas.json').read_text())
@@ -318,8 +319,8 @@ def run(ctx):
     spec=ctx.pkg['reverse'];project=ctx.db.one('SELECT * FROM reverse_projects WHERE id=%s',(spec['project_id'],))
     if not project or project['source_sha256']!=spec['source_sha256']:raise ApprovalRequired('Source binding changed')
     check_active(ctx)
-    if spec['action'] in ('analyze','recipe','assemble'):
-        result={'analyze':analyze,'recipe':recipe,'assemble':final_assembly}[spec['action']](ctx,project,spec)
+    if spec['action'] in ('analyze','recipe','assemble','prompt_prepare'):
+        result={'analyze':analyze,'recipe':recipe,'assemble':final_assembly,'prompt_prepare':reverse_prompts.prepare}[spec['action']](ctx,project,spec)
     else:
         quote=spec['quote'];approval=ctx.db.one('SELECT * FROM reverse_approvals WHERE quote_id=%s AND job_id=%s',(quote['id'],ctx.job['id']))
         if not approval or approval['binding']!=quote['binding']:raise ApprovalRequired('No persisted owner approval')
@@ -335,7 +336,7 @@ def run(ctx):
                 # Require a concrete approved predecessor asset. No silent image
                 # fallback and no source-frame substitution.
                 raise ApprovalRequired('Select the generated predecessor last frame as an explicit first-frame reference and quote again')
-            fn={'vision':vision,'planner':planner,'video':generate,'audio':produce_audio,'image':image_reference,'visual_qa':visual_qa}[task['role']]
+            fn={'vision':vision,'planner':planner,'video':generate,'audio':produce_audio,'image':image_reference,'visual_qa':visual_qa,'prompt_extract':reverse_prompts.extract}[task['role']]
             value=fn(ctx,project,task,quote)
             ctx.db.q("UPDATE reverse_steps SET status='complete',result=%s,updated_at=now() WHERE job_id=%s AND slot=%s",(Jsonb(value),ctx.job['id'],slot))
             result['steps'].append(value)
@@ -349,10 +350,10 @@ def capability_loop(stop):
     from .db import DB
     while not stop():
         try:
-            db=DB();data={'runtime':runtime_status(),'fal':bool(os.environ.get('FAL_KEY')),'eleven':bool(config.ELEVENLABS_API_KEY),
+            db=DB();data={'runtime':runtime_status(),'openai':bool(os.environ.get('OPENAI_API_KEY')),'prompt_model':os.environ.get('MOTION_REVERSE_BRAIN_MODEL','gpt-6.1-sol'),'prompt_rate':json.loads(os.environ.get('MOTION_REVERSE_OPENAI_RATE_JSON','null')),'fal':bool(os.environ.get('FAL_KEY')),'eleven':bool(config.ELEVENLABS_API_KEY),
                 'voice_id':config.DEFAULT_VOICE_ID,'tts_model':os.environ.get('MOTION_DEFAULT_TTS_MODEL','eleven_v4'),
                 'sfx_model':os.environ.get('MOTION_DEFAULT_SFX_MODEL','eleven_text_to_sound_v3'),
-                'key_fingerprints':{'fal':fingerprint('FAL_KEY'),'eleven':fingerprint('ELEVENLABS_API_KEY')},'private_storage':bool(os.environ.get('MOTION_REVERSE_STORAGE_KEY'))}
+                'key_fingerprints':{'openai':fingerprint('OPENAI_API_KEY'),'fal':fingerprint('FAL_KEY'),'eleven':fingerprint('ELEVENLABS_API_KEY')},'private_storage':bool(os.environ.get('MOTION_REVERSE_STORAGE_KEY'))}
             db.q("INSERT INTO integrations(provider,data,updated_at) VALUES('reverse_worker',%s,now()) ON CONFLICT(provider) DO UPDATE SET data=EXCLUDED.data,updated_at=now()",(Jsonb(data),));db.conn.close()
         except Exception as error:print('Reverse capability heartbeat:',type(error).__name__,flush=True)
         for _ in range(30):
