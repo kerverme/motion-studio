@@ -41,7 +41,7 @@ Price snapshot ปัจจุบัน: USD/1M tokens input 2, cache-write rese
 
 Re:Video UI → authenticated same-origin bridge → Motion API/Postgres → Motion queue/worker → OpenAI frames + selected-audio transcription → immutable Prompt A → optional character design → slot-only Prompt B
 
-- Migration `029_reverse_prompt_pairs.sql` เพิ่ม selections และ versions; `030_reverse_prompt_audio.sql` เพิ่ม audio evidence แยกจาก visual evidence จึงไม่แก้หลักฐานของใบราคาเดิม
+- Migration `029_reverse_prompt_pairs.sql` เพิ่ม selections และ versions; `031_reverse_prompt_audio.sql` เพิ่ม audio evidence แยกจาก visual evidence จึงไม่แก้หลักฐานของใบราคาเดิม
 - Routes: `POST prompt-range`, `GET prompts`, `POST prompt-quote`, `POST prompt-character-quote`, `POST prompt-remake` ภายใต้ `/app/api/reverse/projects/:id/`; ใช้ `approve` และ `resume` เดิม
 - ผูกใบราคากับ source/evidence/model/system/schema/key/price/expiry ก่อนบันทึกอนุมัติใน ledger เดิม
 - หนึ่ง submission หนึ่ง POST; มี response ID แล้วติดตามด้วย GET เท่านั้น; ถ้าไม่ทราบผล POST จะบล็อกการส่งซ้ำ

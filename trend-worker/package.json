@@ -1,0 +1,7 @@
+{
+  "name": "cloudbath-jev-trend-worker", "private": true, "version": "1.0.0", "type": "module",
+  "engines": {"node": ">=24"},
+  "scripts": {"start": "node --import tsx src/index.ts", "check": "tsc --noEmit", "test": "node --import tsx --test src/*.test.ts"},
+  "dependencies": {"jev-social": "https://codeload.github.com/socai-io/jev-social/tar.gz/2058ea22ad5d6586e1339029bc0cc2715637e0b9", "pg": "8.13.1", "tsx": "4.19.2", "zod": "3.23.8"},
+  "devDependencies": {"@types/node": "22.10.2", "@types/pg": "8.11.10", "typescript": "5.7.2"}
+}
