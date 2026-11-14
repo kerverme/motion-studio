@@ -54,6 +54,8 @@ API: typecheck และ 149 tests ผ่าน รวม quote/approval/idempot
 
 Worker: 57 tests ผ่าน / 1 skipped / 13 subtests; หลังปรับข้อความ uncertainty รัน targeted 3 tests ผ่าน รวม FFmpeg จริง, frame PTS, Python/JS hash parity, POST timeout และ GET-only resume
 
+Re:Video: 525 tests ผ่าน / 6 skipped หลังแก้ expiry ของข้อมูลราคาจำลองใน tests เท่านั้น กฎราคาจริงไม่เปลี่ยน
+
 UI: Chromium ทดสอบโหมดหลัก 10 checks และเครื่องมือเดิม 10 checks ผ่าน มี desktop/mobile, ไม่มี key fields, ไม่อนุมัติค่าใช้จ่ายเอง, ไม่ให้คัดลอก B ที่ยังไม่บันทึก, A และคำสั่งการเคลื่อนไหวคงเดิม ทั้งหมดเป็น HTTP fixtures ไม่ใช่หลักฐานคุณภาพการอ่านวิดีโอของ AI
 
 ยังไม่ทดสอบ paid OpenAI inference หรือ paid video generation ในรอบพัฒนานี้ ต้องแยกผล production free smoke กับผลโมเดลจริง ดู DEPLOYMENT_PROMPT_AB_TH.md หลัง deploy
