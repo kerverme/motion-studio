@@ -6,6 +6,7 @@
 !trend-worker/src
 !trend-worker/src/**
 !api
+!api/package.json
 !api/src
 !api/src/trends
 !api/src/trends/**

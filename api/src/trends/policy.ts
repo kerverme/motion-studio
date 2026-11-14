@@ -49,6 +49,7 @@ export function scoreEvidence(e:Evidence,previous:Evidence[], options:{now?:numb
   return {status,score,evidenceAt,components,weights,reasons,viewGrowth,likeGrowth,engagementRate:e.views&&e.likes!=null&&e.comments!=null?(e.likes+e.comments)/e.views:null};
 }
 export function isEligible(row:any,now=Date.now()) {
-  return row.status==='Active'&&Number(row.trend_score)>=(Number(process.env.TREND_MIN_SCORE)||70)&&!!row.notion_page_id&&!!row.notion_synced_at&&new Date(row.last_trend_evidence_at).getTime()>=now-WINDOW_MS&&new Date(row.last_checked).getTime()>=now-WINDOW_MS;
+  const evidenceAt=new Date(row.last_trend_evidence_at).getTime(),checked=new Date(row.last_checked).getTime();
+  return row.status==='Active'&&Number(row.trend_score)>=(Number(process.env.TREND_MIN_SCORE)||70)&&!!row.notion_page_id&&!!row.notion_synced_at&&evidenceAt>=now-WINDOW_MS&&evidenceAt<=now&&checked>=now-WINDOW_MS&&checked<=now;
 }
 export const bangkokDate=(v:string)=>new Intl.DateTimeFormat('th-TH',{dateStyle:'medium',timeStyle:'short',timeZone:'Asia/Bangkok'}).format(new Date(v));

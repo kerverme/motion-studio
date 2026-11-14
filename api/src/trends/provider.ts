@@ -27,7 +27,8 @@ export async function researchResponse(db:Queryable,runId:string,key:string,body
   try {
     const response=await openaiResponse({...body,model,reasoning:{effort:'low'},max_output_tokens:Math.min(body.max_output_tokens||2000,4000)},{apiKey:process.env.OPENAI_API_KEY!,baseUrl:process.env.OPENAI_BASE_URL||'https://api.openai.com',timeoutMs:Math.max(1,Math.min(120000,deadline-Date.now())),responseId:existing?.response_id,
       onProgress:async message=>{const id=message.match(/\[(resp_[\w-]+)\]/)?.[1];if(id)await db.query('UPDATE trend_provider_calls SET response_id=$2 WHERE call_key=$1',[callKey,id]);}});
-    await db.query("UPDATE trend_provider_calls SET status='done',response_id=$2,usage=$3,estimated_usd=$4,api_usage=$5,finished_at=now() WHERE call_key=$1",[callKey,response.id,JSON.stringify(response.usage||null),estimateTerra(response.usage),JSON.stringify({response,web_search_calls:(response.output||[]).filter((x:any)=>x.type==='web_search_call').length})]);
+    const searches=(response.output||[]).filter((x:any)=>x.type==='web_search_call').length;
+    await db.query("UPDATE trend_provider_calls SET status='done',response_id=$2,usage=$3,estimated_usd=$4,reserved_usd=$4,api_usage=$5,finished_at=now() WHERE call_key=$1",[callKey,response.id,JSON.stringify(response.usage||null),(estimateTerra(response.usage)??reserved)+searches*.01,JSON.stringify({response,web_search_calls:searches})]);
     return response;
   }catch(error){await db.query("UPDATE trend_provider_calls SET status='failed',error=$2,finished_at=now() WHERE call_key=$1",[callKey,error instanceof Error?error.message.slice(0,500):'provider failure']);throw error;}
 }

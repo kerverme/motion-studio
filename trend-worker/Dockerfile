@@ -15,9 +15,11 @@ COPY --from=socai /build/target/release/socai /usr/local/bin/socai
 COPY trend-worker/src ./src
 COPY api/src/trends /app/api/src/trends
 COPY api/src/openai-response.ts /app/api/src/openai-response.ts
+COPY api/package.json /app/api/package.json
 COPY api/migrations/030_trend_research.sql /app/api/migrations/030_trend_research.sql
 RUN ln -s /app/trend-worker/node_modules /app/api/node_modules && chown -R node:node /app
 USER node
+RUN node --import tsx --test src/adapter.test.ts
 ENV NODE_ENV=production PORT=8080 SOCAI_BIN=/usr/local/bin/socai CHROMIUM_BIN=/usr/bin/chromium
 EXPOSE 8080
 ENTRYPOINT ["/usr/bin/tini", "-g", "--"]

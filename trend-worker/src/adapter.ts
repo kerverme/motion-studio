@@ -36,6 +36,15 @@ export async function research(db:Queryable,run:any) {
     let daemonReady=false;
     for(let i=0;i<50;i++){try{await stat(join(root,'socai','rust-daemon.sock'));daemonReady=true;break;}catch{}if(daemon.exitCode!==null)throw new Error('Isolated socai daemon failed to start');await new Promise(r=>setTimeout(r,200));}
     if(!daemonReady)throw new Error('Isolated socai daemon startup timed out');
+    // Discover candidate URLs through the existing OpenAI hosted search first.
+    // Search snippets are never treated as publication/engagement observations.
+    const discovery=await researchResponse(db,run.id,'discovery',{input:[{role:'user',content:`Find up to ${Math.min(3,run.request.limit||2)} public ${run.request.platform} post URLs about ${String(run.request.query).slice(0,400)}, preferably published after ${new Date(Date.now()-7*86400000).toISOString()}. Use web search, cite actual source URLs. Do not invent recent dates, metrics or URLs; say unavailable if no results. Only discover links, do not log in or interact with accounts.`}],tools:[{type:'web_search',search_context_size:'low',filters:{allowed_domains:[run.request.platform+'.com']}}],include:['web_search_call.action.sources'],max_tool_calls:2,max_output_tokens:1200},deadline);
+    const discovered=new Set<string>();
+    for(const output of discovery.output||[]){
+      for(const source of output.action?.sources||[]){const s=canonicalSource(source.url);if(s?.platform===run.request.platform)discovered.add(s.url);}
+      for(const content of output.content||[])for(const annotation of content.annotations||[]){const s=canonicalSource(annotation.url||annotation.url_citation?.url);if(s?.platform===run.request.platform)discovered.add(s.url);}
+    }
+    const candidates=[...discovered].slice(0,3);
     const client={systemOne:async(request:any)=>{
       const properties:any={},required:string[]=[];
       for(const [name,q] of Object.entries<any>(request.questions)){properties[name]={type:'string',enum:Object.keys(q.criteria)};required.push(name);}
@@ -44,10 +53,11 @@ export async function research(db:Queryable,run:any) {
       return {model:'gpt-6.1-terra',answers:Object.fromEntries(required.map(k=>[k,{type:'choice',choice:selected[k],confidence:1}])),usage:response.usage};
     }};
     const maxSteps=Math.max(1,Math.min(8,Number(process.env.TREND_MAX_STEPS)||6)),limit=Math.max(1,Math.min(6,run.request.limit||2));
-    const result=await runSearch({platform:run.request.platform,limit,maxSteps,query:`Research ${run.request.platform} read-only: ${run.request.query}. Find posts published since ${new Date(Date.now()-7*86400000).toISOString()} or capture actual current engagement for later comparison. Open source details. Never infer growth from total views. Do not download media, follow, like, comment, send messages or publish.`},{env,client,signal:AbortSignal.timeout(Math.max(1,deadline-Date.now())),reportChunkDelayMs:0,onEvent:async(event:any)=>{
+    const result=await runSearch({platform:run.request.platform,limit,maxSteps,query:`Research ${run.request.platform} read-only: ${run.request.query}. ${candidates.length?'First read these source URLs captured by web search: '+candidates.join(' '):''} Find posts published since ${new Date(Date.now()-7*86400000).toISOString()} or capture actual current engagement for later comparison. Open source details. Never infer growth from total views. Do not download media, follow, like, comment, send messages or publish.`},{env,client,signal:AbortSignal.timeout(Math.max(1,deadline-Date.now())),reportChunkDelayMs:0,onEvent:async(event:any)=>{
+      if(event.action&&['searching','reading'].includes(event.stage))browserActions++;
       if(event.stage==='evidence')for(const item of event.items||[]){const e=normalizeItem(item);if(e)observations.set(e.sourceId,e);}
     }});
-    browserActions=(result.actions||[]).filter((x:any)=>x.command).length;
+    browserActions=Math.max(browserActions,(result.actions||[]).filter((x:any)=>x.command).length);
     for(const item of result.items||[]){const e=normalizeItem(item);if(e)observations.set(e.sourceId,e);}
     const items=[...observations.values()].slice(0,limit);
     const assessments=new Map<string,any>();
@@ -56,6 +66,8 @@ export async function research(db:Queryable,run:any) {
       for(const a of outputJSON(response).items||[])if(items.some(e=>e.sourceId===a.sourceId)&&Number.isFinite(a.suitability))assessments.set(a.sourceId,{suitability:Math.max(0,Math.min(100,a.suitability)),reason:String(a.reason||'').slice(0,1000),summary:String(a.summary||'').slice(0,4000),angles:Array.isArray(a.angles)?a.angles.map(String).slice(0,3):[]});
     }
     return {items,assessments,browserActions,status:result.status,reason:String(result.stopReason||'').slice(0,300)};
+  }catch(error){
+    return {items:[...observations.values()].slice(0,6),assessments:new Map<string,any>(),browserActions,status:'failed',reason:error instanceof Error?error.message.slice(0,300):'Research failed'};
   }finally{
     // Only this run's Chrome process group; no machine-wide socai stop/kill sweep.
     if(chrome.pid){try{process.kill(-chrome.pid,'SIGTERM');}catch{}}

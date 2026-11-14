@@ -36,9 +36,10 @@ async function tick(){
         log('research_started',{id:run.id,platform:run.request.platform});
         const result=await research(db,run);let eligible=0;
         for(const evidence of result.items){const row=await saveEvidence(db,run.id,evidence,result.assessments.get(evidence.sourceId)||{suitability:0,reason:'Assessment unavailable',summary:evidence.title,angles:[]});await syncNotion(db,row);if(row.status==='Active')eligible++;log('source_saved',{run_id:run.id,url:row.source_url,published_at:row.published_at,discovered_at:row.discovered_at,status:row.status,score:row.trend_score});}
-        const status=result.status==='blocked'?'blocked':result.status==='completed'?'done':'partial';
-        await db.query('UPDATE trend_research_runs SET status=$2,finished_at=now(),duration_ms=$3,browser_actions=$4,evidence_count=$5,eligible_count=$6,details=$7 WHERE id=$1',[run.id,status,Date.now()-started,result.browserActions,result.items.length,eligible,JSON.stringify({jev_status:result.status,reason:result.reason})]);
-        log('research_finished',{id:run.id,status,evidence:result.items.length,eligible,browser_actions:result.browserActions});lastError=null;
+        const status=result.status==='failed'?'failed':result.status==='blocked'?'blocked':result.status==='completed'?'done':'partial';
+        await db.query('UPDATE trend_research_runs SET status=$2,finished_at=now(),duration_ms=$3,browser_actions=$4,evidence_count=$5,eligible_count=$6,details=$7,error=$8 WHERE id=$1',[run.id,status,Date.now()-started,result.browserActions,result.items.length,eligible,JSON.stringify({jev_status:result.status,reason:result.reason}),['failed','blocked'].includes(status)?result.reason:null]);
+        lastError=['failed','blocked'].includes(status)?result.reason:null;
+        log('research_finished',{id:run.id,status,evidence:result.items.length,eligible,browser_actions:result.browserActions,reason:result.reason});
       }catch(e){lastError=e instanceof Error?e.message.slice(0,300):'Research failed';await db.query("UPDATE trend_research_runs SET status='failed',finished_at=now(),duration_ms=$2,error=$3 WHERE id=$1",[run.id,Date.now()-started,lastError]);log('research_failed',{id:run.id,error:lastError});}finally{clearInterval(heartbeat);}
     }
     for(const row of (await db.query("SELECT * FROM trend_sources WHERE notion_synced_at IS NULL ORDER BY last_checked DESC LIMIT 10")).rows){try{await syncNotion(db,row);}catch(e){log('notion_sync_failed',{source_id:row.id,error:e instanceof Error?e.message:'sync failed'});}}
@@ -46,6 +47,9 @@ async function tick(){
   finally{if(locked)await db.query('SELECT pg_advisory_unlock(424249)').catch(()=>{});db.release();busy=false;}
 }
 async function start(){await migrate();
+  const notion=await fetch('https://api.notion.com/v1/databases/'+process.env.NOTION_TREND_DATABASE_ID,{headers:{Authorization:'Bearer '+process.env.NOTION_TOKEN,'Notion-Version':'2022-06-28'},signal:AbortSignal.timeout(25000)});
+  log('notion_connectivity',{ok:notion.ok,http_status:notion.status});
+  if(!notion.ok)lastError='Notion database unavailable: HTTP '+notion.status;
   const bootstrap=JSON.parse(process.env.TREND_BOOTSTRAP_TESTS_JSON||'[]');
   for(const r of bootstrap.slice(0,4)){if(!['tiktok','instagram'].includes(r.platform)||!r.key||typeof r.query!=='string')throw new Error('Invalid bounded bootstrap research request');await pool.query('INSERT INTO trend_research_runs(request_key,request) VALUES($1,$2) ON CONFLICT(request_key) DO NOTHING',[r.key,JSON.stringify({platform:r.platform,query:r.query.slice(0,400),limit:Math.max(1,Math.min(6,r.limit||2))})]);}
   ready=true;log('worker_ready',{worker_id:workerId});void tick();setInterval(()=>void tick(),15000).unref();
