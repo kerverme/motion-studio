@@ -1,0 +1,14 @@
+**
+!trend-worker
+!trend-worker/package.json
+!trend-worker/package-lock.json
+!trend-worker/socai-runtime.patch
+!trend-worker/src
+!trend-worker/src/**
+!api
+!api/src
+!api/src/trends
+!api/src/trends/**
+!api/src/openai-response.ts
+!api/migrations
+!api/migrations/030_trend_research.sql
