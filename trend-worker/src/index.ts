@@ -5,6 +5,7 @@ import {randomUUID} from 'node:crypto';
 import {research} from './adapter.js';
 import {saveEvidence} from '../../api/src/trends/store.js';
 import {syncNotion} from '../../api/src/trends/notion.js';
+import {reconcileUsage} from '../../api/src/trends/provider.js';
 
 const pool=new pg.Pool({connectionString:process.env.DATABASE_URL,max:4});
 const workerId=randomUUID();let ready=false,busy=false,lastTick:string|null=null,lastError:string|null=null;
@@ -23,6 +24,7 @@ async function tick(){
     // writes. Deliberately capped at one for the initial production release.
     locked=(await db.query('SELECT pg_try_advisory_lock(424249) AS locked')).rows[0].locked;if(!locked)return;
     lastTick=new Date().toISOString();
+    try{for(const result of await reconcileUsage(db))log('provider_usage_reconciled',result);}catch{log('provider_reconciliation_unavailable');}
     await db.query("UPDATE trend_research_runs SET status='failed',error='Worker interrupted; paid requests are not automatically repeated',finished_at=now() WHERE status='running' AND heartbeat_at<now()-interval '12 minutes'");
     await db.query("UPDATE trend_sources SET status='Expired',notion_synced_at=NULL WHERE status='Active' AND last_trend_evidence_at<now()-interval '7 days'");
     if(process.env.TREND_RESEARCH_SCHEDULE_ENABLED==='1'){

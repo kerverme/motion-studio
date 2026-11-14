@@ -9,12 +9,12 @@ import type {Queryable} from '../../api/src/trends/store.js';
 
 export function normalizeItem(item:any,observedAt=new Date().toISOString()):Evidence|null {
   const source=canonicalSource(item.url);if(!source)return null;
-  const rawDate=item.published_at??item.create_time??item.createTime;
+  const rawDate=item.published_at??item.created_at??item.create_time??item.createTime;
   const publishedAt=sourceDate(rawDate);
   const stats=item.stats??item.statistics??item.engagement??item;
   return {...source,title:String(item.caption??item.description??item.desc??item.title??'Social post').slice(0,8000),publishedAt,observedAt,
     views:item.view_count_approximate?null:metric(stats.playCount??stats.play_count??stats.view_count??stats.views),
-    likes:metric(stats.diggCount??stats.digg_count??stats.like_count??stats.likes),comments:metric(stats.commentCount??stats.comment_count??(typeof stats.comments==='number'?stats.comments:null)),
+    likes:metric(stats.diggCount??stats.digg_count??stats.like_count??stats.likes),comments:metric(stats.commentCount??stats.comment_count??stats.comments_count??(typeof stats.comments==='number'?stats.comments:null)),
     detailRead:item.detail_read===true,available:item.ok!==false&&!item.login_required&&!item.challenge_required,
     publicationEvidence:publishedAt?String(rawDate):null};
 }
@@ -77,7 +77,8 @@ export async function research(db:Queryable,run:any) {
     }
     return {items,assessments,browserActions,status:result.status,reason:String(result.stopReason||'').slice(0,300)};
   }catch(error){
-    return {items:[...observations.values()].slice(0,6),assessments:new Map<string,any>(),browserActions,status:'failed',reason:error instanceof Error?error.message.slice(0,300):'Research failed'};
+    const reason=error instanceof Error?error.message.slice(0,300):'Research failed';
+    return {items:[...observations.values()].slice(0,6),assessments:new Map<string,any>(),browserActions,status:/login_required|challenge_required|captcha|rate_limited|access.denied/i.test(reason)?'blocked':'failed',reason};
   }finally{
     // Only this run's Chrome process group; no machine-wide socai stop/kill sweep.
     if(chrome.pid){try{process.kill(-chrome.pid,'SIGTERM');}catch{}}

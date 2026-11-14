@@ -909,7 +909,7 @@ function studio(st, drafts){
     const pending=previous||{request_id:crypto.randomUUID(),model:'gpt-6.1-terra',topic_mode:topicMode.value,platform:trendPlatform.value,count:Number(topicCount.value),reasoning:effSel?effSel.value:'low',story_mode:modeSel.value,topic:topic.value.trim(),source_text:modeSel.value==='general'?sourceText.value:'',note:note.value,hero:modeSel.value==='name_story'?heroName.value:'',exclude:[...new Set([...IDEAS,...readIdeaStore('ms.idea_history',[])])].slice(-60)};
     saveIdeaStore(suggestionSlot,pending);void getIdeas(pending);
   }}},'AI สุ่มหัวข้อ');
-  const suggestPanel=h('div',{'aria-label':'AI แนะนำเรื่อง',style:'display:flex;flex-direction:column;gap:8px'},topicMode,h('div',{class:'row'},trendPlatform,topicCount),h('div',{class:'sub'},'หลักฐานย้อนหลัง 7 วัน · อัปเดตทุก 6 ชั่วโมง'),h('div',{class:'row'},suggestBtn,refreshTrends),researchStatus,ideaStatus,selectionNote,ideaList,ideaError);
+  const suggestPanel=h('div',{'aria-label':'AI แนะนำเรื่อง',style:'display:flex;flex-direction:column;gap:8px'},topicMode,h('div',{class:'row'},trendPlatform,topicCount),h('div',{class:'sub'},st.trend_research?.enabled?'หลักฐานย้อนหลัง 7 วัน · อัปเดตทุก 6 ชั่วโมง':'หลักฐานย้อนหลัง 7 วัน · การค้นหาอัตโนมัติยังไม่เปิด'),h('div',{class:'row'},suggestBtn,refreshTrends),researchStatus,ideaStatus,selectionNote,ideaList,ideaError);
   async function getIdeas(pending){
     if(suggesting)return;suggesting=true;suggestBtn.disabled=true;suggestBtn.textContent='กำลังคิดหัวข้อ…';ideaError.textContent='';ideaStatus.textContent='กำลังใช้ '+pending.model+' แนะนำเรื่อง รอผลคำขอเดิมได้แม้โหลดหน้าใหม่';
     try{

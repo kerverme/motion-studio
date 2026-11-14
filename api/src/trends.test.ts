@@ -6,7 +6,7 @@ import {PGlite} from '@electric-sql/pglite';
 import {canonicalSource,metric,scoreEvidence,isEligible,type Evidence} from './trends/policy.js';
 import {saveEvidence,eligibleTrends,selectedContext,trendPrompt} from './trends/store.js';
 import {notionProperties,syncNotion} from './trends/notion.js';
-import {researchResponse} from './trends/provider.js';
+import {researchResponse,reconcileUsage} from './trends/provider.js';
 import {parseDetailedIdeas} from './topic-suggestions.js';
 const now=Date.now(),date=(days:number)=>new Date(now-days*86400000).toISOString();
 const evidence:Evidence={platform:'tiktok',sourceId:'123456789',url:'https://www.tiktok.com/@science/video/123456789',title:'ทำไมท้องฟ้าถึงเปลี่ยนสี',publishedAt:date(1),observedAt:date(0),views:1000000,likes:5000,comments:null,detailRead:true,available:true,publicationEvidence:date(1)};
@@ -68,4 +68,12 @@ test('an ambiguous paid provider call is not posted twice',async()=>{
  const run=randomUUID();await db.query('INSERT INTO trend_research_runs(id,request_key,request) VALUES($1::uuid,$1::text,$2)',[run,'{}']);
  await db.query('INSERT INTO trend_provider_calls(research_run_id,call_key,model) VALUES($1,$2,$3)',[run,run+':decision-1','gpt-6.1-terra']);
  await assert.rejects(researchResponse(pool,run,'decision-1',{},Date.now()+30000),/refusing duplicate/);
+});
+test('cancelled provider usage is reconciled once by GET without creating another paid request',async()=>{
+ const run=randomUUID();await db.query('INSERT INTO trend_research_runs(id,request_key,request) VALUES($1::uuid,$1::text,$2)',[run,'{}']);
+ await db.query("INSERT INTO trend_provider_calls(research_run_id,call_key,model,status,response_id) VALUES($1,$2,'gpt-6.1-terra','failed','resp_cancelled')",[run,run+':cancelled']);
+ let reads=0;const request:any=async(url:string,init:any)=>{reads++;assert.equal(init.method,undefined);assert.ok(url.endsWith('/resp_cancelled'));return Response.json({id:'resp_cancelled',status:'cancelled',usage:{input_tokens:100,output_tokens:20},output:[]});};
+ const result=await reconcileUsage(pool,request);assert.equal(result.length,1);assert.equal(result[0].status,'cancelled');assert.equal(result[0].estimated_usd,.0002);
+ await reconcileUsage(pool,request);assert.equal(reads,1);
+ const row:any=(await db.query('SELECT * FROM trend_provider_calls WHERE call_key=$1',[run+':cancelled'])).rows[0];assert.equal(row.actual_usd,null);assert.equal(row.status,'failed');
 });

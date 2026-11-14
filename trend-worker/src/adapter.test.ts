@@ -7,3 +7,7 @@ test('observed Instagram metadata is distinct from discovery and rounded counts 
  assert.equal(normalizeItem({url:'https://example.com/post'}),null);
  assert.equal(normalizeItem({url:'https://instagram.com/p/abc/',published_label:'yesterday'})?.publishedAt,null);
 });
+test('TikTok detail field names preserve observed publication and exact string metrics',()=>{
+ const e=normalizeItem({url:'https://www.tiktok.com/@fixture/video/123456789',created_at:'2026-11-12T08:00:00.000Z',description:'Observed caption',views:'10000',likes:'1500',comments_count:'25',detail_read:true});
+ assert.equal(e?.publishedAt,'2026-11-12T08:00:00.000Z');assert.equal(e?.views,10000);assert.equal(e?.likes,1500);assert.equal(e?.comments,25);
+});

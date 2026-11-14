@@ -127,6 +127,10 @@ Jev with no paid LLM call and cannot assign an eligible trend score.
   Existing background-response polling retries reads only (and explicit rejected 429s).
   Calls with unknown outcomes require reconciliation. Interrupted research jobs are
   marked failed rather than automatically recreating paid requests.
+- Topic jobs allow a bounded ten-minute background response by default, configurable
+  with `MOTION_TOPIC_TIMEOUT_MS` (3–15 minutes), without holding the browser request
+  open. Cancelled/failed accepted requests are reconciled through GET for usage; no
+  replacement paid request is created automatically.
 - Ledger: run/provider/model, response ID, token usage, API usage, estimated USD,
   nullable actual USD, failure, browser action count and duration. Terra estimates
   use standard $1/M input, $5/M output, $0.05/M cached input, $1.25/M cache write;

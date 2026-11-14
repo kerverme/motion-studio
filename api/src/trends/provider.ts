@@ -32,3 +32,23 @@ export async function researchResponse(db:Queryable,runId:string,key:string,body
     return response;
   }catch(error){await db.query("UPDATE trend_provider_calls SET status='failed',error=$2,finished_at=now() WHERE call_key=$1",[callKey,error instanceof Error?error.message.slice(0,500):'provider failure']);throw error;}
 }
+
+/** Reconcile accepted failed/cancelled responses with reads, never another create. */
+export async function reconcileUsage(db:Queryable,request:typeof fetch=fetch){
+  const rows=(await db.query(`SELECT c.*,COALESCE(c.response_id,t.response_id) AS saved_response_id FROM trend_provider_calls c LEFT JOIN topic_suggestions t ON t.id=c.topic_suggestion_id
+    WHERE c.status='failed' AND NOT(c.api_usage ? 'reconciled_at') AND COALESCE((c.api_usage->>'reconciliation_attempts')::int,0)<3 AND COALESCE(c.response_id,t.response_id) IS NOT NULL ORDER BY c.created_at LIMIT 4`)).rows;
+  const results=[];
+  for(const row of rows){
+    if(!/^resp_[a-zA-Z0-9_-]+$/.test(row.saved_response_id))continue;
+    row.api_usage={...row.api_usage,reconciliation_attempts:Number(row.api_usage.reconciliation_attempts||0)+1};
+    await db.query('UPDATE trend_provider_calls SET api_usage=$2 WHERE id=$1',[row.id,JSON.stringify(row.api_usage)]);
+    const r=await request((process.env.OPENAI_BASE_URL||'https://api.openai.com').replace(/\/$/,'')+'/v1/responses/'+row.saved_response_id,{headers:{Authorization:'Bearer '+process.env.OPENAI_API_KEY},signal:AbortSignal.timeout(20000)});
+    if(!r.ok)continue;
+    const response:any=await r.json();if(['queued','in_progress'].includes(response.status))continue;
+    const searches=(response.output||[]).filter((x:any)=>x.type==='web_search_call').length;
+    const estimated=response.usage&&row.model==='gpt-6.1-terra'?(estimateTerra(response.usage)??0)+searches*.01:null;
+    await db.query('UPDATE trend_provider_calls SET response_id=$2,usage=$3,estimated_usd=$4,api_usage=$5 WHERE id=$1',[row.id,row.saved_response_id,JSON.stringify(response.usage||null),estimated,JSON.stringify({...row.api_usage,reconciled_at:new Date().toISOString(),provider_status:response.status,response,web_search_calls:searches})]);
+    results.push({id:row.id,status:response.status,usage:response.usage||null,estimated_usd:estimated});
+  }
+  return results;
+}
