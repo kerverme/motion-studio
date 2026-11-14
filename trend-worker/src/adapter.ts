@@ -2,7 +2,7 @@ import {spawn,type ChildProcess} from 'node:child_process';
 import {mkdtemp,mkdir,readFile,rm,stat} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {runSearch} from 'jev-social';
+import {runSearch,runSocaiAction} from 'jev-social';
 import {canonicalSource,metric,sourceDate,type Evidence} from '../../api/src/trends/policy.js';
 import {researchResponse,outputJSON} from '../../api/src/trends/provider.js';
 import type {Queryable} from '../../api/src/trends/store.js';
@@ -36,13 +36,23 @@ export async function research(db:Queryable,run:any) {
     let daemonReady=false;
     for(let i=0;i<50;i++){try{await stat(join(root,'socai','rust-daemon.sock'));daemonReady=true;break;}catch{}if(daemon.exitCode!==null)throw new Error('Isolated socai daemon failed to start');await new Promise(r=>setTimeout(r,200));}
     if(!daemonReady)throw new Error('Isolated socai daemon startup timed out');
+    if(run.request.probe_only===true){
+      // Operator-only bootstrap probe: verify public platform access without a paid
+      // model decision. It cannot assign suitability or qualify a trend.
+      const action={kind:'search',platform:run.request.platform,query:run.request.query,limit:Math.min(2,run.request.limit||1)};browserActions++;
+      const result=await runSocaiAction({action,env,signal:AbortSignal.timeout(Math.min(90000,deadline-Date.now()))});
+      const helpers=await import(new URL('./evidence.js',import.meta.resolve('jev-social')).href);
+      const items=helpers.extractEvidence(result.data,action).map((x:any)=>normalizeItem(x)).filter(Boolean);
+      const observation=helpers.resultObservation(result.data,items);
+      return {items:items as Evidence[],assessments:new Map<string,any>(),browserActions,status:observation.blocked?'blocked':'partial',reason:observation.reason||'Public read probe only; suitability not assessed'};
+    }
     // Discover candidate URLs through the existing OpenAI hosted search first.
     // Search snippets are never treated as publication/engagement observations.
     const discovery=await researchResponse(db,run.id,'discovery',{input:[{role:'user',content:`Find up to ${Math.min(3,run.request.limit||2)} public ${run.request.platform} post URLs about ${String(run.request.query).slice(0,400)}, preferably published after ${new Date(Date.now()-7*86400000).toISOString()}. Use web search, cite actual source URLs. Do not invent recent dates, metrics or URLs; say unavailable if no results. Only discover links, do not log in or interact with accounts.`}],tools:[{type:'web_search',search_context_size:'low',filters:{allowed_domains:[run.request.platform+'.com']}}],include:['web_search_call.action.sources'],max_tool_calls:2,max_output_tokens:1200},deadline);
     const discovered=new Set<string>();
     for(const output of discovery.output||[]){
-      for(const source of output.action?.sources||[]){const s=canonicalSource(source.url);if(s?.platform===run.request.platform)discovered.add(s.url);}
-      for(const content of output.content||[])for(const annotation of content.annotations||[]){const s=canonicalSource(annotation.url||annotation.url_citation?.url);if(s?.platform===run.request.platform)discovered.add(s.url);}
+      for(const source of output.action?.sources||[]){const s=canonicalSource(source.url);if(s&&s.platform===run.request.platform)discovered.add(s.url);}
+      for(const content of output.content||[])for(const annotation of content.annotations||[]){const s=canonicalSource(annotation.url||annotation.url_citation?.url);if(s&&s.platform===run.request.platform)discovered.add(s.url);}
     }
     const candidates=[...discovered].slice(0,3);
     const client={systemOne:async(request:any)=>{

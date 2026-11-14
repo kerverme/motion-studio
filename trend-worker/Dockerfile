@@ -12,6 +12,7 @@ WORKDIR /app/trend-worker
 COPY trend-worker/package.json trend-worker/package-lock.json ./
 RUN npm ci --ignore-scripts --omit=dev
 COPY --from=socai /build/target/release/socai /usr/local/bin/socai
+COPY --from=socai /build/LICENSE /usr/share/doc/socai/LICENSE
 COPY trend-worker/src ./src
 COPY api/src/trends /app/api/src/trends
 COPY api/src/openai-response.ts /app/api/src/openai-response.ts

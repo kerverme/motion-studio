@@ -1,5 +1,7 @@
 import {CreativeSettings,CreativePlanToolSchema,creativeSourceEvidence,chooseStyle,creativePrompt,releaseGates,LEMO_STYLES} from './creative.js';
 import {registerCreative} from './creative-routes.js';
+import {selectedContext,trendPrompt} from './trends/store.js';
+import {trendSettings} from './trends/routes.js';
 // Content studio: OpenAI Web Search first, budgeted Firecrawl fallback, then the Thai
 // script and a scene spec for the code-drawn template engine (worker/engine/templates.py), and the result waits as a
 // draft for review. "Produce" turns the draft into a normal episode package and queues it for the worker.
@@ -1104,6 +1106,8 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const directionVersion = directorVersion(row.director_version);
     const visualVersion = row.creative?.engine==='lemo'?0:presentationVersion(row.presentation_version);
     let userText = `Story mode: ${storyMode}. Topic from the owner: ${row.topic}`;
+    userText += trendPrompt(row.trend_context);
+    if(row.trend_context?.warning)await log(id,row.trend_context.warning);
     const sourceBlock = sourceText ? sourceMaterialBlock(sourceText) : '';
     if (sourceBlock) userText += '\n\n' + sourceBlock;
     if (row.note) userText += `\nOwner's direction: ${row.note}`;
@@ -1165,6 +1169,25 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     let pendingReview = '';
     let submits = 0;
     let pendingImages: { text: string; images: string[] } | null = null;
+
+    if(row.trend_context?.sources?.length){
+      // Re-open saved social evidence once before any script-planning turn. A saved
+      // trend record is never inserted into the fetched-URL ledger by itself.
+      const urls=row.trend_context.sources.map((s:any)=>s.url).filter((s:any)=>typeof s==='string').slice(0,3);
+      verificationCalls++;
+      await log(id,'เปิดแหล่งเทรนด์ตรวจข้อมูลที่เปลี่ยนตามเวลาก่อนเขียนบท');
+      const checked=await verifySources(urls,{apiKey:env.OPENAI_API_KEY!,baseUrl:OPENAI_URL,model:PROVIDER==='openai'?model:'gpt-6.1-sol',onProgress:message=>log(id,message)});
+      for(const src of checked.sources)seen.set(normUrl(src.url),{...src,collected:todayIso(),via:'web'});
+      for(const k of ['input_tokens','output_tokens','cache_read_input_tokens','cache_creation_input_tokens'] as const)usage[k]+=checked.usage[k];
+      usage.web_searches+=checked.searches;
+      research.push({kind:'web',at:new Date().toISOString(),queries:['Recheck selected trend sources before drafting'],results:checked.sources});
+      const missing=urls.filter((url:string)=>!checked.sources.some(src=>normUrl(src.url)===normUrl(url)));
+      row.trend_context={...row.trend_context,rechecked_at:new Date().toISOString(),rechecked_urls:checked.sources.map(src=>src.url),warning:missing.length?'เปิดหลักฐานเทรนด์บางแหล่งไม่ได้ ห้ามอ้างตัวเลขหรือสถานะเทรนด์ที่ยังไม่ยืนยัน':row.trend_context.warning};
+      await pool.query('UPDATE drafts SET trend_context=$2 WHERE id=$1',[id,JSON.stringify(row.trend_context)]);
+      await saveUsage();
+      conv.say('Fresh source check before scriptwriting. Read this evidence before planning; if unavailable, omit unsupported claims and retain only the creative question. Never cite saved metrics as current facts. '+(checked.text||'No source content could be verified.'));
+      if(row.trend_context.warning)await log(id,row.trend_context.warning);
+    }
 
     for (let turn = 0; turn < MAX_TURNS; turn++) {
       usage.turns = turn + 1;
@@ -1482,6 +1505,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
   const g = deps.guard;
   const isId = (s: string) => /^[0-9a-f-]{36}$/.test(s);
   const summary = (r: any) => ({
+    trend_context:r.trend_context||null,
     id: r.id, topic: r.topic, note: r.note, status: r.status, title: r.draft?.title_th ?? null, angle: r.draft?.angle ?? null, created_at: r.created_at,
     director_version:directorVersion(r.director_version), presentation_version:presentationVersion(r.presentation_version),
     recurring_character: r.recurring_character === true, presenter_kind:parsePresenterKind(r.presenter_kind, 'legacy'), has_character_reference:Array.isArray(r.characters) && r.characters.length > 0,
@@ -1493,7 +1517,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
   app.get('/app/api/studio/status', g, async (c) => {
     const n = (await pool.query("SELECT count(*)::int AS n FROM drafts WHERE created_at > now() - interval '1 day'")).rows[0].n;
     return c.json({ ...configured(), creative:{...releaseGates(),styles:LEMO_STYLES}, presentation:{version:1,label:'โมชั่นกราฟิกแบบเดิม (EP004)',default_style:'classic'}, formats: Object.fromEntries(Object.entries(FORMATS).map(([k, f]) => [k, f.th])), model: MODEL,
-      models: MODEL_CHOICES[PROVIDER], reasoning: PROVIDER === 'openai' ? REASONING : null, reasoning_levels: PROVIDER === 'openai' ? REASONING_LEVELS : [], ai_suggestions:!!env.OPENAI_API_KEY, narration_previews:!!env.OPENAI_API_KEY, narration_styles:NARRATION_STYLES.map(({prompt,...style})=>style), source_text_limit:SOURCE_TEXT_LIMIT, drafts_today: n, daily_limit: DAILY_LIMIT, busy, max_credits: DRAFT_MAX_CREDITS });
+      models: MODEL_CHOICES[PROVIDER], reasoning: PROVIDER === 'openai' ? REASONING : null, reasoning_levels: PROVIDER === 'openai' ? REASONING_LEVELS : [], ai_suggestions:!!env.OPENAI_API_KEY, trend_research:trendSettings(), narration_previews:!!env.OPENAI_API_KEY, narration_styles:NARRATION_STYLES.map(({prompt,...style})=>style), source_text_limit:SOURCE_TEXT_LIMIT, drafts_today: n, daily_limit: DAILY_LIMIT, busy, max_credits: DRAFT_MAX_CREDITS });
   });
 
   // ---- characters made from photos
@@ -1692,12 +1716,15 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const chars = ids.length ? (await pool.query('SELECT id, name, look, backdrop FROM characters WHERE id = ANY($1::uuid[]) ORDER BY array_position($1::uuid[], id)', [ids])).rows.map((x: any) => ({ id: x.id, name: x.name, look: x.backdrop ? { ...x.look, backdrop: x.backdrop } : x.look })) : [];
     const style = typeof b.style === 'string' && (STYLES[b.style] || b.style==='auto') ? b.style : 'classic';
     const musicMode = b.music_mode === 'ai' ? 'ai' : 'default';
-    const r = await pool.query('INSERT INTO drafts (topic, note, auto_produce, model, reasoning, characters, style, music_mode, story_mode, source_text, request_key, request_hash, narration_style, narration_custom, recurring_character, presenter_kind, director_version, presentation_version, creative) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) ON CONFLICT (request_key) DO NOTHING RETURNING id',
-      [topic, String(b.note || '').trim().slice(0, 1000) || null, creative?false:!!b.auto_produce, model, PROVIDER === 'openai' ? reasoning : null, JSON.stringify(chars), style, musicMode, storyMode, sourceText || null, request.key, request.hash, narration.narration_style, narration.narration_custom, recurringCharacter, presenterKind, 1, creative?.engine==='lemo'?0:1, creative?JSON.stringify(creative):null]);
+    let trendContext;
+    try{trendContext=await selectedContext(pool,b.topic_selection,topic,storyMode==='name_story');}catch(e){return c.json({error:e instanceof Error?e.message:'invalid topic selection'},422);}
+    const r = await pool.query('INSERT INTO drafts (topic, note, auto_produce, model, reasoning, characters, style, music_mode, story_mode, source_text, request_key, request_hash, narration_style, narration_custom, recurring_character, presenter_kind, director_version, presentation_version, creative, trend_context) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) ON CONFLICT (request_key) DO NOTHING RETURNING id',
+      [topic, String(b.note || '').trim().slice(0, 1000) || null, creative?false:!!b.auto_produce, model, PROVIDER === 'openai' ? reasoning : null, JSON.stringify(chars), style, musicMode, storyMode, sourceText || null, request.key, request.hash, narration.narration_style, narration.narration_custom, recurringCharacter, presenterKind, 1, creative?.engine==='lemo'?0:1, creative?JSON.stringify(creative):null,trendContext?JSON.stringify(trendContext):null]);
     if (!r.rows.length) {
       const old = (await pool.query('SELECT id, request_hash FROM drafts WHERE request_key=$1',[request.key])).rows[0];
       return old?.request_hash === request.hash ? c.json({id:old.id},201) : c.json({error:'idempotency-key already used for different input'},409);
     }
+    if(trendContext?.trend_ids.length)await pool.query('UPDATE trend_sources SET used_in_studio=true,created_topic=$2,notion_synced_at=NULL WHERE id=ANY($1::uuid[])',[trendContext.trend_ids,topic]);
     await log(r.rows[0].id, 'รับหัวข้อแล้ว รอคิว');
     pump();
     return c.json({ id: r.rows[0].id }, 201);
@@ -1779,10 +1806,10 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const reuseCheckpoints = !!(row.status === 'failed' && row.storyboard && sameNarration && recurringCharacter === (row.recurring_character === true) && presenterKind === parsePresenterKind(row.presenter_kind, 'legacy') && (b.note === undefined || String(b.note).trim() === String(row.note || '').trim()));
     const directionVersion = reuseCheckpoints ? directorVersion(row.director_version) : 1;
     const visualVersion = reuseCheckpoints ? presentationVersion(row.presentation_version) : 1;
-    const r = await pool.query('INSERT INTO drafts (topic, note, parent_id, auto_produce, model, reasoning, characters, source_type, community_id, style, music_mode, story_mode, source_text, research_job_id, request_key, request_hash, narration_style, narration_custom, recurring_character, presenter_kind, director_version, presentation_version, creative) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23) ON CONFLICT (request_key) DO NOTHING RETURNING id',
+    const r = await pool.query('INSERT INTO drafts (topic, note, parent_id, auto_produce, model, reasoning, characters, source_type, community_id, style, music_mode, story_mode, source_text, research_job_id, request_key, request_hash, narration_style, narration_custom, recurring_character, presenter_kind, director_version, presentation_version, creative, trend_context) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24) ON CONFLICT (request_key) DO NOTHING RETURNING id',
       [row.topic, String(b.note ?? row.note ?? '').trim().slice(0, 1000) || null, row.id, row.source_type === 'community'||row.creative ? false : !!b.auto_produce,
         typeof b.model === 'string' && MODEL_RE.test(b.model) ? b.model : row.model, REASONING_LEVELS.includes(b.reasoning) ? b.reasoning : row.reasoning,
-        JSON.stringify(row.characters ?? []), row.source_type || 'studio', row.community_id ?? null, keepStyle, keepMusic, row.story_mode || 'name_story', row.source_text || null, row.research_job_id || row.id, request.key, request.hash, narration.narration_style, narration.narration_custom, recurringCharacter, presenterKind, directionVersion, visualVersion, row.creative?JSON.stringify(b.creative?{engine:row.creative.engine,settings:CreativeSettings.parse({...row.creative.settings,...b.creative})}:row.creative):null]);
+        JSON.stringify(row.characters ?? []), row.source_type || 'studio', row.community_id ?? null, keepStyle, keepMusic, row.story_mode || 'name_story', row.source_text || null, row.research_job_id || row.id, request.key, request.hash, narration.narration_style, narration.narration_custom, recurringCharacter, presenterKind, directionVersion, visualVersion, row.creative?JSON.stringify(b.creative?{engine:row.creative.engine,settings:CreativeSettings.parse({...row.creative.settings,...b.creative})}:row.creative):null,row.trend_context?JSON.stringify(row.trend_context):null]);
     if (!r.rows.length) {
       const old = (await pool.query('SELECT id, request_hash FROM drafts WHERE request_key=$1',[request.key])).rows[0];
       return old?.request_hash === request.hash ? c.json({id:old.id},201) : c.json({error:'idempotency-key already used for different input'},409);

@@ -51,7 +51,7 @@ async function start(){await migrate();
   log('notion_connectivity',{ok:notion.ok,http_status:notion.status});
   if(!notion.ok)lastError='Notion database unavailable: HTTP '+notion.status;
   const bootstrap=JSON.parse(process.env.TREND_BOOTSTRAP_TESTS_JSON||'[]');
-  for(const r of bootstrap.slice(0,4)){if(!['tiktok','instagram'].includes(r.platform)||!r.key||typeof r.query!=='string')throw new Error('Invalid bounded bootstrap research request');await pool.query('INSERT INTO trend_research_runs(request_key,request) VALUES($1,$2) ON CONFLICT(request_key) DO NOTHING',[r.key,JSON.stringify({platform:r.platform,query:r.query.slice(0,400),limit:Math.max(1,Math.min(6,r.limit||2))})]);}
+  for(const r of bootstrap.slice(0,4)){if(!['tiktok','instagram'].includes(r.platform)||!r.key||typeof r.query!=='string')throw new Error('Invalid bounded bootstrap research request');await pool.query('INSERT INTO trend_research_runs(request_key,request) VALUES($1,$2) ON CONFLICT(request_key) DO NOTHING',[r.key,JSON.stringify({platform:r.platform,query:r.query.slice(0,400),limit:Math.max(1,Math.min(6,r.limit||2)),probe_only:r.probe_only===true})]);}
   ready=true;log('worker_ready',{worker_id:workerId});void tick();setInterval(()=>void tick(),15000).unref();
 }
 start().catch(e=>{log('startup_failed',{error:e instanceof Error?e.message:'startup failure'});process.exitCode=1;server.close();void pool.end();});

@@ -858,14 +858,18 @@ function studio(st, drafts){
   const go = h('button',{class:'btn primary',disabled:!ready,on:{click:async()=>{
     err.textContent=inputProblem();if(err.textContent)return; const general=modeSel.value==='general'; const t=general?(topic.value.trim()||sourceText.value.trim().slice(0,120)):openerTopic(heroName.value.trim(), topic.value.trim()); if (t.length<4){ err.textContent=general?'พิมพ์หัวข้อหรือเนื้อหาอย่างน้อย 4 ตัวอักษร':'ใส่ชื่อตัวเอก หรือพิมพ์เรื่องที่จะเล่าอย่างน้อย 4 ตัวอักษร'; topic.focus(); return; }
     go.disabled=true; go.textContent='กำลังส่ง…';
-    try{ const r=await draftPost('/app/api/studio/drafts',{topic:t,creative:creativeInput(),story_mode:modeSel.value,source_text:general?sourceText.value:'',narration_style:narrationSel.value,narration_custom:narrationSel.value==='custom'?narrationCustom.value.trim():'',recurring_character:general&&recurringCharacter.checked,presenter_kind:'context',note:note.value,auto_produce:auto.checked,model:modelSel.value,reasoning:effSel?effSel.value:undefined,characters:general&&!useChars.checked?[]:selectedChars(),style:selectedStyle(),music_mode:selectedMusic()});
-      try{ sessionStorage.removeItem('ms.topic'); sessionStorage.removeItem('ms.hero'); sessionStorage.removeItem('ms.source_text'); sessionStorage.removeItem('ms.note'); }catch{} toast('เริ่มค้นข้อมูลแล้ว'); await load(); openDraft(r.id); }
+    try{ const r=await draftPost('/app/api/studio/drafts',{topic:t,topic_selection:topicSelection,creative:creativeInput(),story_mode:modeSel.value,source_text:general?sourceText.value:'',narration_style:narrationSel.value,narration_custom:narrationSel.value==='custom'?narrationCustom.value.trim():'',recurring_character:general&&recurringCharacter.checked,presenter_kind:'context',note:note.value,auto_produce:auto.checked,model:modelSel.value,reasoning:effSel?effSel.value:undefined,characters:general&&!useChars.checked?[]:selectedChars(),style:selectedStyle(),music_mode:selectedMusic()});
+      try{ sessionStorage.removeItem('ms.topic'); sessionStorage.removeItem('ms.topic_selection'); sessionStorage.removeItem('ms.hero'); sessionStorage.removeItem('ms.source_text'); sessionStorage.removeItem('ms.note'); }catch{} toast('เริ่มค้นข้อมูลแล้ว'); await load(); openDraft(r.id); }
     catch(x){ err.textContent=x.message; go.disabled=false; go.textContent='เริ่มค้นและเขียน'; } }}},'เริ่มค้นและเขียน');
   const heroGroup=h('label',{class:'sub'},'ชื่อตัวเอก ',heroName);
   const modeHint=h('div',{class:'sub'});
   const changeMode=()=>{const general=modeSel.value==='general';heroGroup.hidden=general;sourcePanel.hidden=!general;charChoice.hidden=!general;recurringPanel.hidden=!general;charsPanel.hidden=general&&!useChars.checked;topic.setAttribute('aria-label',general?'หัวข้อเรื่อง':'เรื่องที่จะเล่าต่อ');topic.placeholder=general?'หัวข้อหรือสิ่งที่อยากเล่า เช่น มอร์นิ่งรูทีนช่วยให้ตื่นสดชื่นอย่างไร':'เรื่องที่จะเล่าต่อจากคำถามชื่อ';modeHint.textContent=general?'เปิดเรื่องตามหัวข้อ วาดฉาก สิ่งของ หรือภาพอธิบายตามบท ไม่ต้องกรอกชื่อตัวเอก':'เปิดด้วย “คนชื่อ … ในประเทศไทย มีกี่คน” และใช้ตัวเอกบนปก';try{sessionStorage.setItem('ms.story_mode',modeSel.value);}catch{}};
   modeSel.addEventListener('change',changeMode);useChars.addEventListener('change',changeMode);changeMode();
-  const chooseIdea=value=>{topic.value=value;topic.dispatchEvent(new Event('input'));topic.focus();};
+  let topicSelection=null;try{topicSelection=JSON.parse(sessionStorage.getItem('ms.topic_selection')||'null');}catch{}
+  const selectionNote=h('div',{class:'sub','aria-live':'polite'});
+  const showSelection=()=>{selectionNote.textContent=topicSelection?'แนบแหล่งข้อมูลของหัวข้อที่เลือกแล้ว · ระบบจะเปิดต้นฉบับตรวจอีกครั้งก่อนเขียนบท':'';};
+  topic.addEventListener('input',()=>{topicSelection=null;try{sessionStorage.removeItem('ms.topic_selection');}catch{}showSelection();});
+  const chooseIdea=(value,index)=>{topic.value=value;topic.dispatchEvent(new Event('input'));if(Number.isInteger(index)&&ideaSet?.id&&ideaSet?.details?.[index]){topicSelection={id:ideaSet.id,index,title:value};try{sessionStorage.setItem('ms.topic_selection',JSON.stringify(topicSelection));}catch{}}showSelection();topic.focus();};
   const ideaStatus=h('div',{class:'sub',role:'status','aria-live':'polite'});
   const ideaError=h('div',{class:'err',role:'alert'});
   const ideaList=h('div',{class:'ideas','aria-label':'หัวข้อที่ AI แนะนำ'});
@@ -873,18 +877,39 @@ function studio(st, drafts){
   const suggestionSlot='ms.idea_pending';
   const readIdeaStore=(key,fallback)=>{try{return JSON.parse(sessionStorage.getItem(key)||'null')||fallback;}catch{return fallback;}};
   const saveIdeaStore=(key,value)=>{try{if(value===null)sessionStorage.removeItem(key);else sessionStorage.setItem(key,JSON.stringify(value));}catch{}};
+  const topicMode=h('select',{class:'field','aria-label':'วิธีแนะนำหัวข้อ'},h('option',{value:'smart_mix'},'Smart Mix · ผสมไอเดียใหม่กับเทรนด์'),h('option',{value:'creative'},'Creative · ไอเดียใหม่'),h('option',{value:'trending'},'Trending · จากหลักฐานเทรนด์'));
+  topicMode.value=readIdeaStore('ms.topic_mode','smart_mix');topicMode.addEventListener('change',()=>saveIdeaStore('ms.topic_mode',topicMode.value));
+  const trendPlatform=h('select',{class:'field','aria-label':'แพลตฟอร์มเทรนด์'},h('option',{value:'both'},'TikTok + Instagram'),h('option',{value:'tiktok'},'TikTok'),h('option',{value:'instagram'},'Instagram'));
+  trendPlatform.value=readIdeaStore('ms.trend_platform','both');trendPlatform.addEventListener('change',()=>saveIdeaStore('ms.trend_platform',trendPlatform.value));
+  const topicCount=h('select',{class:'field','aria-label':'จำนวนหัวข้อ'},[5,10,15].map(n=>h('option',{value:n},n+' หัวข้อ')));topicCount.value='10';
+  const researchStatus=h('div',{class:'sub',role:'status'});
+  const refreshTrends=h('button',{class:'btn',type:'button',disabled:!st.trend_research?.enabled,on:{click:async()=>{
+    refreshTrends.disabled=true;researchStatus.textContent='กำลังส่งคำขอค้นหา…';
+    try{const r=await api('/app/api/studio/trends/refresh',{method:'POST',body:JSON.stringify({request_id:crypto.randomUUID(),platform:trendPlatform.value})});researchStatus.textContent=r.message;}catch(e){researchStatus.textContent=e.message;}finally{refreshTrends.disabled=!st.trend_research?.enabled;}
+  }}},'ค้นหาเทรนด์ล่าสุด');
+  if(!st.trend_research?.enabled)researchStatus.textContent='กำลังทดสอบการเข้าถึงเทรนด์ · Creative ใช้งานได้ตามปกติ';
+  const trendDate=v=>v?new Intl.DateTimeFormat('th-TH',{dateStyle:'medium',timeStyle:'short',timeZone:'Asia/Bangkok'}).format(new Date(v)):'ยังไม่มีข้อมูล';
   const drawIdeas=()=>{
     const visible=ideaSet&&ideaSet.story_mode===modeSel.value;
-    put(ideaList,visible?ideaSet.ideas.map(i=>h('button',{on:{click:()=>chooseIdea(i)}},i)):[]);
-    if(!suggesting)ideaStatus.textContent=visible?'ชุดนี้ใช้ '+ideaSet.model+' · เลือกหัวข้อเพื่อเติมลงช่องเรื่อง หรือกดสุ่มใหม่':'สุ่มด้วย GPT-6.1 Terra · เลือกหัวข้อที่ชอบ · ระบบจะตรวจข้อมูลตอนเริ่มเขียนบท';
+    put(ideaList,visible?ideaSet.ideas.map((title,index)=>{const detail=ideaSet.details?.[index];return h('div',{style:'width:100%;padding:12px 0;border-bottom:1px solid var(--line)'},
+      h('button',{type:'button',style:'text-align:left',on:{click:()=>chooseIdea(title,index)}},title),
+      detail?h('div',{class:'sub',style:'margin-top:5px'},detail.kind==='trending'?'จากหลักฐานเทรนด์':'ไอเดีย Creative'):'',
+      detail?.explanation?h('p',{class:'sub',style:'margin:5px 0'},detail.explanation):'',
+      detail?.interesting?h('div',{class:'sub'},'ชวนดูเพราะ '+detail.interesting):'',
+      detail?.sources?.length?h('details',{style:'margin-top:8px'},h('summary',{},'ดูข้อมูลอ้างอิง'),detail.sources.map(s=>h('div',{class:'sub',style:'margin-top:8px'},
+        h('a',{href:s.url,target:'_blank',rel:'noopener noreferrer'},s.title||s.url),
+        h('div',{},(s.platform==='tiktok'?'TikTok':'Instagram')+' · '+s.score+'/100 · '+(s.status==='Active'?'ผ่านเกณฑ์':'ต้องตรวจใหม่')),
+        h('div',{},'ตรวจล่าสุด '+trendDate(s.last_verified)+' (กรุงเทพฯ)'),h('div',{},'เผยแพร่ '+trendDate(s.published_at)),
+        h('div',{},s.summary||'')))):h('div',{class:'sub'},'ยังไม่มีแหล่งเทรนด์แนบ · ตรวจข้อเท็จจริงตอนเขียนบท'));}):[]);
+    if(!suggesting)ideaStatus.textContent=visible?(ideaSet.availability?.warning||'ชุดนี้ใช้ '+ideaSet.model+' · เลือกหัวข้อเพื่อเติมลงช่องเรื่อง หรือกดสุ่มใหม่'):'สุ่มด้วย GPT-6.1 Terra · เลือกหัวข้อที่ชอบ · ระบบจะตรวจข้อมูลตอนเริ่มเขียนบท';
   };
   const suggestBtn=h('button',{class:'btn',type:'button',disabled:!st.ai_suggestions,on:{click:()=>{
     if(modeSel.value==='general'&&sourceText.value.length>sourceLimit){ideaError.textContent='เนื้อหาเกิน '+sourceLimit.toLocaleString('th-TH')+' ตัวอักษร กรุณาลดหรือแบ่งเป็นหลายเรื่องก่อนสุ่มหัวข้อ';return;}
     const previous=readIdeaStore(suggestionSlot,null);
-    const pending=previous||{request_id:crypto.randomUUID(),model:'gpt-6.1-terra',reasoning:effSel?effSel.value:'low',story_mode:modeSel.value,topic:topic.value.trim(),source_text:modeSel.value==='general'?sourceText.value:'',note:note.value,hero:modeSel.value==='name_story'?heroName.value:'',exclude:[...new Set([...IDEAS,...readIdeaStore('ms.idea_history',[])])].slice(-60)};
+    const pending=previous||{request_id:crypto.randomUUID(),model:'gpt-6.1-terra',topic_mode:topicMode.value,platform:trendPlatform.value,count:Number(topicCount.value),reasoning:effSel?effSel.value:'low',story_mode:modeSel.value,topic:topic.value.trim(),source_text:modeSel.value==='general'?sourceText.value:'',note:note.value,hero:modeSel.value==='name_story'?heroName.value:'',exclude:[...new Set([...IDEAS,...readIdeaStore('ms.idea_history',[])])].slice(-60)};
     saveIdeaStore(suggestionSlot,pending);void getIdeas(pending);
   }}},'AI สุ่มหัวข้อ');
-  const suggestPanel=h('div',{'aria-label':'AI แนะนำเรื่อง',style:'display:flex;flex-direction:column;gap:8px'},h('div',{},suggestBtn),ideaStatus,ideaList,ideaError);
+  const suggestPanel=h('div',{'aria-label':'AI แนะนำเรื่อง',style:'display:flex;flex-direction:column;gap:8px'},topicMode,h('div',{class:'row'},trendPlatform,topicCount),h('div',{class:'sub'},'หลักฐานย้อนหลัง 7 วัน · อัปเดตทุก 6 ชั่วโมง'),h('div',{class:'row'},suggestBtn,refreshTrends),researchStatus,ideaStatus,selectionNote,ideaList,ideaError);
   async function getIdeas(pending){
     if(suggesting)return;suggesting=true;suggestBtn.disabled=true;suggestBtn.textContent='กำลังคิดหัวข้อ…';ideaError.textContent='';ideaStatus.textContent='กำลังใช้ '+pending.model+' แนะนำเรื่อง รอผลคำขอเดิมได้แม้โหลดหน้าใหม่';
     try{
@@ -897,12 +922,12 @@ function studio(st, drafts){
       if(!suggestPanel.isConnected)return;
       saveIdeaStore(suggestionSlot,null);
       if(job.status!=='done')throw new Error(job.error||'สุ่มหัวข้อไม่สำเร็จ ลองใหม่ได้');
-      ideaSet={ideas:job.ideas,model:job.model,story_mode:job.story_mode};saveIdeaStore('ms.idea_set',ideaSet);
+      ideaSet={id:job.id,ideas:job.ideas,details:job.details,availability:job.availability,model:job.model,story_mode:job.story_mode};saveIdeaStore('ms.idea_set',ideaSet);
       saveIdeaStore('ms.idea_history',[...new Set([...readIdeaStore('ms.idea_history',[]),...job.ideas])].slice(-60));
     }catch(e){if(e.status>=400&&e.status<500&&e.status!==408)saveIdeaStore(suggestionSlot,null);ideaError.textContent=e.message;}
     finally{suggesting=false;suggestBtn.disabled=!st.ai_suggestions;suggestBtn.textContent='สุ่มหัวข้อใหม่';drawIdeas();}
   }
-  ideaSet=readIdeaStore('ms.idea_set',null);drawIdeas();modeSel.addEventListener('change',drawIdeas);
+  ideaSet=readIdeaStore('ms.idea_set',null);drawIdeas();showSelection();modeSel.addEventListener('change',()=>{topicSelection=null;saveIdeaStore('ms.topic_selection',null);showSelection();drawIdeas();});
   const oldSuggestion=readIdeaStore(suggestionSlot,null);
   if(oldSuggestion)setTimeout(()=>{if(suggestPanel.isConnected)void getIdeas(oldSuggestion);},0);
   const previewEnabled=st.narration_previews??st.ai_suggestions;

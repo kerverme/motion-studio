@@ -7,7 +7,10 @@ export function registerTrendRoutes(app:Hono,pool:pg.Pool,guard:(c:Context,next:
   app.get('/app/api/studio/trends',guard,async c=>{
     const platform=['tiktok','instagram'].includes(c.req.query('platform')||'')?c.req.query('platform')!:'both';
     const settings=trendSettings();
-    const runs=(await pool.query('SELECT id,status,request,created_at,finished_at,error,browser_actions,duration_ms,evidence_count,eligible_count FROM trend_research_runs ORDER BY created_at DESC LIMIT 8')).rows;
+    const runs=(await pool.query(`SELECT r.id,r.status,r.request,r.created_at,r.finished_at,r.error,r.browser_actions,r.duration_ms,r.evidence_count,r.eligible_count,r.details,
+      (SELECT COALESCE(sum(estimated_usd),0) FROM trend_provider_calls WHERE research_run_id=r.id) AS known_estimated_usd,
+      (SELECT count(*)::int FROM trend_provider_calls WHERE research_run_id=r.id AND estimated_usd IS NULL) AS unpriced_calls
+      FROM trend_research_runs r ORDER BY r.created_at DESC LIMIT 12`)).rows;
     return c.json({...settings,trends:settings.enabled?(await eligibleTrends(pool,platform)).map(publicTrend):[],runs});
   });
   app.post('/app/api/studio/trends/refresh',guard,async c=>{
