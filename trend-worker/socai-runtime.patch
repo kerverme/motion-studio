@@ -1,0 +1,51 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index d6853e9..95b9464 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -2975,7 +2975,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "6e9ec52138abedcc58dc17a7c6c0c00a2bdb4f3427c7f63fa97fd0d859155caf"
+ dependencies = [
+  "gtk-sys",
+- "libloading",
++ "libloading 0.7.4",
+  "once_cell",
+ ]
+ 
+@@ -3014,6 +3014,16 @@ dependencies = [
+  "winapi",
+ ]
+ 
++[[package]]
++name = "libloading"
++version = "0.9.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "a1832accd5a4ca2795ace4d05d15c4039be15b62d3b950eff99746a990e3cc10"
++dependencies = [
++ "cfg-if",
++ "windows-link 0.2.1",
++]
++
+ [[package]]
+ name = "libm"
+ version = "0.2.16"
+@@ -3995,6 +4005,7 @@ version = "2.0.0-rc.12"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "d7de3af33d24a745ffb8fab904b13478438d1cd52868e6f17735ef6e1f8bf133"
+ dependencies = [
++ "libloading 0.9.1",
+  "ndarray",
+  "ort-sys",
+  "smallvec",
+diff --git a/core/Cargo.toml b/core/Cargo.toml
+index 548ddd3..c3d0608 100644
+--- a/core/Cargo.toml
++++ b/core/Cargo.toml
+@@ -45,7 +45,7 @@ fs2 = "0.4"
+ # 0.7.4 does not compile against current ort (missing CPUExecutionProvider).
+ oar-ocr = "=0.7.1"
+ oar-ocr-core = "=0.7.1"
+-ort = "=2.0.0-rc.12"
++ort = { version = "=2.0.0-rc.12", features = ["load-dynamic"] }
+ 
+ [target.'cfg(windows)'.dependencies]
+ windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_System_WindowsProgramming"] }

@@ -9,7 +9,7 @@ test('general mode and source text persist with Sol and survive rewrite; old cli
   const id='10000000-0000-0000-0000-000000000020';
   const source='บทความและแหล่งต้นทางสำหรับเล่าเรื่อง '.repeat(80).trim();
   const inserts:{sql:string,args:any[]}[]=[];
-  const row={id,status:'ready',topic:'รูทีนตอนเช้า',note:null,story_mode:'general',source_text:source,model:'gpt-6.1-sol',reasoning:'medium',characters:[],style:'classic',music_mode:'default'};
+  const row={id,status:'ready',topic:'รูทีนตอนเช้า',note:null,story_mode:'general',source_text:source,model:'gpt-6.1-sol',reasoning:'medium',characters:[],style:'classic',music_mode:'default',trend_context:{suggestion_id:'test-preserved',trend_ids:['source-preserved'],sources:[]}};
   const pool={query:async(sql:string,args:any[]=[])=>{
     if(sql.startsWith('SELECT count(*)'))return {rows:[{n:0}]};
     if(sql.startsWith('SELECT * FROM drafts WHERE id='))return {rows:[row]};
@@ -28,6 +28,7 @@ test('general mode and source text persist with Sol and survive rewrite; old cli
     assert.equal(inserts[0].args[3],'gpt-6.1-sol');assert.equal(inserts[0].args[8],'general');assert.equal(inserts[0].args[9],source);assert.equal(inserts[0].args[5],'[]');
     const rewrite=await app.request(`/app/api/studio/drafts/${id}/rewrite`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({note:'อธิบายด้วยกราฟิก ไม่ใช้คน'})});
     assert.equal(rewrite.status,201);assert.equal(inserts[1].args[11],'general');assert.equal(inserts[1].args[12],source);assert.equal(inserts[1].args[4],'gpt-6.1-sol');assert.equal(inserts[1].args[13],row.id,'rewrites inherit the Research Job inside the INSERT, before becoming visible to the pump');
+    assert.deepEqual(JSON.parse(inserts[1].args[23]),row.trend_context,'rewrite preserves selected evidence atomically with the new draft');
     await app.request('/app/api/studio/drafts',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({topic:'คนชื่อเบลในประเทศไทยมีกี่คน'})});
     assert.equal(inserts[2].args[8],'name_story');
   }finally{globalThis.setTimeout=nativeTimeout;}

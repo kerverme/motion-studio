@@ -10,9 +10,9 @@ const db=new PGlite();const nativeFetch=globalThis.fetch;
 const pool:any={query:(sql:string,args:any[]=[])=>db.query(sql,args)};
 const calls:{method:string,body:any,url:string}[]=[];
 let queued=false,fail=false,seq=0;
-const batches=new Map<string,string[]>();
+const batches=new Map<string,unknown[]>();
 const ideas=(suffix='')=>['ทำไมแก้วน้ำเย็นจึงมีหยดน้ำด้านนอก','ถ้าไฟจราจรหายไป เมืองจะเปลี่ยนอย่างไร','สิ่งของใกล้ตัวเดินทางมาจากไหน','ทำไมใบไม้มีรูปทรงต่างกัน','เรารู้เวลาได้อย่างไรก่อนมีนาฬิกา'].map(x=>x+suffix);
-const response=(list:string[],id='resp_test')=>({id,status:'completed',output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({ideas:list})}]}]});
+const response=(list:unknown[],id='resp_test')=>({id,status:'completed',output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({ideas:list})}]}]});
 function server(){const app=new Hono();const service=registerTopicSuggestions(app,pool,{models:['gpt-6.1-sol','gpt-6.1-terra'],guard:async(c,next)=>c.req.header('authorization')==='Bearer owner'?next():c.json({error:'unauthorized'},401)});return {app,...service};}
 const headers={authorization:'Bearer owner','content-type':'application/json'};
 const post=(app:Hono,data:any)=>app.request('/app/api/studio/topic-suggestions',{method:'POST',headers,body:JSON.stringify(data)});
@@ -20,11 +20,12 @@ async function done(id:string){for(let i=0;i<600;i++){const row:any=(await db.qu
 before(async()=>{
  await db.exec("CREATE TABLE drafts(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),topic text,draft jsonb,created_at timestamptz DEFAULT now());");
  await db.exec(readFileSync(new URL('../migrations/018_topic_suggestions.sql',import.meta.url),'utf8'));
+ await db.exec(readFileSync(new URL('../migrations/030_trend_research.sql',import.meta.url),'utf8'));
  globalThis.fetch=async(url:any,init:any)=>{
   const method=init?.method||'GET',body=init?.body?JSON.parse(init.body):null;calls.push({method,body,url:String(url)});
   if(method==='POST'){
    if(fail)throw new TypeError('ambiguous disconnect');
-   const id='resp_suggest'+(++seq);const list=ideas(' ชุด'+seq);batches.set(id,list);
+   const id='resp_suggest'+(++seq);const count=body.text.format.schema.properties.ideas.maxItems;const list=Array.from({length:count},(_,i)=>({title:ideas(' ชุด'+seq+' มุม'+i)[i%5],explanation:'เล่าให้เห็นภาพ',interesting:'ชวนสงสัย',kind:'creative',trend_ids:[]}));batches.set(id,list as any);
    return Response.json(queued?{id,status:'queued'}:response(list,id));
   }
   const id=String(url).split('/').pop()!;return Response.json(response(batches.get(id)||ideas(),id));
@@ -49,12 +50,12 @@ test('authenticated requests use the selected OpenAI brain and persist varied re
  const sourceStart='  FIRST SOURCE ',sourceTail=' END SOURCE ไม่ตัดท้ายเอกสาร  ';
  const fullSource=sourceStart+'ข'.repeat(100000-sourceStart.length-sourceTail.length)+sourceTail;
  const input={request_id:id,model:'gpt-6.1-terra',reasoning:'medium',story_mode:'general',source_text:fullSource,exclude:['เรื่องเก่าที่เคยสุ่ม']};
- assert.equal((await post(app,input)).status,202);const row=await done(id);assert.equal(row.status,'done');assert.equal(row.ideas.length,5);assert.equal(row.request.source_text,fullSource);assert.equal(fullSource.length,100000);
+ assert.equal((await post(app,input)).status,202);const row=await done(id);assert.equal(row.status,'done');assert.equal(row.ideas.length,10);assert.equal(row.request.source_text,fullSource);assert.equal(fullSource.length,100000);
  const request=calls.filter(x=>x.method==='POST').at(-1)!.body;
  assert.equal(request.model,'gpt-6.1-terra');assert.equal(request.reasoning.effort,'medium');assert.equal(request.background,true);assert.equal(request.tools,undefined);assert.equal(request.text.format.type,'json_schema');
  assert.ok(request.input[0].content.includes(sourceStart));assert.ok(request.input[0].content.includes(sourceTail));
  assert.ok(request.input[0].content.includes('หัวข้อที่ทำไปแล้ว'));assert.ok(request.input[0].content.includes(input.source_text));assert.ok(request.input[0].content.includes(input.exclude[0]));
- const result=await (await app.request('/app/api/studio/topic-suggestions/'+id,{headers})).json();assert.equal(result.model,'gpt-6.1-terra');assert.equal(result.story_mode,'general');assert.equal(result.ideas.length,5);assert.equal('request' in result,false);
+ const result=await (await app.request('/app/api/studio/topic-suggestions/'+id,{headers})).json();assert.equal(result.model,'gpt-6.1-terra');assert.equal(result.story_mode,'general');assert.equal(result.ideas.length,10);assert.equal('request' in result,false);
  assert.equal((await db.query<{n:number}>('SELECT count(*)::int AS n FROM drafts')).rows[0].n,1);
 });
 
@@ -73,6 +74,14 @@ test('provider disconnect fails visibly and is never silently replaced by canned
  const {app}=server(),input={request_id:randomUUID(),model:'gpt-6.1-sol'};fail=true;const n=calls.length;await post(app,input);const row=await done(input.request_id);fail=false;
  assert.equal(row.status,'failed');assert.equal(row.ideas,null);assert.ok(!row.error.includes('mock-secret'));assert.equal(calls.length,n+1);
  assert.equal((await post(app,input)).status,200);assert.equal(calls.length,n+1);
+});
+
+test('Trending with no verified research returns an honest empty result without a paid model call',async()=>{
+ const {app}=server(),id=randomUUID(),before=calls.length;
+ await post(app,{request_id:id,topic_mode:'trending',platform:'instagram'});
+ const row=await done(id);assert.equal(row.status,'done');assert.deepEqual(row.ideas,[]);assert.equal(calls.length,before);assert.match(row.availability.warning,/ยังไม่มีหลักฐาน/);
+ const result=await (await app.request('/app/api/studio/topic-suggestions/'+id,{headers})).json();assert.deepEqual(result.details,[]);assert.equal(result.topic_mode,'trending');
+ assert.equal((await app.request('/app/api/studio/trends/refresh',{method:'POST',headers,body:JSON.stringify({request_id:randomUUID()})})).status,503);
 });
 
 test('accepted background IDs are checkpointed while polling',async()=>{
