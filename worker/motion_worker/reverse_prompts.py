@@ -49,7 +49,7 @@ def prompt_text(doc,replacements=None):
     return '\n'.join(lines)
 
 
-def selection_frames(timing,shots,start,end):
+def selection_frames(timing,shots,start,end,sampling=None):
     pts=timing['pts'];first=bisect.bisect_left(pts,start);last=bisect.bisect_left(pts,end)
     if not 0<=first<last<=len(pts):raise ValueError('Selected range contains no complete video frame')
     t0=pts[first];t1=pts[last] if last<len(pts) else timing['end_s'];parts=[];indices={first,last-1}
@@ -58,9 +58,20 @@ def selection_frames(timing,shots,start,end):
         if a>=b:continue
         parts.append({'id':s['id'],'start_s':round(pts[a]-t0,6),'end_s':round((pts[b] if b<len(pts) else timing['end_s'])-t0,6),'start_frame':a,'end_frame_exclusive':b})
         indices.update([a,(a+b-1)//2,b-1])
-    for i in range(math.ceil((t1-t0)*2)):
-        k=bisect.bisect_left(pts,t0+i*.5)
-        if k<last:indices.add(k)
+    if sampling=='action_v2':
+        # Fill the largest measured-time gaps first. More detail in short action
+        # clips, bounded at 64 frames and with every cut boundary retained.
+        target=min(64,last-first,max(len(indices),math.ceil((t1-t0)*12)+1))
+        while len(indices)<target:
+            gaps=[(pts[b]-pts[a],a,b) for a,b in zip(sorted(indices),sorted(indices)[1:]) if b-a>1]
+            if not gaps:break
+            _,a,b=max(gaps)
+            k=min(b-1,max(a+1,bisect.bisect_left(pts,(pts[a]+pts[b])/2)))
+            indices.add(k)
+    else:
+        for i in range(math.ceil((t1-t0)*2)):
+            k=bisect.bisect_left(pts,t0+i*.5)
+            if k<last:indices.add(k)
     if not parts or len(indices)>64:raise ValueError('Too many cuts/frames in this selection; choose a shorter range (maximum 64 evidence frames)')
     return {'start_s':t0,'end_s':t1,'duration_s':round(t1-t0,6),'start_frame':first,'end_frame_exclusive':last,'shots':parts},sorted(indices)
 
@@ -79,7 +90,7 @@ def prepare(ctx,project,spec):
         audio=prepare_audio(ctx,project,row,source,timing,row['evidence'])
         report(ctx,'prepared','ภาพและเสียงพร้อมแล้ว',completed=1,total=1,mode='work_units')
         return {'selection_id':row['id'],'audio_status':audio['status'],'paid_requests':0}
-    e,indices=selection_frames(timing,project['analysis']['shots'],**{'start':spec['range']['start_s'],'end':spec['range']['end_s']})
+    e,indices=selection_frames(timing,project['analysis']['shots'],**{'start':spec['range']['start_s'],'end':spec['range']['end_s'],'sampling':spec['range'].get('sampling')})
     total=len(indices)+6
     report(ctx,'extract_frames','กำลังดึงภาพตามเวลา',completed=2,total=total,mode='work_units',detail=f'{len(e["shots"])} ฉาก · เตรียม {len(indices)} ภาพ')
     folder=Path(ctx.path('prompt-frames'));folder.mkdir(parents=True,exist_ok=True)
@@ -98,7 +109,7 @@ def prepare(ctx,project,spec):
     report(ctx,'save_preview','กำลังบันทึกคลิปตัวอย่าง',completed=4+len(indices),total=total,mode='work_units')
     a=save_private(ctx,project['id'],preview,'prompt_clip',content_type='video/mp4',metadata={'selection_id':row['id']});e['preview_asset_id']=str(a['id'])
     report(ctx,'save_selection','กำลังบันทึกช่วงที่เลือก',completed=5+len(indices),total=total,mode='work_units')
-    e.update(requested=spec['range'],source_sha256=project['source_sha256'],sampling='2 fps plus opening/middle/closing frame of each measured shot; no audio',motion_accuracy='model_estimated_from_samples')
+    e.update(requested=spec['range'],source_sha256=project['source_sha256'],sampling=('action_v2: up to 12 fps, 64-frame cap, measured-time gap filling with all shot opening/middle/closing anchors' if spec['range'].get('sampling')=='action_v2' else '2 fps plus opening/middle/closing frame of each measured shot; no audio'),motion_accuracy='model_estimated_from_samples')
     ctx.db.q('UPDATE reverse_prompt_selections SET evidence=%s WHERE id=%s AND evidence IS NULL',(Jsonb(e),row['id']))
     prepare_audio(ctx,project,row,source,timing,e)
     report(ctx,'prepared','เตรียมภาพและเสียงเสร็จแล้ว',completed=total,total=total,mode='work_units',detail=f'{len(indices)} ภาพพร้อมให้ถอด Prompt A')

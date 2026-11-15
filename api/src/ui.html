@@ -867,7 +867,7 @@ function studio(st, drafts){
   modeSel.addEventListener('change',changeMode);useChars.addEventListener('change',changeMode);changeMode();
   let topicSelection=null;try{topicSelection=JSON.parse(sessionStorage.getItem('ms.topic_selection')||'null');}catch{}
   const selectionNote=h('div',{class:'sub','aria-live':'polite'});
-  const showSelection=()=>{selectionNote.textContent=topicSelection?'แนบแหล่งข้อมูลของหัวข้อที่เลือกแล้ว · ระบบจะเปิดต้นฉบับตรวจอีกครั้งก่อนเขียนบท':'';};
+  const showSelection=()=>{const sourced=topicSelection&&ideaSet?.id===topicSelection.id&&ideaSet?.details?.[topicSelection.index]?.sources?.length;selectionNote.textContent=topicSelection?(sourced?'แนบแหล่งข้อมูลของหัวข้อที่เลือกแล้ว · ระบบจะเปิดต้นฉบับตรวจอีกครั้งก่อนเขียนบท':'เลือกหัวข้อแล้ว · ระบบจะตรวจข้อมูลก่อนเขียนบท'):'';};
   topic.addEventListener('input',()=>{topicSelection=null;try{sessionStorage.removeItem('ms.topic_selection');}catch{}showSelection();});
   const chooseIdea=(value,index)=>{topic.value=value;topic.dispatchEvent(new Event('input'));if(Number.isInteger(index)&&ideaSet?.id&&ideaSet?.details?.[index]){topicSelection={id:ideaSet.id,index,title:value};try{sessionStorage.setItem('ms.topic_selection',JSON.stringify(topicSelection));}catch{}}showSelection();topic.focus();};
   const ideaStatus=h('div',{class:'sub',role:'status','aria-live':'polite'});

@@ -351,7 +351,7 @@ def capability_loop(stop):
     from .db import DB
     while not stop():
         try:
-            db=DB();data={'runtime':runtime_status(),'openai':bool(os.environ.get('OPENAI_API_KEY')),'prompt_model':os.environ.get('MOTION_REVERSE_BRAIN_MODEL','gpt-6.1-sol'),'prompt_rate':json.loads(os.environ.get('MOTION_REVERSE_OPENAI_RATE_JSON','null')),'transcribe_model':os.environ.get('MOTION_REVERSE_TRANSCRIBE_MODEL','gpt-transcribe'),'transcribe_rate':json.loads(os.environ.get('MOTION_REVERSE_TRANSCRIBE_RATE_JSON','null')),'fal':bool(os.environ.get('FAL_KEY')),'eleven':bool(config.ELEVENLABS_API_KEY),
+            db=DB();data={'runtime':runtime_status(),'openai':bool(os.environ.get('OPENAI_API_KEY')),'prompt_action_sampling':'action_v2','prompt_model':os.environ.get('MOTION_REVERSE_BRAIN_MODEL','gpt-6.1-sol'),'prompt_rate':json.loads(os.environ.get('MOTION_REVERSE_OPENAI_RATE_JSON','null')),'transcribe_model':os.environ.get('MOTION_REVERSE_TRANSCRIBE_MODEL','gpt-transcribe'),'transcribe_rate':json.loads(os.environ.get('MOTION_REVERSE_TRANSCRIBE_RATE_JSON','null')),'fal':bool(os.environ.get('FAL_KEY')),'eleven':bool(config.ELEVENLABS_API_KEY),
                 'voice_id':config.DEFAULT_VOICE_ID,'tts_model':os.environ.get('MOTION_DEFAULT_TTS_MODEL','eleven_v4'),
                 'sfx_model':os.environ.get('MOTION_DEFAULT_SFX_MODEL','eleven_text_to_sound_v3'),
                 'key_fingerprints':{'openai':fingerprint('OPENAI_API_KEY'),'fal':fingerprint('FAL_KEY'),'eleven':fingerprint('ELEVENLABS_API_KEY')},'private_storage':bool(os.environ.get('MOTION_REVERSE_STORAGE_KEY'))}

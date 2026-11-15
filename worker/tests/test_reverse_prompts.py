@@ -69,3 +69,15 @@ def test_openai_submission_is_one_post_and_accepted_id_resume_is_get_only(tmp_pa
     saved={**row,'provider_id':'resp_saved'};ctx.db.one.return_value=saved;(tmp_path/'prompt-response').mkdir()
     with patch.object(p,'check_active'),patch.object(Ledger,'reserve',return_value=saved),patch.object(p,'save_private',return_value={'id':'response-asset'}),patch.object(requests,'post') as post,patch.object(requests,'get',return_value=Response({'status':'completed','output':[],'usage':{'input_tokens':100,'output_tokens':10}})) as get:
         result=p._response_call(ctx,{'id':'project'},task,quote);assert not post.called;assert get.call_count==1;assert result['response_asset_id']=='response-asset'
+
+
+def test_action_sampling_retains_cut_anchors_and_adds_motion_evidence_without_retiming():
+    timing={'pts':[i/30 for i in range(450)],'end_s':15}
+    shots=[{'id':'s1','start_frame':0,'end_frame_exclusive':44},{'id':'s2','start_frame':44,'end_frame_exclusive':450}]
+    old,old_indices=p.selection_frames(timing,shots,0,15)
+    new,indices=p.selection_frames(timing,shots,0,15,'action_v2')
+    assert new==old and len(indices)==64 and len(indices)>len(old_indices)
+    assert {0,21,43,44,246,449}.issubset(indices)
+    assert indices==sorted(set(indices)) and max(indices)<450
+    short,dense=p.selection_frames(timing,shots,0,2,'action_v2')
+    assert len(dense)>=24 and short['duration_s']==2

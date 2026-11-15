@@ -64,3 +64,16 @@ test('character design quotes bind one selected actor, brief, story and replacem
  for(const inputBad of [{...input,character_id:'C9'},{...input,brief:''},{...input,replacements:{characters:{C9:'bad'},locations:{}}}])assert.equal((await request('/projects/'+project.id+'/prompt-character-quote',inputBad)).status,409);
  assert.equal((await app.request(P+'/projects/'+project.id+'/prompt-character-quote',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(input)})).status,401);
 });
+
+test('model exports are read-only, project scoped and validate the immutable motion hash',async()=>{
+ await query('UPDATE reverse_projects SET analysis=$2 WHERE id=$1',[project.id,JSON.stringify({source:{end_s:20,width:1920,height:1080},shots:[]})]);
+ const url=P+'/projects/'+project.id+'/prompt-export?'+new URLSearchParams({version_id:sha(doc),endpoint_id:'minimax/h3-max/text-to-video',main_character_id:'C1'});
+ const before=(await query('SELECT count(*)::int n FROM reverse_prompt_versions')).rows[0].n;
+ const r=await app.request(url,{headers});assert.equal(r.status,200,await r.clone().text());const result=await r.json();assert.equal(result.paid_requests,0);assert.equal(result.source_uploads,0);assert.equal(result.copy_allowed,true);assert.equal(result.locks_hash,motionLock(doc));assert.equal(result.settings.aspect_ratio,'16:9');
+ assert.equal((await app.request(url)).status,401);
+ assert.equal((await app.request(url.replace(sha(doc),'0'.repeat(64)),{headers})).status,409);
+ assert.equal((await app.request(url+'&camera=change',{headers})).status,409);
+ await query('UPDATE reverse_prompt_versions SET locks_hash=$2 WHERE id=$1',[sha(doc),'0'.repeat(64)]);assert.equal((await app.request(url,{headers})).status,409);await query('UPDATE reverse_prompt_versions SET locks_hash=$2 WHERE id=$1',[sha(doc),motionLock(doc)]);
+ assert.equal((await query('SELECT count(*)::int n FROM reverse_prompt_versions')).rows[0].n,before);assert.equal((await query('SELECT count(*)::int n FROM creative_calls')).rows[0].n,0);
+ const list=await(await app.request(P+'/projects/'+project.id+'/prompts',{headers})).json();assert.equal(list.export_models.length,120);
+});
