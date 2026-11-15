@@ -1,4 +1,5 @@
 import type {Queryable} from './store.js';
+class NotionHttpError extends Error { constructor(readonly status:number){super('Notion HTTP '+status);} }
 const rich=(text:unknown)=>({rich_text:String(text??'').match(/[\s\S]{1,1800}/g)?.slice(0,20).map(content=>({type:'text',text:{content}}))??[]});
 const date=(value:any)=>({date:value?{start:new Date(value).toISOString()}:null});
 export function notionProperties(r:any) {
@@ -19,7 +20,7 @@ export async function syncNotion(db:Queryable,row:any,request:typeof fetch=fetch
   if(!database||!token)throw new Error('Notion trend database is not configured');
   const call=async(path:string,body:any,method='POST')=>{
     const res=await request('https://api.notion.com/v1/'+path,{method,headers:{Authorization:'Bearer '+token,'Notion-Version':'2022-06-28','Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(25000)});
-    if(!res.ok)throw new Error('Notion HTTP '+res.status);return res.json() as Promise<any>;
+    if(!res.ok)throw new NotionHttpError(res.status);return res.json() as Promise<any>;
   };
   try {
     let page=row.notion_page_id;
@@ -33,7 +34,14 @@ export async function syncNotion(db:Queryable,row:any,request:typeof fetch=fetch
     if(page)await call('pages/'+page,{properties},'PATCH');
     else {
       await db.query("UPDATE trend_sources SET notion_sync_error='create_uncertain' WHERE id=$1",[row.id]);
-      page=(await call('pages',{parent:{database_id:database},properties})).id;
+      try{page=(await call('pages',{parent:{database_id:database},properties})).id;}
+      catch(error){
+        // A definite rejection created nothing. Network/5xx/timeout outcomes remain
+        // ambiguous and must still be reconciled before another create.
+        if(error instanceof NotionHttpError&&[400,401,403,404,422,429].includes(error.status))
+          await db.query('UPDATE trend_sources SET notion_sync_error=$2 WHERE id=$1',[row.id,error.message]);
+        throw error;
+      }
     }
     await db.query('UPDATE trend_sources SET notion_page_id=$2,notion_synced_at=now(),notion_sync_error=NULL WHERE id=$1',[row.id,page]);
     return page;

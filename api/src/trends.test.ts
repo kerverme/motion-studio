@@ -6,7 +6,7 @@ import {PGlite} from '@electric-sql/pglite';
 import {canonicalSource,metric,scoreEvidence,isEligible,type Evidence} from './trends/policy.js';
 import {saveEvidence,eligibleTrends,selectedContext,trendPrompt} from './trends/store.js';
 import {notionProperties,syncNotion} from './trends/notion.js';
-import {researchResponse,reconcileUsage} from './trends/provider.js';
+import {researchResponse,reconcileUsage,estimateTerra} from './trends/provider.js';
 import {parseDetailedIdeas} from './topic-suggestions.js';
 const now=Date.now(),date=(days:number)=>new Date(now-days*86400000).toISOString();
 const evidence:Evidence={platform:'tiktok',sourceId:'123456789',url:'https://www.tiktok.com/@science/video/123456789',title:'ทำไมท้องฟ้าถึงเปลี่ยนสี',publishedAt:date(1),observedAt:date(0),views:1000000,likes:5000,comments:null,detailRead:true,available:true,publicationEvidence:date(1)};
@@ -85,4 +85,32 @@ test('a topic finished by an older API deployment still reconciles its pending p
  const result=await reconcileUsage(pool,request);assert.equal(result.length,1);assert.equal(result[0].estimated_usd,0);
  await reconcileUsage(pool,request);assert.equal(reads,1);
  const row:any=(await db.query('SELECT * FROM trend_provider_calls WHERE topic_suggestion_id=$1',[id])).rows[0];assert.equal(row.status,'failed');assert.ok(row.finished_at);assert.equal(row.actual_usd,null);
+});
+
+test('missing usage is not free usage and cache writes are priced',()=>{
+ for(const usage of [null,{}, {input_tokens:10}, {input_tokens:-1,output_tokens:0}, {input_tokens:1,output_tokens:0,input_tokens_details:{cached_tokens:2}}])assert.equal(estimateTerra(usage),null);
+ assert.equal(estimateTerra({input_tokens:0,output_tokens:0}),0);
+ assert.equal(estimateTerra({input_tokens:1000,output_tokens:200,input_tokens_details:{cached_tokens:200,cache_write_tokens:100}}),.001835);
+});
+test('confirmed zero costs release reserves; unknown usage retains them',async()=>{
+ for(const known of [true,false]){
+  const run=randomUUID();await db.query('INSERT INTO trend_research_runs(id,request_key,request) VALUES($1::uuid,$1::text,$2)',[run,'{}']);
+  await db.query("INSERT INTO trend_provider_calls(research_run_id,call_key,model,status,response_id,reserved_usd) VALUES($1,$2,'gpt-6.1-terra','failed','resp_reserve',0.12)",[run,run]);
+  await reconcileUsage(pool,async()=>Response.json({status:'cancelled',usage:known?{input_tokens:0,output_tokens:0}:{},output:[]}));
+  const row:any=(await db.query('SELECT * FROM trend_provider_calls WHERE call_key=$1',[run])).rows[0];
+  assert.equal(row.estimated_usd,known?'0':null);assert.equal(Number(row.reserved_usd),known?0:.12);assert.equal(row.actual_usd,null);
+  if(known){await db.query('UPDATE trend_provider_calls SET reserved_usd=.12 WHERE call_key=$1',[run]);await reconcileUsage(pool,async()=>{throw new Error('Must not refetch reconciled responses');});assert.equal(Number((await db.query<any>('SELECT reserved_usd FROM trend_provider_calls WHERE call_key=$1',[run])).rows[0].reserved_usd),0);}
+ }
+});
+test('Notion rejected creates recover after permission repair; ambiguous failures never recreate blindly',async()=>{
+ for(const status of [404,503]){
+  const run=randomUUID();await db.query('INSERT INTO trend_research_runs(id,request_key,request) VALUES($1::uuid,$1::text,$2)',[run,'{}']);
+  const id=status.toString();let row=await saveEvidence(pool,run,{...evidence,sourceId:id,url:'https://www.tiktok.com/@test/video/'+id,views:null,likes:null},assessment);
+  let creates=0,rejected=true;const page=randomUUID();
+  const request:any=async(url:string)=>{if(url.endsWith('/query'))return Response.json({results:[]});creates++;return rejected?Response.json({}, {status}):Response.json({id:page});};
+  await assert.rejects(syncNotion(pool,row,request),new RegExp('Notion HTTP '+status));
+  row=(await db.query('SELECT * FROM trend_sources WHERE id=$1',[row.id])).rows[0];rejected=false;
+  if(status===404){assert.equal(row.notion_sync_error,'Notion HTTP 404');await syncNotion(pool,row,request);assert.equal(creates,2);}
+  else{assert.equal(row.notion_sync_error,'create_uncertain');await assert.rejects(syncNotion(pool,row,request),/reconcile/);assert.equal(creates,1);}
+ }
 });
