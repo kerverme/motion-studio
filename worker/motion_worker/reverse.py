@@ -25,7 +25,7 @@ from .reverse_render import code_motion,normalize,compose,technical_qa,assemble,
 from .reverse_audio import produce_audio
 from .text_video import ApprovalRequired,check_active,download_video
 from .creative_ledger import digest,AmbiguousCall
-from . import reverse_prompts
+from . import reverse_prompts, reverse_scene_logic
 
 
 def schemas():return json.loads(Path(__file__).with_name('reverse-schemas.json').read_text())
@@ -225,6 +225,7 @@ def recipe(ctx,project,spec):
 
 
 def generate(ctx,project,task,quote):
+    reverse_scene_logic.generation_preflight(ctx,project,quote)
     shot=task['shot'];measured=task['measured'];duration=task.get('delivery',{}).get('duration_s',measured['duration_s'])
     source=project['analysis']['source'];width,height=(1080,1920) if source['height']>=source['width'] else (1920,1080)
     base=ctx.path('generated',shot['shot_id']+'-base.mp4')
@@ -319,11 +320,12 @@ def run(ctx):
     spec=ctx.pkg['reverse'];project=ctx.db.one('SELECT * FROM reverse_projects WHERE id=%s',(spec['project_id'],))
     if not project or project['source_sha256']!=spec['source_sha256']:raise ApprovalRequired('Source binding changed')
     check_active(ctx)
-    if spec['action'] in ('analyze','recipe','assemble','prompt_prepare'):
-        result={'analyze':analyze,'recipe':recipe,'assemble':final_assembly,'prompt_prepare':reverse_prompts.prepare}[spec['action']](ctx,project,spec)
+    if spec['action'] in ('analyze','recipe','assemble','prompt_prepare','inspection_prepare'):
+        result={'analyze':analyze,'recipe':recipe,'assemble':final_assembly,'prompt_prepare':reverse_prompts.prepare,'inspection_prepare':reverse_scene_logic.prepare_inspection}[spec['action']](ctx,project,spec)
     else:
         quote=spec['quote'];approval=ctx.db.one('SELECT * FROM reverse_approvals WHERE quote_id=%s AND job_id=%s',(quote['id'],ctx.job['id']))
         if not approval or approval['binding']!=quote['binding']:raise ApprovalRequired('No persisted owner approval')
+        reverse_scene_logic.generation_preflight(ctx,project,quote)
         result={'steps':[]}
         tasks=sorted(quote['tasks'],key=lambda t:0 if t['role']=='audio' else 1)
         for i,task in enumerate(tasks):
@@ -337,7 +339,8 @@ def run(ctx):
                 # fallback and no source-frame substitution.
                 raise ApprovalRequired('Select the generated predecessor last frame as an explicit first-frame reference and quote again')
             from .reverse_prompt_audio import transcribe
-            fn={'vision':vision,'planner':planner,'video':generate,'audio':produce_audio,'image':image_reference,'visual_qa':visual_qa,'prompt_extract':reverse_prompts.extract,'prompt_transcribe':transcribe,'prompt_character':reverse_prompts.character}[task['role']]
+            fn={'vision':vision,'planner':planner,'video':generate,'audio':produce_audio,'image':image_reference,'visual_qa':visual_qa,'prompt_extract':reverse_prompts.extract,'prompt_transcribe':transcribe,'prompt_character':reverse_prompts.character,'scene_logic':reverse_scene_logic.direct,'video_inspection':reverse_scene_logic.inspect}[task['role']]
+            reverse_scene_logic.generation_preflight(ctx,project,quote)
             value=fn(ctx,project,task,quote)
             ctx.db.q("UPDATE reverse_steps SET status='complete',result=%s,updated_at=now() WHERE job_id=%s AND slot=%s",(Jsonb(value),ctx.job['id'],slot))
             result['steps'].append(value)
@@ -351,7 +354,7 @@ def capability_loop(stop):
     from .db import DB
     while not stop():
         try:
-            db=DB();data={'runtime':runtime_status(),'openai':bool(os.environ.get('OPENAI_API_KEY')),'prompt_action_sampling':'action_v2','prompt_model':os.environ.get('MOTION_REVERSE_BRAIN_MODEL','gpt-6.1-sol'),'prompt_rate':json.loads(os.environ.get('MOTION_REVERSE_OPENAI_RATE_JSON','null')),'transcribe_model':os.environ.get('MOTION_REVERSE_TRANSCRIBE_MODEL','gpt-transcribe'),'transcribe_rate':json.loads(os.environ.get('MOTION_REVERSE_TRANSCRIBE_RATE_JSON','null')),'fal':bool(os.environ.get('FAL_KEY')),'eleven':bool(config.ELEVENLABS_API_KEY),
+            db=DB();data={'runtime':runtime_status(),'openai':bool(os.environ.get('OPENAI_API_KEY')),'prompt_action_sampling':'action_v2','scene_logic_version':'motion.scene-logic.v1','prompt_model':os.environ.get('MOTION_REVERSE_BRAIN_MODEL','gpt-6.1-sol'),'prompt_rate':json.loads(os.environ.get('MOTION_REVERSE_OPENAI_RATE_JSON','null')),'transcribe_model':os.environ.get('MOTION_REVERSE_TRANSCRIBE_MODEL','gpt-transcribe'),'transcribe_rate':json.loads(os.environ.get('MOTION_REVERSE_TRANSCRIBE_RATE_JSON','null')),'fal':bool(os.environ.get('FAL_KEY')),'eleven':bool(config.ELEVENLABS_API_KEY),
                 'voice_id':config.DEFAULT_VOICE_ID,'tts_model':os.environ.get('MOTION_DEFAULT_TTS_MODEL','eleven_v4'),
                 'sfx_model':os.environ.get('MOTION_DEFAULT_SFX_MODEL','eleven_text_to_sound_v3'),
                 'key_fingerprints':{'openai':fingerprint('OPENAI_API_KEY'),'fal':fingerprint('FAL_KEY'),'eleven':fingerprint('ELEVENLABS_API_KEY')},'private_storage':bool(os.environ.get('MOTION_REVERSE_STORAGE_KEY'))}
