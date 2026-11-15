@@ -192,13 +192,20 @@ def _response_call(ctx,project,task,quote):
         if row.get('provider_id'):data=read(row['provider_id'])
         else:
             character=task.get('role')=='prompt_character'
+            scene=task.get('role') in ('scene_logic','video_inspection')
+            if scene:
+                from .reverse_scene_logic import output_schema as scene_schema
+                expected=scene_schema(task['role'])
+                if task['payload'].get('output_schema')!=expected:raise ApprovalRequired('Scene output schema changed; request a fresh quote')
             report(ctx,'build_request','กำลังเตรียมเรื่องและไอเดียตัวละคร' if character else 'กำลังเตรียมภาพให้ Sol อ่าน')
-            content=[{'type':'input_text','text':json.dumps(task['payload']['context'] if character else task['payload']['evidence'],ensure_ascii=False)}]
+            context=task['payload']['context'] if character else ({'context':task['payload']['context'],'evidence':task['payload']['evidence']} if scene else task['payload']['evidence'])
+            content=[{'type':'input_text','text':json.dumps(context,ensure_ascii=False)}]
             for frame in task['payload'].get('evidence',{}).get('frames',[]):
-                content.extend([{'type':'input_text','text':f'Source frame {frame["frame"]}, range time {frame["at_s"]:.6f}s.'},{'type':'input_image','image_url':asset_uri(ctx,project['id'],frame['asset_id']),'detail':'high'}])
+                kind='Generated candidate' if task.get('role')=='video_inspection' else 'Source'
+                content.extend([{'type':'input_text','text':f'{kind} frame {frame["frame"]}, measured video time {frame["at_s"]:.6f}s.'},{'type':'input_image','image_url':asset_uri(ctx,project['id'],frame['asset_id']),'detail':'high'}])
             check_active(ctx)
             report(ctx,'submit','กำลังส่งไอเดียตัวละครให้ Sol' if character else 'กำลังส่งภาพให้ Sol')
-            payload={'model':task['model'],'service_tier':'default','background':True,'store':True,'max_output_tokens':task['payload']['max_output_tokens'],'reasoning':{'effort':task['payload']['reasoning']},'instructions':task['payload']['system'],'input':[{'role':'user','content':content}], 'text':{'format':{'type':'json_schema','name':'reverse_prompt','strict':True,'schema':character_schema() if character else output_schema()}}}
+            payload={'model':task['model'],'service_tier':'default','background':True,'store':True,'max_output_tokens':task['payload']['max_output_tokens'],'reasoning':{'effort':task['payload']['reasoning']},'instructions':task['payload']['system'],'input':[{'role':'user','content':content}], 'text':{'format':{'type':'json_schema','name':'reverse_prompt','strict':True,'schema':expected if scene else character_schema() if character else output_schema()}}}
             r=requests.post(base,headers=headers,json=payload,timeout=60,allow_redirects=False)
             if not r.ok:raise ApprovalRequired('OpenAI submission HTTP '+str(r.status_code)+'; no automatic POST retry')
             data=r.json();ident=data.get('id')
@@ -207,7 +214,8 @@ def _response_call(ctx,project,task,quote):
         deadline=time.monotonic()+1200
         while data.get('status') in ('queued','in_progress'):
             check_active(ctx)
-            report(ctx,'provider_wait','Sol กำลังออกแบบรูปลักษณ์และชุด' if task.get('role')=='prompt_character' else 'Sol กำลังอ่านภาพและร่าง Prompt A',detail='OpenAI ไม่รายงานเปอร์เซ็นต์ระหว่างคิด ระบบกำลังติดตามคำขอเดิม')
+            label={'prompt_character':'Sol กำลังออกแบบรูปลักษณ์และชุด','scene_logic':'Sol กำลังตรวจเหตุและผลของเรื่อง','video_inspection':'Sol กำลังตรวจเหตุการณ์ในวิดีโอที่สร้างจริง'}.get(task.get('role'),'Sol กำลังอ่านภาพและร่าง Prompt A')
+            report(ctx,'provider_wait',label,detail='OpenAI ไม่รายงานเปอร์เซ็นต์ระหว่างคิด ระบบกำลังติดตามคำขอเดิม')
             if time.monotonic()>deadline:raise TimeoutError('Resume the saved OpenAI response ID')
             time.sleep(3);data=read(row['provider_id'])
         report(ctx,'save_response','ได้รับคำตอบแล้ว กำลังบันทึกผล')

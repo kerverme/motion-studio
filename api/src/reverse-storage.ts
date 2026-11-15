@@ -6,6 +6,7 @@ import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {S3Client,PutObjectCommand,GetObjectCommand} from '@aws-sdk/client-s3';
+import type {ByteRange} from './byte-range.js';
 
 export type SealedAsset={storage_key:string;sha256:string;bytes:number;encryption:{algorithm:'aes-256-gcm';iv:string;tag:string;key_id:string}};
 function key(){const v=process.env.MOTION_REVERSE_STORAGE_KEY||'';if(!/^[0-9a-f]{64}$/.test(v))throw Error('Private reverse storage key is not configured');return Buffer.from(v,'hex');}
@@ -41,7 +42,7 @@ export async function readPrivateAsset(asset:any,store=privateStorage()):Promise
 }
 
 /** Authenticate before releasing plaintext; stream large exports from a private temp file. */
-export async function streamPrivateAsset(asset:any,store=privateStorage()):Promise<ReadableStream<Uint8Array>>{
+export async function streamPrivateAsset(asset:any,store=privateStorage(),range:ByteRange|null=null):Promise<ReadableStream<Uint8Array>>{
   if(!asset.encryption||asset.encryption.key_id!==keyId()||asset.bytes>1024*1024*1024)throw Error('Private asset key/size is invalid');
   const dir=await mkdtemp(join(tmpdir(),'reverse-read-')),path=join(dir,'plain');
   try{
@@ -51,6 +52,6 @@ export async function streamPrivateAsset(asset:any,store=privateStorage()):Promi
     const measure=new Transform({transform(chunk,_enc,cb){bytes+=chunk.length;if(bytes>Number(asset.bytes)){cb(Error('Asset exceeds declared size'));return;}hash.update(chunk);cb(null,chunk);}});
     await pipeline(r.Body as Readable,decipher,measure,createWriteStream(path,{mode:0o600}));
     if(bytes!==Number(asset.bytes)||hash.digest('hex')!==asset.sha256)throw Error('Private artifact checksum mismatch');
-    const reader=createReadStream(path);reader.on('close',()=>{void rm(dir,{recursive:true,force:true});});return Readable.toWeb(reader) as ReadableStream<Uint8Array>;
+    const reader=createReadStream(path,range||undefined);reader.on('close',()=>{void rm(dir,{recursive:true,force:true});});return Readable.toWeb(reader) as ReadableStream<Uint8Array>;
   }catch(e){await rm(dir,{recursive:true,force:true});throw e;}
 }
