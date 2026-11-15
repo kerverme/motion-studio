@@ -6,6 +6,8 @@ const timestamp=(v:any)=>sourceDate(typeof v==='string'&&/^\d{10,13}$/.test(v)?N
 export function normaliseSocial(capability:string,data:any,collectedAt:string):SocialEvidence[]{
  if(data?.success===false)return [];
  const platform=capability.split('/')[0] as Platform;
+ const providerCachedAt=data?.cached===true?timestamp(data.cached_at):null;
+ const observedAt=providerCachedAt||collectedAt;
  let list:any[]=[];
  if(capability==='tiktok/search-videos')list=(data?.search_item_list||[]).map((r:any)=>r.aweme_info||r);
  if(capability==='tiktok/video')list=[data?.aweme_detail||data?.aweme_info||data?.data?.aweme_detail||data];
@@ -33,8 +35,10 @@ export function normaliseSocial(capability:string,data:any,collectedAt:string):S
    views=metric(raw.viewCount??raw.views);likes=metric(raw.likeCount??raw.likes);comments=metric(raw.commentCount);
   }
   const identity=canonicalSource(url);if(!identity||identity.platform!==platform)continue;
-  const detailRead=Boolean(content.trim()&&publishedAt);
-  result.push({...identity,sourceId:identity.sourceId,title:content.trim().slice(0,300)||identity.url,content:content.slice(0,12000),author,publishedAt,observedAt:collectedAt,views,likes,comments,detailRead,available:true,publicationEvidence:publishedAt,provider:'scrapecreators',capability,metric_origin:'provider_reported',warnings:platform==='instagram'?['ยอดเล่นจากผู้ให้บริการอาจคลาดเคลื่อนและไม่รวม Facebook']:[]});
+  const expectedId=platform==='tiktok'?raw.aweme_id:platform==='instagram'?(raw.shortcode||raw.code):(raw.id||raw.videoId);
+  if(expectedId!=null&&String(expectedId)!==identity.sourceId)continue;
+  const detailRead=Boolean(content.trim()&&publishedAt&&(data?.cached!==true||providerCachedAt));
+  result.push({...identity,sourceId:identity.sourceId,title:content.trim().slice(0,300)||identity.url,content:content.slice(0,12000),author,publishedAt,observedAt,views,likes,comments,detailRead,available:true,publicationEvidence:publishedAt,provider:'scrapecreators',capability,metric_origin:'provider_reported',warnings:platform==='instagram'?['ยอดเล่นจากผู้ให้บริการอาจคลาดเคลื่อนและไม่รวม Facebook']:[]});
  }
  return [...new Map(result.map(e=>[e.url,e])).values()];
 }

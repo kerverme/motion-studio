@@ -37,6 +37,7 @@ export async function runResearch(pool:pg.Pool,db:Queryable,run:any,adapter=new 
  const checkpoint:any=run.checkpoint||{};const deadline=Date.now()+9*60000;
  const save=async()=>{await db.query('UPDATE trend_alexandria_jobs SET checkpoint=$2,updated_at=now() WHERE run_id=$1',[run.id,JSON.stringify(checkpoint)]);};
  const model=run.request.model;await verifyResearchModel(model);
+ try{checkpoint.account=await adapter.credits();}catch{checkpoint.account=null;}
  const tools:Tool[]=await adapter.discover('scrapecreators');
  await db.query("INSERT INTO trend_alexandria_catalog(provider,tools) VALUES('scrapecreators',$1) ON CONFLICT(provider) DO UPDATE SET tools=EXCLUDED.tools,checked_at=now(),error=NULL",[JSON.stringify(tools)]);
  const store=new PgResearchBudget(pool);const platforms=run.request.platform==='both'?['tiktok','instagram']:[run.request.platform];
@@ -50,6 +51,10 @@ export async function runResearch(pool:pg.Pool,db:Queryable,run:any,adapter=new 
  }
  checkpoint.calls ||= [];checkpoint.evidence ||= [];checkpoint.warnings ||= [];
  const requestTool=async(capability:string,options:Record<string,unknown>)=>{
+  if(checkpoint.account&&checkpoint.account.remaining_credits<2||checkpoint.warnings.some((w:any)=>['insufficient_credits','authentication_error','THIRD_PARTY_DATA_TERMS_REQUIRED'].includes(w.code))){
+   if(!checkpoint.warnings.some((w:any)=>w.code==='insufficient_credits')&&checkpoint.account?.remaining_credits<2)checkpoint.warnings.push({code:'insufficient_credits'});
+   await save();return;
+  }
   const tool=tools.find(t=>t.capability===capability);if(!tool){checkpoint.warnings.push({code:'capability_unavailable',capability});await save();return;}
   try{pricedTool(tool,options);}catch(e){checkpoint.warnings.push({code:e instanceof ResearchBudgetError?e.code:'unknown_cost',capability});await save();return;}
   const callKey=JSON.stringify({capability,options});if(checkpoint.calls.some((c:any)=>c.key===callKey))return;
@@ -64,7 +69,8 @@ export async function runResearch(pool:pg.Pool,db:Queryable,run:any,adapter=new 
   }catch(e){const code=e instanceof AlexandriaError||e instanceof ResearchBudgetError?e.code:'provider_failure';checkpoint.calls.push({key:callKey,provider:tool.provider,capability,max_credits:2,actual_credits:null,error:code});checkpoint.warnings.push({code,capability,...(e instanceof AlexandriaError&&e.actionUrl?{action_url:e.actionUrl}:{})});await save();}
  };
  // At most two queries per requested platform, no pagination or autonomous agent loop.
- for(const p of checkpoint.plan.queries){if(!platforms.includes(p.platform))continue;
+ const queriedPlatforms=new Set<string>();
+ for(const p of checkpoint.plan.queries){if(!platforms.includes(p.platform)||queriedPlatforms.has(p.platform))continue;queriedPlatforms.add(p.platform);
   if(p.capability!==capabilityFor[p.platform as keyof typeof capabilityFor]){checkpoint.warnings.push({code:'planner_capability_rejected',capability:p.capability});continue;}
   for(const query of [p.thai,p.english]){
    const options=p.platform==='tiktok'?{query,date_posted:'this-week',sort_by:'date-posted',region:'TH'}:p.platform==='instagram'?{query,date_posted:'last-week'}:{query,uploadDate:'this_week',sortBy:'relevance',type:'videos',region:'TH'};
@@ -90,6 +96,6 @@ export async function runResearch(pool:pg.Pool,db:Queryable,run:any,adapter=new 
   if(!saved.includes(row.id))saved.push(row.id);
  }
  checkpoint.saved_sources=saved;await save();
- const blocked=budget.blocked_reason||checkpoint.warnings.some((w:any)=>w.code==='THIRD_PARTY_DATA_TERMS_REQUIRED');
- return {status:blocked?'blocked':eligible?'done':'partial',evidence_count:recent.length,eligible_count:eligible,details:{engine:'alexandria',model,window_days:7,budget,received_count:checkpoint.evidence.length,web_summary:checkpoint.plan.summary,web_sources:checkpoint.web_sources,calls:checkpoint.calls,warnings:checkpoint.warnings,requested_count:run.request.count,verified_count:eligible,limitation:eligible<run.request.count?'พบหลักฐานผ่านเกณฑ์น้อยกว่าที่ขอ ระบบไม่เติมข้อมูลสมมติ':null}};
+ const blocked=budget.blocked_reason||checkpoint.warnings.some((w:any)=>['insufficient_credits','THIRD_PARTY_DATA_TERMS_REQUIRED'].includes(w.code));
+ return {status:blocked?'blocked':eligible?'done':'partial',evidence_count:recent.length,eligible_count:eligible,details:{engine:'alexandria',model,window_days:7,budget,account:checkpoint.account,received_count:checkpoint.evidence.length,web_summary:checkpoint.plan.summary,web_sources:checkpoint.web_sources,calls:checkpoint.calls,warnings:checkpoint.warnings,requested_count:run.request.count,verified_count:eligible,limitation:eligible<run.request.count?'พบหลักฐานผ่านเกณฑ์น้อยกว่าที่ขอ ระบบไม่เติมข้อมูลสมมติ':null}};
 }

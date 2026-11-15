@@ -66,10 +66,25 @@ test('model identifier is checked with actual account access and no generation c
  const good=await verifyResearchModel('verified-test',async(url)=>{assert.ok(String(url).endsWith('/v1/models/verified-test'));return Response.json({id:'verified-test'});});assert.equal(good.id,'verified-test');
  await assert.rejects(verifyResearchModel('missing',async()=>Response.json({},{status:404})));await assert.rejects(verifyResearchModel(''));
 });
+test('insufficient account credits stop all paid social calls while retaining honest web research',async()=>{
+ const j=await job();let paid=0;
+ globalThis.fetch=async(url,init)=>{
+  if(String(url).includes('/v1/models/'))return Response.json({id:'gpt-6.1-terra'});
+  if(String(url).endsWith('/team/credit-usage')){assert.equal(init?.method,undefined);return Response.json({success:true,data:{remainingCredits:0,planCredits:0}});}
+  const body=JSON.parse(String(init?.body));if(body.alexandria?.capability==='find-tools')return response('find-tools',{items:catalog,total:catalog.length},0);
+  paid++;throw new Error('Paid call must not execute');
+ };
+ const result=await runResearch(pool,pool,{id:j.id,budget_id:j.budgetId,request:{model:'gpt-6.1-terra',platform:'both',count:10},checkpoint:{plan:{summary:'ข้อมูลเว็บ',queries:[{platform:'tiktok',thai:'ไทย',english:'Thai',capability:'tiktok/search-videos'}]},web_sources:[{url:'https://example.org',title:'Web source'}],web_attempted:true}});
+ assert.equal(result.status,'blocked');assert.equal(result.details.web_sources.length,1);assert.equal(result.details.warnings[0].code,'insufficient_credits');assert.equal(paid,0);assert.equal(result.details.budget.committed,0);
+ globalThis.fetch=nativeFetch;
+});
 test('provider fields preserve unknown metrics, exact timestamps and stable URL deduplication',()=>{
  assert.equal(evidence.length,2);assert.equal(evidence[0].views,1000000);assert.ok(recentEvidence(evidence[0]));
  const ig=normaliseSocial('instagram/search-reels',{reels:[{url:'https://www.instagram.com/reel/Abc/?utm_source=x',caption:'แรงตึงผิวกับน้ำ',taken_at:observed,like_count:0},{url:'https://www.instagram.com/p/Abc/',caption:'แรงตึงผิวกับน้ำ',taken_at:observed,like_count:0}]},observed);
  assert.equal(ig.length,1);assert.equal(ig[0].views,null);assert.equal(ig[0].likes,0);assert.equal(ig[0].comments,null);
+ assert.equal(normaliseSocial('instagram/search-reels',{reels:[{url:'https://www.instagram.com/p/Abc/',shortcode:'Wrong',caption:'wrong source',taken_at:observed}]},observed).length,0);
+ assert.equal(normaliseSocial(tool.capability,{...payload,cached:true},observed)[0].detailRead,false);
+ const cachedAt=new Date(Date.now()-86400000).toISOString();assert.equal(normaliseSocial(tool.capability,{...payload,cached:true,cached_at:cachedAt},observed)[0].observedAt,cachedAt);
  for(const e of [{...evidence[0],publishedAt:null},{...evidence[0],publishedAt:new Date(Date.now()-8*86400000).toISOString()},{...evidence[0],publishedAt:new Date(Date.now()+86400000).toISOString()}])assert.equal(recentEvidence(e),false);
 });
 test('one post, one creator, fake quotes or forged supporting IDs cannot establish a trend',()=>{
@@ -112,6 +127,7 @@ test('complete mocked research → Notion → topic → script selection uses co
  globalThis.fetch=async(url,init)=>{
   const u=String(url),body=init?.body?JSON.parse(String(init.body)):{};
   if(u.includes('/v1/models/'))return Response.json({id:'gpt-6.1-terra'});
+  if(u.endsWith('/team/credit-usage'))return Response.json({success:true,data:{remainingCredits:1000,planCredits:1000}});
   if(u.includes('firecrawl.dev')){const c=body.alexandria.capability;if(c==='find-tools')return response(c,{items:catalog,total:catalog.length},0);assert.ok(planned,'Web Search precedes paid calls');paid++;return response(c,payload);}
   if(u.includes('api.notion.com')){if(u.endsWith('/query'))return Response.json({results:[]});if(u.endsWith('/pages')){notionCreates++;return Response.json({id:'notion-page'});}return Response.json({id:'notion-page'});}
   if(u.endsWith('/v1/responses')){openai++;const plan=body.text.format.name==='research_plan';if(plan)planned=true;return Response.json({id:'resp_mock_'+openai,status:'completed',usage:{input_tokens:300,output_tokens:100},output:[...(plan?[{type:'web_search_call',status:'completed',action:{sources:[{url:'https://science.example/surface',title:'Primary article'}]}}]:[]),{type:'message',content:[{type:'output_text',text:JSON.stringify(plan?{summary:'ข้อมูลจากเว็บ ยังไม่ใช่เทรนด์โซเชียล',queries:[{platform:'tiktok',thai:'แรงตึงผิวไทย',english:'surface tension Thai',capability:'tiktok/search-videos',reason:'ต้องตรวจตัวเลขจริง'}]}:{patterns:[assessment]})}]}]});}

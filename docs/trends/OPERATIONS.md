@@ -1,174 +1,40 @@
-# Jev Trend Research — Cloudbath Studio
+# Trend Research operations — Alexandria migration
 
-This is an additive research adapter and an enhancement to the existing Thai topic
-suggestion form. Classic Motion, Text to Video, Reverse, Lemo, ElevenLabs and Buffer
-retain their existing providers, settings and approval gates.
+Production UI: https://studio.cloudbath.co/app
+Branch: `feat/alexandria-trend-research`. Preserve the latest production scene director and all existing rendering pipelines.
 
-## Deployment and rollback
+## Current rollout gate
 
-- Branch: `feat/jev-trend-research` in `kerverme/motion-studio`.
-- Baseline includes production commit `eba715cad26e0d9b3c1d11d7a48aa4980a4ae1f3`
-  (the newer Reverse prompt comparison and progress work), in addition to main
-  `4c0e9ed`. The concurrent production update was merged without changing its files.
-- Dedicated Railway service: `jev-trend-research`, ID
-  `5d5e1bc3-42f9-429c-b86c-84b983abaa2d`, existing motion-studio project and production environment.
-- Build from repository root with `trend-worker/Dockerfile`; private CDP is loopback
-  only. `/health` exposes readiness, a heartbeat and sanitized failures, never keys.
-- `030_trend_research.sql` is additive and transactionally applied under the same
-  migration lock as the API. Worker deployment precedes API feature enablement.
-- Enable `MOTION_TREND_RESEARCH_ENABLED=1` on the API **only after live evidence,
-  Notion synchronization and topic-generation acceptance pass**. Set
-  `TREND_VERIFIED_PLATFORMS=tiktok` or `instagram` (comma-separated if both verified)
-  on API and worker. Never label CLI capability detection as verified access.
-- Roll back by disabling `MOTION_TREND_RESEARCH_ENABLED` on API and
-  `TREND_RESEARCH_SCHEDULE_ENABLED` on worker. Preserve all research tables/history.
-  If API rollback is needed, inspect the current deployment first and restore the
-  latest compatible production commit, preserving any subsequent work. The inspected
-  latest pre-feature API deployment was `17e1dc73-d428-4a4c-9d78-ac2f2bdba28e` at `eba715c`.
-  Do not reset main or redeploy an old Motion/Lemo worker.
+The browser-free adapter, migrations, UI and mocked integration are deployed. Authenticated catalogue discovery succeeds, and the account can access the configured research model. The first live social job returned `insufficient_credits` on both TikTok and Instagram. **Social retrieval and the full Notion social-evidence workflow are not yet production-verified.** Do not remove the old `jev-trend-research` service or its package until a funded bounded smoke test passes. It remains disabled for scheduling and is not a dependency of the new queue.
 
-## Dependency and access review
+## Runtime and configuration
 
-- Jev Social `v0.1.13`, immutable commit
-  `2058ea22ad5d6586e1339029bc0cc2715637e0b9`, MIT license, no runtime npm dependencies.
-  The npm lock includes the tarball integrity hash. No upstream onboarding installer
-  or automatically updated latest binary is executed.
-- Socai `v0.6.18`, immutable commit
-  `340b9d7b65533a535bafded02659f76fb8b75cb3`, Apache-2.0. Upstream has no Linux release
-  binary. Build `socai-cli` from its locked Rust dependency graph with Rust 1.95.0.
-  The source tarball SHA-256 is
-  `09cdc9d671a8841d778f2a7e616d0fb8d591c34649cfbc659e9dc2decf60fe74`.
-- `socai-runtime.patch` enables ONNX dynamic loading and locks libloading 0.9.1.
-  This avoids downloading an unused OCR runtime at build time. OCR, transcription,
-  media downloading, posting and account interactions are not adapter capabilities.
-  Socai's platform browser parsers and access-control behavior are unchanged.
-- The Node 24 container runs as `node` under `tini`. Railway Chrome may require
-  `TREND_CHROMIUM_NO_SANDBOX=1` because user namespaces are unavailable; this does not
-  disable TLS validation or site access controls. Browser and CLI receive an explicit
-  environment allowlist, no application/provider secrets. Each job has a fresh
-  private directory, Chrome profile, socai socket and owned daemon process group.
-  Cleanup never invokes the upstream machine-wide `socai stop` sweep.
-- All telemetry and update checks are off. Jev decisions use the existing OpenAI
-  Responses transport with GPT-6.1 Terra, not an additional OpenRouter account.
-  A login, CAPTCHA or access gate must remain a visible failure; do not use stealth
-  plugins or security bypasses. Phase 1 uses public guest access only. No persistent
-  social account tokens or cookies are stored.
+- Railway `alexandria-trend-research`: service `1e357e16-5f6d-427c-813c-811d8739ddf6`, repository root `/api`, `Dockerfile.research`, Node 24, no browser, Socai or Jev imports.
+- `DATABASE_URL`, `OPENAI_API_KEY`, `FIRECRAWL_API_KEY`, `NOTION_TOKEN` are backend references to the existing API service. Never expose values to the browser or logs.
+- `TREND_RESEARCH_MODEL` is required and verified through the account's OpenAI models endpoint before research. The initial live-verified configuration is `gpt-6.1-terra`.
+- `NOTION_TREND_DATABASE_ID=41875d42-f42b-8193-bfc0-f9458b2f69fc`. Existing records and fields remain. New metadata fields were added in place.
+- `MOTION_TREND_RESEARCH_ENABLED=1` enables the manual UI. Automatic schedules are not enabled. `TREND_VERIFIED_PLATFORMS` must not be populated until live social retrieval succeeds.
+- HTTP `/health` and the `alexandria_worker` integration heartbeat report model, catalogue/account/Notion checks. A running container alone does not establish data readiness.
 
-## Evidence and scoring
+## Research and billing
 
-Canonical post URLs and `(platform, source_id)` have independent unique constraints.
-Instagram reels/posts share their shortcode identity. TikTok video IDs remain stable
-across username changes. SQL retains original discovery time and per-run snapshots.
-Unavailable metrics are `null`; abbreviated or approximate view counts are not
-silently promoted to exact counts. Missing publication timestamps stay unknown.
+1. The owner submits topic, audience, platform and a requested result count. All times are stored in UTC and shown in Bangkok time. A requested count is a target, not a reason to invent results.
+2. Durable request aliases and a content/time slot reuse one job across duplicate clicks, concurrent tabs and response loss. A separate queue protects jobs from the old consumer during migration. Advisory lock `424249` serializes research and Notion writes.
+3. Free `firecrawl/find-tools` discovery validates options, per-call pricing and documented maximum. Read-only `/v2/team/credit-usage` checks the account balance. Reviewed ScrapeCreators tools cost at most 2 credits. Oriane starts at 35 and is excluded from the 25-credit budget.
+4. OpenAI Web Search runs first. Thai and English social queries are selected from verified tool contracts, at most two per requested platform. There is no automatic pagination, provider agent or uncontrolled repair loop.
+5. Every paid call first reserves its maximum in the existing PostgreSQL research ledger. Lock `731125` serializes Firecrawl calls across jobs. All operations sharing the Research Job count together, including later script research and rewrites. Database triggers forbid raising a trend job above 25. Credits do not transfer between jobs.
+6. Cache hits retain collection timestamps. Timeout/unknown charge keeps the reservation and stops further work. Paid POSTs are never automatically repeated. Failed provider calls report actual zero only when the response explicitly reports zero; missing usage stays unknown. Reservations are conservative, not a claim of money spent.
+7. Source IDs, canonical URLs, publication times and metric fields are mapped from provider data. Recent searches can contain old results; local seven-day filtering is mandatory. Null metrics remain null. Instagram play counts may be inaccurate and exclude Facebook views.
+8. GPT groups specific matching topics and supplies verbatim supporting caption quotes. A pattern needs at least two distinct creators. Deterministic scoring reports recency, engagement, observed growth, platform diversity, AI relevance/novelty, evidence quality and missing fields. One snapshot cannot establish growth; one popular post cannot establish a trend.
+9. Eligible patterns must also be synchronized to the existing Notion database. Exact stable IDs and canonical URLs reconcile creates, including uncertain create responses. Historical records are never removed.
+10. Trending topics use only eligible evidence. Web Research ideas use saved web sources and are labelled separately. Smart Mix can combine creative and research-based ideas. The existing scriptwriter reopens original sources before asserting facts. A selected research topic carries its existing budget into the draft; it does not silently receive a fresh 25 credits.
 
-Eligibility requires a detail read, available source, recent observation, and either:
+## Notion field semantics
 
-1. An observed original publication within the rolling previous seven days, with
-   at least 10,000 observed views or 1,000 observed likes; or
-2. Two real snapshots in that window separated by at least six hours, with at least
-   1,000 additional views and 10% growth, or 100 additional likes and 10% growth.
+Provider metrics are observations, not independent fact verification. Confidence and two subjective score dimensions are AI-assisted judgments. `Estimated Credits` is the job's committed maximum, and `Actual Credits` is null if any request lacks a confirmed charge. These are **job totals repeated on evidence records; do not sum them across rows from one run**. `Verification=corroborated_pattern` means agreement within the retrieved sample, not a national ranking or a guarantee of virality. Health claims require primary-source checking during scriptwriting.
 
-An older post checked today remains Expired without actual growth evidence. A
-missing date, missing popularity evidence or unopened detail remains Unverified.
-The current observation does not invent historical growth. Notion must successfully
-synchronize before an Active record is eligible for topic suggestions.
+## Checks and cutover
 
-Default score, rounded to one decimal:
+Run `npm run typecheck` and `node --import tsx --test --test-concurrency=1 src/*.test.ts` in `api/`. Automated provider fixtures come from official contracts recorded on 2026-11-15; mocks are not proof of live social access.
 
-`0.35 × popularity + 0.25 × freshness + 0.25 × suitability + 0.15 × novelty`
-
-- Popularity: capped maximum of `16 × log10(views)`, `22 × log10(likes)`, or 80
-  when actual growth qualifies; unknown metrics contribute nothing.
-- Freshness: 100 decreasing linearly to 0 over seven days from publication or the
-  timestamp of qualifying observed growth, never from a mere check.
-- Suitability: Terra's 0–100 assessment of an original Thai animated explanation,
-  with an explanation based only on observed content. Failure gives no eligibility.
-- Novelty: 100 if this source has not been used in Studio; 0 after selection for a draft.
-
-`TREND_SCORE_WEIGHTS` accepts JSON with the four named weights totaling one.
-`TREND_MIN_SCORE` defaults to 70. The production window remains fixed at seven days.
-Each source retains score components, reasons and its original observed metadata.
-An idea can link multiple source IDs; all individual evidence remains available.
-
-## Notion
-
-Database: https://www.notion.so/41875d42f42b8193bfc0f9458b2f69fc
-
-Data source: `41875d42-f42b-819c-82f4-000b53875e4c`.
-The runtime uses database ID `41875d42-f42b-8193-bfc0-f9458b2f69fc` with the existing
-`NOTION_TOKEN`. That integration must be explicitly connected to the new database.
-MCP access alone does not establish runtime integration access.
-
-The required 21 properties are present. UTC timestamps are stored separately in
-SQL and sent as ISO timestamps; Studio displays Asia/Bangkok. History is permanent.
-Notion writes are serialized under a distributed lock. Before create, search by
-stable Source ID and canonical URL. An ambiguous create response is marked
-`create_uncertain`: reconcile with a subsequent lookup, never blindly recreate.
-Used-in-Studio and created-topic changes are synchronized through the same queue.
-
-## Scheduling, cost and failure handling
-
-The worker uses a PostgreSQL advisory lock across replicas; phase-one concurrency
-is deliberately one. Six-hour slots have unique request keys. Manual requests share
-a ten-minute platform slot to prevent duplicate clicks/tabs. `TREND_BOOTSTRAP_TESTS_JSON`
-is an operator-only, bounded array (maximum four jobs, maximum six posts/job) for
-controlled acceptance tests. `probe_only` jobs perform a bounded public read through
-Jev with no paid LLM call and cannot assign an eligible trend score.
-
-- `TREND_RESEARCH_SCHEDULE_ENABLED=1` enables six-hour scheduling, only for explicitly
-  verified platforms. Default off until acceptance.
-- `TREND_MAX_STEPS`: default 6, hard maximum 8 browser decisions.
-- `TREND_TIMEOUT_MS`: bounded 30–600 seconds, including provider decisions.
-- `TREND_DAILY_BUDGET_USD`: default $2, hard maximum $10 for this adapter. Each OpenAI
-  call reserves $0.12 before dispatch; completed usage replaces the reservation with
-  its estimate, while unknown charges retain the reservation. Provider billing may
-  differ; this is an operational estimate limit, not a guaranteed invoice cap.
-- OpenAI creates are checkpointed and not blindly retried after a disconnect.
-  Existing background-response polling retries reads only (and explicit rejected 429s).
-  Calls with unknown outcomes require reconciliation. Interrupted research jobs are
-  marked failed rather than automatically recreating paid requests.
-- Topic jobs allow a bounded ten-minute background response by default, configurable
-  with `MOTION_TOPIC_TIMEOUT_MS` (3–15 minutes), without holding the browser request
-  open. Cancelled/failed accepted requests are reconciled through GET for usage; no
-  replacement paid request is created automatically.
-- Ledger: run/provider/model, response ID, token usage, API usage, estimated USD,
-  nullable actual USD, failure, browser action count and duration. Terra estimates
-  use standard $1/M input, $5/M output, $0.05/M cached input, $1.25/M cache write;
-  hosted search adds an estimated $0.01/call. Actual billed cost stays null until
-  billing reconciliation. Railway compute is additional and depends on measured use.
-- This adapter does not call Firecrawl. Existing draft fact-checking retains its
-  cumulative 25-credit per-Research-Job Firecrawl ceiling and OpenAI-first policy.
-- Notion sync failures do not create fabricated eligibility. Trending returns an
-  empty list and a Thai explanation when evidence is insufficient. Smart Mix clearly
-  labels its Creative-only fallback. Creative does not depend on social availability.
-- No video, voice, sound-effect generation or Buffer publication is triggered by research.
-
-## Topic and script behavior
-
-Smart Mix is default, topic count is 10 and topic brain remains GPT-6.1 Terra
-independent of the script brain. The server joins generated trend IDs to verified
-records; the model cannot supply source URLs or invent evidence. Expandable references
-show source, publication, last verification, platform and score. Choosing an idea
-saves its suggestion ID/index. Manual topic edits clear that association.
-
-Draft creation validates selection against the saved suggestion. Evidence is stored
-atomically on the draft and preserved on rewrite. Before script planning, exact
-source URLs are rechecked using the existing source-verification implementation.
-Only returned retrieval evidence enters the existing fetched-URL ledger. Missing
-sources cause a visible warning and must not support time-sensitive claims.
-
-## Validation commands
-
-```
-cd api
-npm run typecheck
-node --import tsx --test src/*.test.ts
-cd ../trend-worker
-npm run check
-npm test
-```
-
-Live acceptance evidence and deployment hashes are recorded separately. Do not
-equate mocked tests, a passing health endpoint, or CLI platform help with live trend
-support. Keep the feature and scheduler gated until the full acceptance path passes.
+After the owner resolves the actual Firecrawl credit rejection, run a bounded social job, inspect returned posts/dates/metrics, confirm Notion synchronization and select a corroborated topic into a draft with `auto_produce=false`. Check the shared ledger remains at or below 25 and duplicate request IDs reuse the same job. Only then confirm no active legacy jobs/dependents, remove the old service and `trend-worker/` package, retire its variables and verify production again. Do not reset `main` or overwrite a newly deployed commit. Historical validation reports are retained as historical evidence, not current operating instructions.

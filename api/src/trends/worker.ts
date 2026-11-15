@@ -20,8 +20,14 @@ async function start(){
   }
  }catch(e){await db.query('ROLLBACK');throw e;}finally{await db.query('SELECT pg_advisory_unlock(424242)');db.release();}
  const adapter=new Alexandria({apiKey:process.env.FIRECRAWL_API_KEY||''});
+ try{health.firecrawl=await adapter.credits();log('firecrawl_credit_balance',health.firecrawl);}catch{health.firecrawl={error:'credit_check_unavailable'};}
  const model=await verifyResearchModel(process.env.TREND_RESEARCH_MODEL||'');health.model=model;
  log('research_model_verified',model);
+ try{const notion=await fetch('https://api.notion.com/v1/databases/'+process.env.NOTION_TREND_DATABASE_ID,{headers:{Authorization:'Bearer '+process.env.NOTION_TOKEN,'Notion-Version':'2022-06-28'},signal:AbortSignal.timeout(20000)});
+ health.notion={http_status:notion.status,ready:false};
+ if(notion.ok){const schema:any=await notion.json();const required=['Provider','Research Model','Category','Verification','Confidence','Estimated Credits','Actual Credits','Supporting Sources'];const missing=required.filter(name=>!schema.properties?.[name]);health.notion={http_status:200,ready:missing.length===0,missing_properties:missing};}
+ }catch{health.notion={ready:false,error:'connectivity_unavailable'};}
+ log('notion_schema_check',health.notion);
  for(const provider of ['scrapecreators','oriane']){
   try{const tools=await adapter.discover(provider);await pool.query('INSERT INTO trend_alexandria_catalog(provider,tools) VALUES($1,$2) ON CONFLICT(provider) DO UPDATE SET tools=EXCLUDED.tools,checked_at=now(),error=NULL',[provider,JSON.stringify(tools)]);
    log('catalogue_verified',{provider,count:tools.length,tools:tools.filter(t=>/^(tiktok|instagram|youtube)\//.test(t.capability)).map(t=>({capability:t.capability,credits:t.creditsCost,maximum:t.billing?.maxCredits})),discovery_credits:0});

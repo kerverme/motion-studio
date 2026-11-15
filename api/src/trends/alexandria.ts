@@ -17,6 +17,13 @@ function resultOf(payload:any,provider:string,capability:string) {
 }
 export class Alexandria {
   constructor(private options:{apiKey:string;fetch?:typeof fetch}){}
+  /** Read-only account usage endpoint from the official v2 OpenAPI; no execution credits. */
+  async credits(){
+    const r=await (this.options.fetch||fetch)('https://api.firecrawl.dev/v2/team/credit-usage',{headers:{Authorization:'Bearer '+this.options.apiKey},signal:AbortSignal.timeout(20000)});
+    if(!r.ok)throw new AlexandriaError('credit_check_unavailable','Firecrawl credit balance HTTP '+r.status);
+    const body:any=await r.json();if(body.success!==true||!Number.isFinite(body.data?.remainingCredits))throw new AlexandriaError('credit_check_unavailable','Firecrawl credit balance is unavailable');
+    return {remaining_credits:body.data.remainingCredits,plan_credits:Number.isFinite(body.data.planCredits)?body.data.planCredits:null,checked_at:new Date().toISOString()};
+  }
   private async post(body:any,id:string){
     return (this.options.fetch||fetch)('https://api.firecrawl.dev/v2/scrape',{method:'POST',headers:{Authorization:'Bearer '+this.options.apiKey,'Content-Type':'application/json','x-request-id':id},body:JSON.stringify(body),signal:AbortSignal.timeout(90000)});
   }
@@ -60,7 +67,11 @@ export class Alexandria {
       catch{await store.finish(job,id,req,null,'Ambiguous provider outcome; maximum retained, no paid retry',true);throw new AlexandriaError('uncertain_charge','Provider response interrupted; further calls stopped to prevent duplicate charges');}
       let item:any;
       try{if(!response.ok){resultOf(payload,tool.provider,tool.capability);throw new AlexandriaError('provider_http_'+response.status,'Alexandria HTTP '+response.status);}item=resultOf(payload,tool.provider,tool.capability);}
-      catch(e){await store.finish(job,id,req,null,e instanceof AlexandriaError?e.code:'provider_error',response.status>=500);throw e;}
+      catch(e){
+        const failed=payload?.data?.alexandria?.find((x:any)=>x.provider===tool.provider&&x.capability===tool.capability);
+        const confirmedFree=failed?.error&&failed.creditsCost===0;
+        await store.finish(job,id,req,confirmedFree?{creditsUsed:0}:null,e instanceof AlexandriaError?e.code:'provider_error',response.status>=500);throw e;
+      }
       // The documented per-result creditsCost is the actual Firecrawl charge, never vendor credits_charged.
       const actual=Number.isSafeInteger(item.creditsCost)&&item.creditsCost>=0?item.creditsCost:null;
       const stored={...payload,creditsUsed:actual};
