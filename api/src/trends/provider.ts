@@ -12,8 +12,8 @@ export function outputJSON(response:any) {
   if(response.status!=='completed')throw new Error('OpenAI incomplete research response');
   return JSON.parse((response.output||[]).filter((x:any)=>x.type==='message').flatMap((x:any)=>x.content||[]).filter((x:any)=>x.type==='output_text').map((x:any)=>x.text).join(''));
 }
-export async function researchResponse(db:Queryable,runId:string,key:string,body:any,deadline:number) {
-  const callKey=runId+':'+key,model='gpt-6.1-terra';
+export async function researchResponse(db:Queryable,runId:string,key:string,body:any,deadline:number,configuredModel?:string) {
+  const callKey=runId+':'+key,model=configuredModel||process.env.TREND_RESEARCH_MODEL||'gpt-6.1-terra';
   // Reserve a conservative per-call upper bound, including possible web-search fees.
   const reserved=.12,limit=Math.max(.12,Math.min(10,Number(process.env.TREND_DAILY_BUDGET_USD)||2));
   const existing=(await db.query('SELECT * FROM trend_provider_calls WHERE call_key=$1',[callKey])).rows[0];
@@ -26,10 +26,11 @@ export async function researchResponse(db:Queryable,runId:string,key:string,body
     await db.query('INSERT INTO trend_provider_calls(research_run_id,call_key,model,reserved_usd) VALUES($1,$2,$3,$4)',[runId,callKey,model,reserved]);
   }
   try {
-    const response=await openaiResponse({...body,model,reasoning:{effort:'low'},max_output_tokens:Math.min(body.max_output_tokens||2000,4000)},{apiKey:process.env.OPENAI_API_KEY!,baseUrl:process.env.OPENAI_BASE_URL||'https://api.openai.com',timeoutMs:Math.max(1,Math.min(300000,deadline-Date.now())),responseId:existing?.response_id,
+    if(existing&&existing.model!==model)throw new Error('Saved research model differs from this request');
+    const response=await openaiResponse({...body,model,reasoning:{effort:'low'},max_output_tokens:Math.min(body.max_output_tokens||2000,6000)},{apiKey:process.env.OPENAI_API_KEY!,baseUrl:process.env.OPENAI_BASE_URL||'https://api.openai.com',timeoutMs:Math.max(1,Math.min(300000,deadline-Date.now())),responseId:existing?.response_id,
       onProgress:async message=>{const id=message.match(/\[(resp_[\w-]+)\]/)?.[1];if(id)await db.query('UPDATE trend_provider_calls SET response_id=$2 WHERE call_key=$1',[callKey,id]);}});
     const searches=(response.output||[]).filter((x:any)=>x.type==='web_search_call').length;
-    const tokens=estimateTerra(response.usage);
+    const tokens=model==='gpt-6.1-terra'?estimateTerra(response.usage):null;
     await db.query("UPDATE trend_provider_calls SET status='done',response_id=$2,usage=$3,estimated_usd=$4,reserved_usd=COALESCE($4,reserved_usd),api_usage=$5,finished_at=now() WHERE call_key=$1",[callKey,response.id,JSON.stringify(response.usage||null),tokens==null?null:tokens+searches*.01,JSON.stringify({response,web_search_calls:searches})]);
     return response;
   }catch(error){await db.query("UPDATE trend_provider_calls SET status='failed',error=$2,finished_at=now() WHERE call_key=$1",[callKey,error instanceof Error?error.message.slice(0,500):'provider failure']);throw error;}

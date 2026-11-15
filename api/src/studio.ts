@@ -1173,7 +1173,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     if(row.trend_context?.sources?.length){
       // Re-open saved social evidence once before any script-planning turn. A saved
       // trend record is never inserted into the fetched-URL ledger by itself.
-      const urls=row.trend_context.sources.map((s:any)=>s.url).filter((s:any)=>typeof s==='string').slice(0,3);
+      const urls=[...new Set<string>(row.trend_context.sources.flatMap((s:any)=>[s.url,...(s.supporting_sources||[]).map((p:any)=>p.url)]).filter((s:any)=>typeof s==='string'))].slice(0,6);
       verificationCalls++;
       await log(id,'เปิดแหล่งเทรนด์ตรวจข้อมูลที่เปลี่ยนตามเวลาก่อนเขียนบท');
       const checked=await verifySources(urls,{apiKey:env.OPENAI_API_KEY!,baseUrl:OPENAI_URL,model:PROVIDER==='openai'?model:'gpt-6.1-sol',onProgress:message=>log(id,message)});
@@ -1718,8 +1718,8 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const musicMode = b.music_mode === 'ai' ? 'ai' : 'default';
     let trendContext;
     try{trendContext=await selectedContext(pool,b.topic_selection,topic,storyMode==='name_story');}catch(e){return c.json({error:e instanceof Error?e.message:'invalid topic selection'},422);}
-    const r = await pool.query('INSERT INTO drafts (topic, note, auto_produce, model, reasoning, characters, style, music_mode, story_mode, source_text, request_key, request_hash, narration_style, narration_custom, recurring_character, presenter_kind, director_version, presentation_version, creative, trend_context) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) ON CONFLICT (request_key) DO NOTHING RETURNING id',
-      [topic, String(b.note || '').trim().slice(0, 1000) || null, creative?false:!!b.auto_produce, model, PROVIDER === 'openai' ? reasoning : null, JSON.stringify(chars), style, musicMode, storyMode, sourceText || null, request.key, request.hash, narration.narration_style, narration.narration_custom, recurringCharacter, presenterKind, 1, creative?.engine==='lemo'?0:1, creative?JSON.stringify(creative):null,trendContext?JSON.stringify(trendContext):null]);
+    const r = await pool.query('INSERT INTO drafts (topic, note, auto_produce, model, reasoning, characters, style, music_mode, story_mode, source_text, request_key, request_hash, narration_style, narration_custom, recurring_character, presenter_kind, director_version, presentation_version, creative, trend_context, research_job_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,COALESCE($21::uuid,gen_random_uuid())) ON CONFLICT (request_key) DO NOTHING RETURNING id',
+      [topic, String(b.note || '').trim().slice(0, 1000) || null, creative?false:!!b.auto_produce, model, PROVIDER === 'openai' ? reasoning : null, JSON.stringify(chars), style, musicMode, storyMode, sourceText || null, request.key, request.hash, narration.narration_style, narration.narration_custom, recurringCharacter, presenterKind, 1, creative?.engine==='lemo'?0:1, creative?JSON.stringify(creative):null,trendContext?JSON.stringify(trendContext):null,trendContext?.research_job_id||null]);
     if (!r.rows.length) {
       const old = (await pool.query('SELECT id, request_hash FROM drafts WHERE request_key=$1',[request.key])).rows[0];
       return old?.request_hash === request.hash ? c.json({id:old.id},201) : c.json({error:'idempotency-key already used for different input'},409);

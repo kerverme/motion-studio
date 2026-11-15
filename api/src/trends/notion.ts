@@ -5,12 +5,13 @@ const date=(value:any)=>({date:value?{start:new Date(value).toISOString()}:null}
 export function notionProperties(r:any) {
   return {
     'Trend / Topic':{title:[{type:'text',text:{content:r.title.slice(0,300)}}]},
-    'Platform':{select:{name:r.platform==='tiktok'?'TikTok':'Instagram'}},'Source URL':{url:r.source_url},'Source ID':rich(r.platform+':'+r.source_id),
+    'Platform':{select:{name:r.platform==='tiktok'?'TikTok':r.platform==='youtube'?'YouTube':'Instagram'}},'Source URL':{url:r.source_url},'Source ID':rich(r.platform+':'+r.source_id),
     'Published At':date(r.published_at),'Discovered At':date(r.discovered_at),'Last Checked':date(r.last_checked),'Last Trend Evidence At':date(r.last_trend_evidence_at),
     'Views':{number:r.views==null?null:Number(r.views)},'Likes':{number:r.likes==null?null:Number(r.likes)},'Comments':{number:r.comments==null?null:Number(r.comments)},
     'Engagement Rate':{number:r.engagement_rate},'Trend Score':{number:Number(r.trend_score)},'Research Summary':rich(r.research_summary),
     'Evidence':rich(JSON.stringify({observation:r.evidence,score:r.score_details})), 'Suggested Angles':rich((r.suggested_angles||[]).join('\n')),
     'Status':{select:{name:r.status}},'Used in Studio':{checkbox:r.used_in_studio},'Created Topic':rich(r.created_topic),'Research Run ID':rich(r.research_run_id),
+    ...(r.provider_name?{'Provider':rich(r.provider_name),'Research Model':rich(r.research_model),'Category':rich(r.category),'Verification':rich(r.verification_status),'Confidence':{number:r.confidence},'Estimated Credits':{number:r.estimated_credits},'Actual Credits':{number:r.actual_credits},'Supporting Sources':rich(JSON.stringify(r.supporting_sources))}:{}),
   };
 }
 // The worker holds a PostgreSQL advisory lock throughout synchronization. A timed-out

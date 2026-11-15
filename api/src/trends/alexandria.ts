@@ -2,7 +2,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import {ResearchBudgetError,type BudgetStore,type SafeRequest} from '../firecrawl-budget.js';
 
 export const CATALOG_URL='https://docs.firecrawl.dev/features/alexandria';
-export const REVIEWED_TOOLS=['tiktok/search-videos','tiktok/video','tiktok/comments','instagram/search-reels','instagram/search-hashtag','instagram/post','instagram/comments','youtube/search','youtube/video','youtube/comments'];
+export const REVIEWED_TOOLS=['tiktok/search-videos','tiktok/video','tiktok/video-comments','instagram/search-reels','instagram/post','instagram/post-comments','youtube/search','youtube/video','youtube/video-comments'];
 export type Tool={provider:string;capability:string;description:string;creditsCost:number;perRecord:boolean;options:any[];response?:any;billing?:{maxCredits?:number};[key:string]:any};
 export class AlexandriaError extends Error {constructor(readonly code:string,message:string,readonly actionUrl?:string){super(message);}}
 const actionUrl=(x:any)=>{try{const u=new URL(x);return u.protocol==='https:'&&u.hostname==='www.firecrawl.dev'?u.href:undefined;}catch{return undefined;}};
@@ -73,9 +73,10 @@ export class Alexandria {
 }
 export function pricedTool(tool:Tool,options:Record<string,unknown>):SafeRequest {
   // Reviewed against official catalogue on 2026-11-15. A runtime price change closes the gate.
-  if(tool.provider!=='scrapecreators'||!REVIEWED_TOOLS.includes(tool.capability)||tool.perRecord!==false||tool.creditsCost!==2||tool.billing?.maxCredits!=null&&tool.billing.maxCredits!==2)
+  if(tool.provider!=='scrapecreators'||!REVIEWED_TOOLS.includes(tool.capability)||tool.perRecord!==false||tool.creditsCost!==2||tool.billing?.maxCredits!==2)
     throw new ResearchBudgetError('uncertain_cost','This capability has no reviewed maximum that fits the 25-credit job');
   if(!Array.isArray(tool.options))throw new ResearchBudgetError('capability_contract','Missing provider input contract');
+  if(options.include_replies===true||options.includeReplies===true)throw new ResearchBudgetError('uncertain_cost','Expanded comment replies have no approved maximum');
   for(const key of Object.keys(options))if(!tool.options.some(o=>o.name===key))throw new ResearchBudgetError('capability_options','Unsupported provider option: '+key);
   for(const o of tool.options){const v=options[o.name];if(v==null){if(o.required)throw new ResearchBudgetError('capability_options','Required provider option: '+o.name);continue;}
     if(typeof v!==o.type&&!(o.type==='integer'&&Number.isSafeInteger(v)))throw new ResearchBudgetError('capability_options','Provider input type changed: '+o.name);

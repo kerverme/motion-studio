@@ -1,0 +1,321 @@
+[
+  {
+    "provider": "scrapecreators",
+    "capability": "instagram/post",
+    "description": "Fetches detailed metadata for a single Instagram post or reel by shortcode or URL. 2 Firecrawl credits when ScrapeCreators charges its 1 credit; a cache hit or an uncharged empty page costs nothing.",
+    "creditsCost": 2,
+    "perRecord": false,
+    "billing": {
+      "unitLabel": "ScrapeCreators credit",
+      "maxCredits": 2,
+      "description": "ScrapeCreators' dearest published rate is $0.00188 per credit ($47 for 25,000). One credit is 2 Firecrawl credits. A call quotes 1 credit and settles on credits_charged, so a cache hit charged at 0 costs nothing. An empty page can still be charged."
+    },
+    "options": [
+      {
+        "description": "Instagram post or reel URL.",
+        "example": "<url>",
+        "name": "url",
+        "required": true,
+        "type": "string"
+      },
+      {
+        "description": "2 letter country code to set the proxy in.",
+        "example": "<region>",
+        "name": "region",
+        "required": false,
+        "type": "string"
+      },
+      {
+        "description": "Set to true to get a trimmed response.",
+        "example": "false",
+        "name": "trim",
+        "required": false,
+        "type": "boolean"
+      },
+      {
+        "description": "If we have a response in the cache that is this many days old or newer, return the cached response (0 credits, with \"cached\": true and a \"cached_at\" timestamp). Otherwise, scrape a live result (1 credit). See the Caching page for details.",
+        "example": "1d",
+        "name": "cache_max_age",
+        "oneOf": [
+          "1d",
+          "3d",
+          "7d",
+          "14d",
+          "30d"
+        ],
+        "required": false,
+        "type": "string"
+      },
+      {
+        "description": "Set to false to omit `video_play_count` and skip its additional fetch for a faster response. Defaults to true.",
+        "example": "false",
+        "name": "include_play_count",
+        "required": false,
+        "type": "boolean"
+      }
+    ]
+  },
+  {
+    "provider": "scrapecreators",
+    "capability": "instagram/search-reels",
+    "description": "Use this when you only want Google-indexed Instagram reels matching a keyword or phrase, with optional date filters and pagination. 2 Firecrawl credits when ScrapeCreators charges its 1 credit; a cache hit or an uncharged empty page costs nothing.",
+    "creditsCost": 2,
+    "perRecord": false,
+    "billing": {
+      "unitLabel": "ScrapeCreators credit",
+      "maxCredits": 2,
+      "description": "ScrapeCreators' dearest published rate is $0.00188 per credit ($47 for 25,000). One credit is 2 Firecrawl credits. A call quotes 1 credit and settles on credits_charged, so a cache hit charged at 0 costs nothing. An empty page can still be charged."
+    },
+    "options": [
+      {
+        "description": "The keyword to search for.",
+        "example": "<query>",
+        "name": "query",
+        "required": true,
+        "type": "string"
+      },
+      {
+        "description": "Google-indexed date window (last-week, last-month, last-year). Hour/day windows are not supported; Google does not index Instagram reels reliably enough in those windows.",
+        "example": "last-week",
+        "name": "date_posted",
+        "oneOf": [
+          "last-week",
+          "last-month",
+          "last-year"
+        ],
+        "required": false,
+        "type": "string"
+      },
+      {
+        "description": "The page number to return. Must be between 1 and 11; page 12 or greater returns a 400 response.",
+        "example": "10",
+        "name": "page",
+        "required": false,
+        "type": "number"
+      }
+    ]
+  },
+  {
+    "provider": "scrapecreators",
+    "capability": "tiktok/video",
+    "description": "Fetches detailed data for a single TikTok video by URL, including its metadata, engagement stats, and optionally its transcript/captions. 2 Firecrawl credits when ScrapeCreators charges its 1 credit; a cache hit or an uncharged empty page costs nothing.",
+    "creditsCost": 2,
+    "perRecord": false,
+    "billing": {
+      "unitLabel": "ScrapeCreators credit",
+      "maxCredits": 2,
+      "description": "ScrapeCreators' dearest published rate is $0.00188 per credit ($47 for 25,000). One credit is 2 Firecrawl credits. A call quotes 1 credit and settles on credits_charged, so a cache hit charged at 0 costs nothing. An empty page can still be charged."
+    },
+    "options": [
+      {
+        "description": "TikTok video or photo/slideshow URL.",
+        "example": "<url>",
+        "name": "url",
+        "required": true,
+        "type": "string"
+      },
+      {
+        "description": "Two-letter country code passed to the primary post source. Defaults to US. Try the creator's country if a post is unavailable. This does not guarantee a matching browser/proxy country or complete retrieval; the fallback source does not receive this parameter.",
+        "example": "<region>",
+        "name": "region",
+        "required": false,
+        "type": "string"
+      },
+      {
+        "description": "Set to true to get a trimmed response.",
+        "example": "false",
+        "name": "trim",
+        "required": false,
+        "type": "boolean"
+      }
+    ]
+  },
+  {
+    "provider": "scrapecreators",
+    "capability": "tiktok/search-videos",
+    "description": "Searches for TikTok videos by keyword or phrase — the general video search across all of TikTok. 2 Firecrawl credits when ScrapeCreators charges its 1 credit; a cache hit or an uncharged empty page costs nothing.",
+    "creditsCost": 2,
+    "perRecord": false,
+    "billing": {
+      "unitLabel": "ScrapeCreators credit",
+      "maxCredits": 2,
+      "description": "ScrapeCreators' dearest published rate is $0.00188 per credit ($47 for 25,000). One credit is 2 Firecrawl credits. A call quotes 1 credit and settles on credits_charged, so a cache hit charged at 0 costs nothing. An empty page can still be charged."
+    },
+    "options": [
+      {
+        "description": "Keyword to search for.",
+        "example": "<query>",
+        "name": "query",
+        "required": true,
+        "type": "string"
+      },
+      {
+        "description": "Requested publish window forwarded upstream. Not reliably enforced — responses can include create_time outside the window (or match an unscoped call). When recency matters, filter create_time locally.",
+        "example": "yesterday",
+        "name": "date_posted",
+        "oneOf": [
+          "yesterday",
+          "this-week",
+          "this-month",
+          "last-3-months",
+          "last-6-months",
+          "all-time"
+        ],
+        "required": false,
+        "type": "string"
+      },
+      {
+        "description": "Requested order forwarded upstream. Not reliably enforced — most-liked / date-posted may leave digg_count or create_time unsorted. When order matters, sort locally.",
+        "example": "relevance",
+        "name": "sort_by",
+        "oneOf": [
+          "relevance",
+          "most-liked",
+          "date-posted"
+        ],
+        "required": false,
+        "type": "string"
+      },
+      {
+        "description": "Note, this doesn't filter the tiktoks only in a specfic region, it puts the proxy there. Use it in case you want to scrape posts only available for some country. Use 2 letter country codes like US, GB, FR, etc.",
+        "example": "<region>",
+        "name": "region",
+        "required": false,
+        "type": "string"
+      },
+      {
+        "description": "Cursor to get more videos. Get 'cursor' from previous response.",
+        "example": "10",
+        "name": "cursor",
+        "required": false,
+        "type": "number"
+      },
+      {
+        "description": "Set to true to get a trimmed response.",
+        "example": "false",
+        "name": "trim",
+        "required": false,
+        "type": "boolean"
+      }
+    ]
+  },
+  {
+    "provider": "scrapecreators",
+    "capability": "youtube/video",
+    "description": "Fetches full details for a YouTube video or short, including title, description, thumbnail, view count (views), like count (likes), comment count, publish date, duration, genre, keywords, chapters, collaborators, and available caption. 2 Firecrawl credits when ScrapeCreators charges its 1 credit; a cache hit or an uncharged empty page costs nothing.",
+    "creditsCost": 2,
+    "perRecord": false,
+    "billing": {
+      "unitLabel": "ScrapeCreators credit",
+      "maxCredits": 2,
+      "description": "ScrapeCreators' dearest published rate is $0.00188 per credit ($47 for 25,000). One credit is 2 Firecrawl credits. A call quotes 1 credit and settles on credits_charged, so a cache hit charged at 0 costs nothing. An empty page can still be charged."
+    },
+    "options": [
+      {
+        "description": "YouTube video or short URL.",
+        "example": "<url>",
+        "name": "url",
+        "required": true,
+        "type": "string"
+      },
+      {
+        "description": "Preferred response language (mapped to Accept-Language header; not guaranteed due to YouTube localization behavior). 2 letter language code, ie 'en', 'es', 'fr' etc.",
+        "example": "<language>",
+        "name": "language",
+        "required": false,
+        "type": "string"
+      }
+    ]
+  },
+  {
+    "provider": "scrapecreators",
+    "capability": "youtube/search",
+    "description": "Searches YouTube by keyword query and returns matching videos, channels, playlists, shorts, shelves, and live streams. 2 Firecrawl credits when ScrapeCreators charges its 1 credit; a cache hit or an uncharged empty page costs nothing.",
+    "creditsCost": 2,
+    "perRecord": false,
+    "billing": {
+      "unitLabel": "ScrapeCreators credit",
+      "maxCredits": 2,
+      "description": "ScrapeCreators' dearest published rate is $0.00188 per credit ($47 for 25,000). One credit is 2 Firecrawl credits. A call quotes 1 credit and settles on credits_charged, so a cache hit charged at 0 costs nothing. An empty page can still be charged."
+    },
+    "options": [
+      {
+        "description": "Search query. For stricter title matching, use YouTube's intitle: operator, for example intitle:\"Foursquare Swarm\". Quoted queries by themselves may still be broadened by YouTube when no fresh exact matches are available.",
+        "example": "<query>",
+        "name": "query",
+        "required": true,
+        "type": "string"
+      },
+      {
+        "description": "Filter by upload date. One of: today | this_week | this_month | this_year.",
+        "example": "today",
+        "name": "uploadDate",
+        "oneOf": [
+          "today",
+          "this_week",
+          "this_month",
+          "this_year"
+        ],
+        "required": false,
+        "type": "string"
+      },
+      {
+        "description": "Only relevance|popular work. view_count, upload_date, and rating are NOT accepted (HTTP 400).",
+        "example": "relevance",
+        "name": "sortBy",
+        "oneOf": [
+          "relevance",
+          "popular"
+        ],
+        "required": false,
+        "type": "string"
+      },
+      {
+        "description": "Type of content to search for. Plural forms: videos | shorts | channels | playlists (not video/channel).",
+        "example": "videos",
+        "name": "type",
+        "oneOf": [
+          "videos",
+          "shorts",
+          "channels",
+          "playlists"
+        ],
+        "required": false,
+        "type": "string"
+      },
+      {
+        "description": "Duration of the video. Only applies to videos (not shorts). One of: under_3_min | between_3_and_20_min | over_20_min.",
+        "example": "under_3_min",
+        "name": "duration",
+        "oneOf": [
+          "under_3_min",
+          "between_3_and_20_min",
+          "over_20_min"
+        ],
+        "required": false,
+        "type": "string"
+      },
+      {
+        "description": "2 letter country code of the country to put the proxy in.",
+        "example": "<region>",
+        "name": "region",
+        "required": false,
+        "type": "string"
+      },
+      {
+        "description": "Continuation token to get more videos. Get 'continuationToken' from previous response.",
+        "example": "<continuationToken>",
+        "name": "continuationToken",
+        "required": false,
+        "type": "string"
+      },
+      {
+        "description": "This will get you the like + comment count and the description. To get the full details of the video, use the /v1/youtube/video endpoint. *This will slow down the response slightly.*.",
+        "example": "<includeExtras>",
+        "name": "includeExtras",
+        "required": false,
+        "type": "string"
+      }
+    ]
+  }
+]

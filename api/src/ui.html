@@ -877,30 +877,62 @@ function studio(st, drafts){
   const suggestionSlot='ms.idea_pending';
   const readIdeaStore=(key,fallback)=>{try{return JSON.parse(sessionStorage.getItem(key)||'null')||fallback;}catch{return fallback;}};
   const saveIdeaStore=(key,value)=>{try{if(value===null)sessionStorage.removeItem(key);else sessionStorage.setItem(key,JSON.stringify(value));}catch{}};
-  const topicMode=h('select',{class:'field','aria-label':'วิธีแนะนำหัวข้อ'},h('option',{value:'smart_mix'},'Smart Mix · ผสมไอเดียใหม่กับเทรนด์'),h('option',{value:'creative'},'Creative · ไอเดียใหม่'),h('option',{value:'trending'},'Trending · จากหลักฐานเทรนด์'));
+  const topicMode=h('select',{class:'field','aria-label':'วิธีแนะนำหัวข้อ'},h('option',{value:'smart_mix'},'Smart Mix · ผสมไอเดียใหม่กับเทรนด์'),h('option',{value:'creative'},'Creative · ไอเดียใหม่'),h('option',{value:'trending'},'Trending · จากหลักฐานเทรนด์'),h('option',{value:'web'},'Web Research · ไอเดียจากข้อมูลเว็บ'));
   topicMode.value=readIdeaStore('ms.topic_mode','smart_mix');topicMode.addEventListener('change',()=>saveIdeaStore('ms.topic_mode',topicMode.value));
-  const trendPlatform=h('select',{class:'field','aria-label':'แพลตฟอร์มเทรนด์'},h('option',{value:'both'},'TikTok + Instagram'),h('option',{value:'tiktok'},'TikTok'),h('option',{value:'instagram'},'Instagram'));
+  const trendPlatform=h('select',{class:'field','aria-label':'แพลตฟอร์มเทรนด์'},h('option',{value:'both'},'TikTok + Instagram'),h('option',{value:'tiktok'},'TikTok'),h('option',{value:'instagram'},'Instagram'),h('option',{value:'youtube'},'YouTube'));
   trendPlatform.value=readIdeaStore('ms.trend_platform','both');trendPlatform.addEventListener('change',()=>saveIdeaStore('ms.trend_platform',trendPlatform.value));
   const topicCount=h('select',{class:'field','aria-label':'จำนวนหัวข้อ'},[5,10,15].map(n=>h('option',{value:n},n+' หัวข้อ')));topicCount.value='10';
-  const researchStatus=h('div',{class:'sub',role:'status'});
-  const refreshTrends=h('button',{class:'btn',type:'button',disabled:!st.trend_research?.enabled,on:{click:async()=>{
-    refreshTrends.disabled=true;researchStatus.textContent='กำลังส่งคำขอค้นหา…';
-    try{const r=await api('/app/api/studio/trends/refresh',{method:'POST',body:JSON.stringify({request_id:crypto.randomUUID(),platform:trendPlatform.value})});researchStatus.textContent=r.message;}catch(e){researchStatus.textContent=e.message;}finally{refreshTrends.disabled=!st.trend_research?.enabled;}
-  }}},'ค้นหาเทรนด์ล่าสุด');
-  if(!st.trend_research?.enabled)researchStatus.textContent='กำลังทดสอบการเข้าถึงเทรนด์ · Creative ใช้งานได้ตามปกติ';
+  const researchStatus=h('div',{class:'sub',role:'status','aria-live':'polite'}),researchResults=h('div',{'aria-label':'ผลค้นหาเทรนด์'});
+  const researchQuery=h('input',{class:'field','aria-label':'หัวข้อค้นหาเทรนด์',placeholder:'อยากค้นหาเรื่องอะไร เช่น วิทยาศาสตร์ใกล้ตัว กระแสอาหารไทย',maxlength:400});
+  const researchAudience=h('input',{class:'field','aria-label':'กลุ่มผู้ชม',placeholder:'กลุ่มผู้ชม',value:'คนไทยทั่วไป',maxlength:200});
   const trendDate=v=>v?new Intl.DateTimeFormat('th-TH',{dateStyle:'medium',timeStyle:'short',timeZone:'Asia/Bangkok'}).format(new Date(v)):'ยังไม่มีข้อมูล';
+  const socialLabel=p=>({tiktok:'TikTok',instagram:'Instagram',youtube:'YouTube',web:'เว็บ'}[p]||p);
+  const sourceCard=s=>h('div',{class:'sub',style:'padding:8px 0'},h('a',{href:s.url,target:'_blank',rel:'noopener noreferrer'},s.title||s.url),h('div',{},socialLabel(s.platform)+' · ผู้ให้บริการ '+(s.provider||'ยังไม่ระบุ')),
+    h('div',{},'เผยแพร่ '+trendDate(s.published_at)),h('div',{},'สถิติจากผู้ให้บริการ: '+[['views','ยอดดู'],['likes','ไลก์'],['comments','ความเห็น']].map(([k,label])=>label+' '+(s[k]==null?'ไม่มีข้อมูล':Number(s[k]).toLocaleString('th-TH'))).join(' · ')));
+  let researching=false;
+  const refreshTrends=h('button',{class:'btn',type:'button',disabled:!st.trend_research?.enabled,on:{click:()=>{
+    const previous=readIdeaStore('ms.trend_research_pending',null);
+    const pending=previous||{request_id:crypto.randomUUID(),platform:trendPlatform.value,query:researchQuery.value.trim()||topic.value.trim()||'เรื่องใกล้ตัว วิทยาศาสตร์ เทคโนโลยี และกระแสสังคมไทย',audience:researchAudience.value.trim()||'คนไทยทั่วไป',count:Math.min(10,Number(topicCount.value))};
+    saveIdeaStore('ms.trend_research_pending',pending);void discoverTrends(pending);
+  }}},'Discover Trends · ค้นหาเทรนด์');
+  const renderResearch=data=>{
+    const latest=data.runs?.find(r=>r.firecrawl),b=latest?.firecrawl;
+    researchStatus.textContent=latest?'งานล่าสุด '+latest.status+' · พบหลักฐานผ่านเกณฑ์ '+latest.eligible_count+' เรื่อง · '+trendDate(latest.created_at)+' (กรุงเทพฯ)'+(b?' · Firecrawl สำรองสูงสุด '+b.estimated+'/25 เครดิต · ใช้จริง '+(b.actual==null?'ยังยืนยันไม่ได้':b.actual)+' เครดิต':''):'ยังไม่มีงานค้นคว้าใหม่ · สูงสุด 25 เครดิต Firecrawl ต่องาน';
+    put(researchResults,[
+      latest?.error?h('div',{class:'err'},latest.error):'',
+      latest?.details?.limitation?h('div',{class:'sub'},latest.details.limitation):'',
+      ...(latest?.details?.warnings||[]).map(w=>h('div',{class:'sub'},'ข้อจำกัด: '+w.code+(w.capability?' · '+w.capability:''),w.action_url?h('a',{href:w.action_url,target:'_blank',rel:'noopener noreferrer'},' เปิดข้อกำหนดผู้ให้บริการ'):'')),
+      latest?.details?.web_summary?h('details',{},h('summary',{},'ข้อมูลจากเว็บ · ยังไม่ใช่หลักฐานยืนยันเทรนด์โซเชียล'),h('p',{class:'sub'},latest.details.web_summary),...(latest.details.web_sources||[]).map(s=>h('div',{},h('a',{href:s.url,target:'_blank',rel:'noopener noreferrer'},s.title||s.url)))):'',
+      ...(data.trends||[]).map(t=>h('details',{style:'padding:10px 0;border-bottom:1px solid var(--line)'},h('summary',{},t.title+' · '+t.score+'/100'),h('p',{class:'sub'},'ความมั่นใจ '+t.confidence+'% · '+t.research_model+' · ตรวจ '+trendDate(t.last_verified)),h('p',{class:'sub'},'AI วิเคราะห์: '+t.summary),h('div',{class:'sub'},t.score_details?.reason||''),h('div',{class:'sub'},(t.score_details?.missing||[]).join(' · ')),...(t.supporting_sources||[]).map(sourceCard))),
+      latest?h('details',{},h('summary',{},'ค่าใช้จ่ายและการเรียกข้อมูล'),h('p',{class:'sub'},'เพดานทั้งงาน 25 เครดิต · เครดิตที่สำรองค้างยังใช้ซ้ำไม่ได้ · ค่าประมวลผล OpenAI แยกต่างหาก'),...(latest.details?.calls||[]).map(c=>h('div',{class:'sub'},c.provider+' / '+c.capability+' · สูงสุด '+c.max_credits+' · จริง '+(c.actual_credits==null?'ยังไม่ทราบ':c.actual_credits)+(c.cache_hit?' · ใช้แคช':'')+(c.error?' · '+c.error:''))),h('div',{class:'sub'},'OpenAI ประเมิน $'+Number(latest.known_estimated_usd||0).toFixed(4)+(latest.unpriced_calls?' · ยังมีรายการที่ประเมินราคาไม่ได้':''))):''
+    ]);
+  };
+  async function loadResearch(){const data=await api('/app/api/studio/trends?platform='+trendPlatform.value);if(researchResults.isConnected)renderResearch(data);return data;}
+  async function discoverTrends(pending){
+    if(researching)return;researching=true;refreshTrends.disabled=true;researchStatus.textContent='กำลังค้นเว็บและตรวจข้อมูลโซเชียล รอคำขอเดิมได้แม้โหลดหน้าใหม่…';
+    try{
+      let job;try{job=await api('/app/api/studio/trends/runs/'+pending.request_id);}catch(e){if(e.status!==404)throw e;job=await api('/app/api/studio/trends/refresh',{method:'POST',body:JSON.stringify(pending)});}
+      while(['queued','running'].includes(job.status)){
+        await new Promise(resolve=>setTimeout(resolve,2500));if(!researchResults.isConnected)return;
+        job=await api('/app/api/studio/trends/runs/'+job.id);await loadResearch();
+      }
+      saveIdeaStore('ms.trend_research_pending',null);await loadResearch();
+    }catch(e){researchStatus.textContent=e.message;if(e.status>=400&&e.status<500&&e.status!==408)saveIdeaStore('ms.trend_research_pending',null);}
+    finally{researching=false;refreshTrends.disabled=!st.trend_research?.enabled;}
+  }
+  if(!st.trend_research?.enabled)researchStatus.textContent='กำลังตรวจระบบค้นหา · Creative ใช้งานได้ตามปกติ';
   const drawIdeas=()=>{
     const visible=ideaSet&&ideaSet.story_mode===modeSel.value;
     put(ideaList,visible?ideaSet.ideas.map((title,index)=>{const detail=ideaSet.details?.[index];return h('div',{style:'width:100%;padding:12px 0;border-bottom:1px solid var(--line)'},
       h('button',{type:'button',style:'text-align:left',on:{click:()=>chooseIdea(title,index)}},title),
-      detail?h('div',{class:'sub',style:'margin-top:5px'},detail.kind==='trending'?'จากหลักฐานเทรนด์':'ไอเดีย Creative'):'',
+      detail?h('div',{class:'sub',style:'margin-top:5px'},detail.kind==='trending'?'จากหลักฐานเทรนด์':detail.kind==='web'?'ไอเดียจากข้อมูลเว็บ · ยังไม่ยืนยันเทรนด์โซเชียล':'ไอเดีย Creative'):'',
       detail?.explanation?h('p',{class:'sub',style:'margin:5px 0'},detail.explanation):'',
       detail?.interesting?h('div',{class:'sub'},'ชวนดูเพราะ '+detail.interesting):'',
       detail?.sources?.length?h('details',{style:'margin-top:8px'},h('summary',{},'ดูข้อมูลอ้างอิง'),detail.sources.map(s=>h('div',{class:'sub',style:'margin-top:8px'},
         h('a',{href:s.url,target:'_blank',rel:'noopener noreferrer'},s.title||s.url),
-        h('div',{},(s.platform==='tiktok'?'TikTok':'Instagram')+' · '+s.score+'/100 · '+(s.status==='Active'?'ผ่านเกณฑ์':'ต้องตรวจใหม่')),
+        h('div',{},s.platform==='web'?'แหล่งข้อมูลเว็บ · ตรวจข้อเท็จจริงก่อนเขียนบท':socialLabel(s.platform)+' · '+s.score+'/100 · '+(s.status==='Active'?'ผ่านเกณฑ์':'ต้องตรวจใหม่')),
         h('div',{},'ตรวจล่าสุด '+trendDate(s.last_verified)+' (กรุงเทพฯ)'),h('div',{},'เผยแพร่ '+trendDate(s.published_at)),
-        h('div',{},s.summary||'')))):h('div',{class:'sub'},'ยังไม่มีแหล่งเทรนด์แนบ · ตรวจข้อเท็จจริงตอนเขียนบท'));}):[]);
+        h('div',{},s.summary||''),h('div',{},'ผู้ให้บริการ '+(s.provider||'ไม่ระบุ')+' · ความมั่นใจ '+(s.confidence??'ไม่ทราบ')+'%'),...(s.supporting_sources||[]).map(sourceCard)))):h('div',{class:'sub'},'ยังไม่มีแหล่งเทรนด์แนบ · ตรวจข้อเท็จจริงตอนเขียนบท'));}):[]);
     if(!suggesting)ideaStatus.textContent=visible?(ideaSet.availability?.warning||'ชุดนี้ใช้ '+ideaSet.model+' · เลือกหัวข้อเพื่อเติมลงช่องเรื่อง หรือกดสุ่มใหม่'):'สุ่มด้วย GPT-6.1 Terra · เลือกหัวข้อที่ชอบ · ระบบจะตรวจข้อมูลตอนเริ่มเขียนบท';
   };
   const suggestBtn=h('button',{class:'btn',type:'button',disabled:!st.ai_suggestions,on:{click:()=>{
@@ -909,7 +941,8 @@ function studio(st, drafts){
     const pending=previous||{request_id:crypto.randomUUID(),model:'gpt-6.1-terra',topic_mode:topicMode.value,platform:trendPlatform.value,count:Number(topicCount.value),reasoning:effSel?effSel.value:'low',story_mode:modeSel.value,topic:topic.value.trim(),source_text:modeSel.value==='general'?sourceText.value:'',note:note.value,hero:modeSel.value==='name_story'?heroName.value:'',exclude:[...new Set([...IDEAS,...readIdeaStore('ms.idea_history',[])])].slice(-60)};
     saveIdeaStore(suggestionSlot,pending);void getIdeas(pending);
   }}},'AI สุ่มหัวข้อ');
-  const suggestPanel=h('div',{'aria-label':'AI แนะนำเรื่อง',style:'display:flex;flex-direction:column;gap:8px'},topicMode,h('div',{class:'row'},trendPlatform,topicCount),h('div',{class:'sub'},st.trend_research?.enabled?'หลักฐานย้อนหลัง 7 วัน · อัปเดตทุก 6 ชั่วโมง':'หลักฐานย้อนหลัง 7 วัน · การค้นหาอัตโนมัติยังไม่เปิด'),h('div',{class:'row'},suggestBtn,refreshTrends),researchStatus,ideaStatus,selectionNote,ideaList,ideaError);
+  const suggestPanel=h('div',{'aria-label':'AI แนะนำเรื่อง',style:'display:flex;flex-direction:column;gap:8px'},topicMode,h('div',{class:'row'},trendPlatform,topicCount),h('div',{class:'sub'},'Last 7 Days · ย้อนหลัง 7 วัน · เวลากรุงเทพฯ · ค้นเมื่อกดปุ่ม'),researchQuery,researchAudience,h('div',{class:'sub'},'ค้นเว็บก่อน แล้วตรวจโซเชียลด้วย Alexandria · สูงสุด 25 เครดิต Firecrawl / งาน'),h('div',{class:'row'},refreshTrends,suggestBtn),researchStatus,researchResults,ideaStatus,selectionNote,ideaList,ideaError);
+  setTimeout(()=>{if(suggestPanel.isConnected){void loadResearch().catch(()=>{});const pending=readIdeaStore('ms.trend_research_pending',null);if(pending)void discoverTrends(pending);}},0);
   async function getIdeas(pending){
     if(suggesting)return;suggesting=true;suggestBtn.disabled=true;suggestBtn.textContent='กำลังคิดหัวข้อ…';ideaError.textContent='';ideaStatus.textContent='กำลังใช้ '+pending.model+' แนะนำเรื่อง รอผลคำขอเดิมได้แม้โหลดหน้าใหม่';
     try{

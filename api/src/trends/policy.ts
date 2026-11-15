@@ -1,4 +1,4 @@
-export type Platform = 'tiktok' | 'instagram';
+export type Platform = 'tiktok' | 'instagram' | 'youtube';
 export type Evidence = {
   platform:Platform; sourceId:string; url:string; title:string;
   publishedAt:string|null; observedAt:string; views:number|null; likes:number|null; comments:number|null;
@@ -14,6 +14,10 @@ export function canonicalSource(raw:string):{platform:Platform;sourceId:string;u
       return {platform:'tiktok',sourceId:m[2],url:`https://www.tiktok.com/@${m[1]}/video/${m[2]}`};
     if(['www.instagram.com','instagram.com'].includes(u.hostname)&&(m=u.pathname.match(/^\/(?:p|reel|reels)\/([A-Za-z0-9_-]+)\/?$/)))
       return {platform:'instagram',sourceId:m[1],url:`https://www.instagram.com/p/${m[1]}/`};
+    if(['www.youtube.com','youtube.com','m.youtube.com','youtu.be'].includes(u.hostname)){
+      const id=u.hostname==='youtu.be'?u.pathname.slice(1):u.pathname==='/watch'?u.searchParams.get('v'):u.pathname.match(/^\/(?:shorts|embed)\/([\w-]{11})\/?$/)?.[1];
+      if(id&&/^[\w-]{11}$/.test(id))return {platform:'youtube',sourceId:id,url:'https://www.youtube.com/watch?v='+id};
+    }
     return null;
   } catch{return null;}
 }
@@ -50,6 +54,7 @@ export function scoreEvidence(e:Evidence,previous:Evidence[], options:{now?:numb
 }
 export function isEligible(row:any,now=Date.now()) {
   const evidenceAt=new Date(row.last_trend_evidence_at).getTime(),checked=new Date(row.last_checked).getTime();
+  if(row.verification_status!==undefined&&row.verification_status!=='corroborated_pattern')return false;
   return row.status==='Active'&&Number(row.trend_score)>=(Number(process.env.TREND_MIN_SCORE)||70)&&!!row.notion_page_id&&!!row.notion_synced_at&&evidenceAt>=now-WINDOW_MS&&evidenceAt<=now&&checked>=now-WINDOW_MS&&checked<=now;
 }
 export const bangkokDate=(v:string)=>new Intl.DateTimeFormat('th-TH',{dateStyle:'medium',timeStyle:'short',timeZone:'Asia/Bangkok'}).format(new Date(v));
