@@ -70,3 +70,13 @@ quote/approval isolation, upload boundaries, UI state and retry behavior. They
 do not demonstrate that the model reliably detects every narrative mistake.
 Paid semantic evaluation and video generation require a separately approved
 run. The feature does not promise perfect physical simulation or reproduction.
+
+## Incomplete provider output
+
+Director and Inspector quotes allow up to 32,000 output tokens, including model
+reasoning, and ask for concise evidence descriptions. The full allowance is
+included in the quoted estimate and requires owner approval. A truncated response
+is retained for accounting but cannot become a validated graph or inspection.
+The error distinguishes output exhaustion, refusal and malformed JSON. The owner
+can request a fresh quote with the updated payload; old approved limits are never
+increased in place and failed cached results never trigger automatic paid retries.

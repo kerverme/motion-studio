@@ -76,6 +76,26 @@ def test_worker_schema_matches_published_api_schema_exactly():
     assert logic.schemas()==json.loads(source.read_text())
 
 
+def test_truncated_scene_response_is_not_salvaged_or_resubmitted():
+    partial={'response':{'status':'incomplete','incomplete_details':{'reason':'max_output_tokens'},
+                         'output':[{'content':[{'type':'output_text','text':'{"events": []}'}]}]}}
+    with patch.object(prompts,'response_call') as submit:
+        with pytest.raises(ValueError,match='max_output_tokens'):
+            logic._parsed(partial)
+        submit.assert_not_called()
+
+
+def test_refusal_and_invalid_json_are_distinct_safe_errors():
+    for response,expected in [
+        ({'status':'completed','output':[{'content':[{'type':'refusal','refusal':'private provider text'}]}]},'ปฏิเสธ'),
+        ({'status':'completed','output':[{'content':[{'type':'output_text','text':'PRIVATE broken JSON'}]}]},'JSON'),
+        ({'status':'failed','error':{'message':'private provider text'}},'ไม่สำเร็จ'),
+    ]:
+        with pytest.raises(ValueError,match=expected) as error:logic._parsed({'response':response})
+        assert 'private' not in str(error.value).lower()
+    assert logic._parsed({'response':{'status':'completed','output':[{'content':[{'type':'output_text','text':'{"ok":true}'}]}]}})=={'ok':True}
+
+
 @pytest.mark.parametrize('mode,action',[('accidental','The wallet accidentally slips from [C1].'),('deliberate','[C1] deliberately places the wallet on the floor.')])
 def test_validation_preserves_drop_vs_placement_without_rewriting(mode,action):
     doc,graph,evidence=fixture();graph['events'][1].update(mode=mode,action=action)

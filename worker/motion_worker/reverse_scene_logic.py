@@ -104,8 +104,19 @@ def validate_graph(raw,document,evidence):
 
 def _parsed(paid):
     value=paid['response']
-    if value.get('status')!='completed':raise ValueError('Scene response incomplete/refused; saved response retained, no new paid attempt')
-    return json.loads(''.join(c.get('text','') for o in value.get('output',[]) for c in o.get('content',[]) if c.get('type')=='output_text'))
+    if value.get('status')!='completed':
+        reason=(value.get('incomplete_details') or {}).get('reason')
+        if reason=='max_output_tokens':
+            raise ValueError('คำตอบตรวจฉากเกินขีดจำกัดข้อความ (max_output_tokens) และ JSON ถูกตัด จึงยังใช้ผลนี้ไม่ได้ กดดูราคาตรวจตรรกะฉากใหม่แล้วตรวจราคาและยืนยันอีกครั้ง ระบบเก็บคำตอบเดิมไว้และไม่ส่งคำขอเสียเงินซ้ำอัตโนมัติ')
+        # Never display arbitrary provider text (which can echo private source data).
+        raise ValueError('การตรวจฉากไม่สำเร็จ: OpenAI ส่งคำตอบไม่ครบหรือหยุดประมวลผล ระบบเก็บคำตอบเดิมไว้ กรุณาขอราคาใหม่ก่อนยืนยันการตรวจอีกครั้ง ไม่มีการส่งซ้ำอัตโนมัติ')
+    contents=[c for o in value.get('output',[]) for c in o.get('content',[])]
+    if any(c.get('type')=='refusal' for c in contents):
+        raise ValueError('OpenAI ปฏิเสธการตรวจฉากนี้ กรุณาตรวจเนื้อหาหรือเลือกช่วงคลิปอื่น ไม่มีการส่งซ้ำอัตโนมัติ')
+    text=''.join(c.get('text','') for c in contents if c.get('type')=='output_text')
+    try:return json.loads(text)
+    except (ValueError,TypeError):
+        raise ValueError('คำตอบตรวจฉากเป็น JSON ไม่สมบูรณ์ ระบบเก็บคำตอบเดิมไว้และไม่ส่งคำขอเสียเงินซ้ำอัตโนมัติ') from None
 
 
 def _version(ctx,project,context):
