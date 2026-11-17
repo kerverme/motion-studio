@@ -11,6 +11,14 @@ def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
 
 
+def local_classic_render(job, key, provider, model, category):
+    """Only this known local render can be replayed without a provider POST."""
+    return (job.get('kind') == 'episode'
+            and (job.get('package') or {}).get('creative', {}).get('engine') == 'classic'
+            and (key, provider, model, category) ==
+                ('classic-render-v1', 'infrastructure', 'classic', 'compute'))
+
+
 class Ledger:
     def __init__(self, ctx):
         self.ctx, self.db, self.job = ctx, ctx.db, ctx.job
@@ -20,7 +28,7 @@ class Ledger:
             raise ValueError('A positive bounded reservation is required')
         with self.db.lock, self.db.conn.transaction():
             c = self.db.conn
-            job = c.execute('SELECT status,package FROM jobs WHERE id=%s FOR UPDATE', (self.job['id'],)).fetchone()
+            job = c.execute('SELECT status,kind,package FROM jobs WHERE id=%s FOR UPDATE', (self.job['id'],)).fetchone()
             if not job or job['status'] == 'CANCELLED':
                 raise RuntimeError('Job cancelled')
             approval = c.execute('SELECT * FROM creative_approvals WHERE job_id=%s', (self.job['id'],)).fetchone()
@@ -32,6 +40,12 @@ class Ledger:
                     raise RuntimeError('Idempotency key changed request')
                 if old['status'] in ('complete', 'reconciled') and old['result']:
                     return old
+                if (old['status'] == 'reserved'
+                        and local_classic_render(job, key, provider, model, category)
+                        and local_classic_render(job, old['call_key'], old['provider'], old['model'], old['category'])):
+                    # Reclaim inside the job lock. A competing caller sees started
+                    # and cannot render concurrently or allocate another budget.
+                    return c.execute("UPDATE creative_calls SET status='started',error=NULL,updated_at=now() WHERE id=%s AND status='reserved' RETURNING *", (old['id'],)).fetchone()
                 if old['provider']=='openai' and old.get('provider_id') and old['status'] in ('started','uncertain'):
                     return old  # coding adapter resumes GET of this saved response, never POST
                 if old['provider']=='fal' and old.get('provider_id') and old['status'] in ('started','uncertain'):
@@ -63,7 +77,11 @@ class Ledger:
                 raise RuntimeError('Actual provider cost exceeded reserved cap')
             return result
         except Exception as error:
-            self.db.q("UPDATE creative_calls SET status='uncertain',error=%s,updated_at=now() WHERE id=%s AND status='started'", (type(error).__name__, row['id']))
+            # Local Classic rendering has no external generation request to
+            # reconcile. Preserve its reservation and allow the same work to
+            # resume; paid provider/executor outcomes remain uncertain.
+            retryable_local = local_classic_render(self.job, key, provider, model, category)
+            self.db.q("UPDATE creative_calls SET status=%s,error=%s,updated_at=now() WHERE id=%s AND status='started'", ('reserved' if retryable_local else 'uncertain', type(error).__name__, row['id']))
             raise
 
 

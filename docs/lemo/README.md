@@ -16,6 +16,14 @@ The API never executes the coding agent. `lemo-worker` has separate dependencies
 
 The local development Docker runtime fails that probe because it starts runsc with `--ignore-cgroups`. Production instead restores the verified Railway Sandbox checkpoint and uses the tested `ptrace` platform, with host cgroup membership and quotas checked before rendering. The private executor receives a project-scoped Railway token; generated-code containers receive no service credentials. The local test-only exception accepts only exact hashes of three committed, hand-authored fixtures (maximum 10 seconds); the HTTP endpoint cannot opt into that exception. See the live verification record for the approved checkpoint and image digest.
 
+## Classic production confirmation
+
+Classic drafts now open a compact review with the script/storyboard in optional details and a read-only production summary. The owner confirms once; there are no editable per-category budgets, style-lock controls, or acknowledgment checkboxes in this flow. The API calculates category allocations within the saved project limit and binds them to the displayed revision and quote. Unknown provider prices remain unknown, and the confirmation explains that the request budget is not a guaranteed invoice ceiling. Known costs exceeding the saved limit stop production rather than increasing the budget.
+
+The concise confirmation contract is Classic-only. Lemo and fal retain their existing review flows. Concurrent confirmations and retries after a disconnected response reuse the approved job. Script, price, or setting changes require the refreshed summary. Tests exercise the confirmation against an isolated database and mocked providers; inspecting a production summary does not approve a paid render.
+
+The final Classic audio package is validated before approval, including actual sound anchors and credit usage. Failed local Classic rendering can resume with its existing reservation and saved voice/SFX assets. The shared retry route checks the worker lease and only reopens the exact local rendering operation; uncertain external provider calls remain blocked.
+
 ## Audio, costs and delivery
 
 v4 uses the official Text-to-Dialogue `/with-timestamps` contract, the selected/configured voice ID, Thai language and supported stability/similarity settings. Requests are split by narration segment within 2,000 characters. Character timing, speaker identity and voice segment indexes are validated. Normalized alignment is preferred only when it actually matches the script. Missing or mismatched timing is an error, not interpolated subtitles. Legacy models remain selectable. No paid model substitution or blind POST retry occurs. Expressive direction currently relies on story wording/punctuation and supported settings; unverified v4 audio tags and speed controls are not fabricated.

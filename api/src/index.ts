@@ -18,6 +18,7 @@ import { registerNarrationPreviews } from './narration-previews.js';
 import { registerTextVideo } from './text-video.js';
 import { registerReverse } from './reverse.js';
 import { registerCommunity } from './community.js';
+import { retryCreativeJob } from './creative-retry.js';
 import * as notion from './notion.js';
 
 const env = process.env;
@@ -322,7 +323,7 @@ async function retryJob(id: string): Promise<{ ok: boolean; status?: string; err
   const j = await loadJob(id);
   if (!j) return { ok: false, error: 'not found' };
   if (!['FAILED', 'CANCELLED'].includes(j.status)) return { ok: false, error: `job is ${j.status}` };
-  if(j.package?.creative)return {ok:false,error:'เปิดร่าง Creative Motion เพื่อตรวจคำขอและซ่อมจากส่วนที่บันทึกไว้'};
+  if(j.package?.creative)return retryCreativeJob(pool,id);
   if (j.kind === 'text_video') return {ok:false,error:'เปิด Text to Video แล้วตรวจราคาซ่อมเฉพาะส่วนและยืนยันใหม่ก่อนลองต่อ'};
   const resume = j.stage || 'GENERATING_AUDIO';
   await pool.query('UPDATE jobs SET status=$2, error=NULL, attempts=0, locked_by=NULL, locked_until=NULL, updated_at=now() WHERE id=$1', [j.id, resume]);

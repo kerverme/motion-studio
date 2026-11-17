@@ -59,7 +59,12 @@ export function chooseStyle(raw:unknown,settings:CreativeSettingsT,script:{id:st
   if(script.length!==plan.scenes.length||script.some((s,i)=>s.id!==plan.scenes[i].seg))throw Error('Creative scenes must match narration order');
   for(const scene of plan.scenes){
     if((scene.sound.decision==='silence')!==!scene.sound.cues.length)throw Error('Sound decisions must explicitly justify silence or provide cues');
-    for(const cue of scene.sound.cues)if(!script.find(s=>s.id===scene.seg)!.text.includes(cue.word))throw Error(`Sound anchor missing in ${scene.seg}`);
+    for(const cue of scene.sound.cues){
+      const text=script.find(s=>s.id===scene.seg)!.text;
+      let from=0,found=-1;
+      for(let n=0;n<=cue.occurrence;n++){found=text.indexOf(cue.word,from);if(found<0)break;from=found+1;}
+      if(found<0||!cue.word.replace(/[\s.?!…,\"“”'()\[\]:;\-–—]/g,''))throw Error(`Sound anchor missing in ${scene.seg} at occurrence ${cue.occurrence}`);
+    }
     if(new Set(scene.sound.cues.map(c=>c.id)).size!==scene.sound.cues.length)throw Error('Duplicate sound cue');
   }
   const ranked=plan.candidates.filter(c=>c.suitable).map(c=>({...c,score:METRICS.reduce((v,k)=>v+c.scores[k]*settings.weights[k],0)})).sort((a,b)=>b.score-a.score||a.id.localeCompare(b.id));
@@ -76,10 +81,30 @@ export function releaseGates(env:NodeJS.ProcessEnv=process.env){
   return {enabled:env.LEMO_ENABLED==='true'&&!blockers.length,blockers,development:env.LEMO_DEVELOPMENT==='true',style_library:library};
 }
 export const CATEGORIES=['planning','style','coding','narration','sfx','music','compute','other'] as const;
+// Classic needs one informed confirmation, not owner-entered bookkeeping.
+// These are request reservations, never a claim that unknown provider rates are zero.
+export function classicProductionApproval(row:any,quote:{items:{category:string;quantity:number;estimated_usd:number|null}[];unknown:string[]}){
+  const cap=Number(row.creative?.settings?.max_usd);
+  const base={max_usd:cap,allocations:{} as Record<string,number>,unknown_ack_required:quote.unknown.length>0,style_ack_required:row.creative?.selection?.low_confidence===true};
+  const blocked=(reason:string)=>({...base,available:false,reason});
+  if(!Number.isFinite(cap)||cap<=0||cap>1000)return blocked('วงเงินของร่างไม่ถูกต้อง กรุณาตรวจการตั้งค่าร่าง');
+  if(quote.items.some(item=>!Number.isFinite(item.quantity)||item.quantity<0))return blocked('ยังคำนวณรายการผลิตไม่ได้ กรุณาตรวจข้อมูลร่าง');
+  const active=quote.items.filter(item=>item.quantity>0);
+  if(!active.length||active.some(item=>!Number.isFinite(item.quantity)||item.estimated_usd!==null&&(!Number.isFinite(item.estimated_usd)||item.estimated_usd<0)))return blocked('ยังคำนวณรายการผลิตไม่ได้ กรุณาตรวจข้อมูลร่าง');
+  // Integer microdollars match the ledger precision and keep rounding inside the saved cap.
+  const total=Math.floor(cap*1e6+1e-7);
+  const reservations=active.map(item=>Math.max(1,Math.ceil((item.estimated_usd??0)*1e6-1e-7)));
+  const required=reservations.reduce((sum,value)=>sum+value,0);
+  if(!Number.isSafeInteger(required)||required>total)return blocked('รายการผลิตเกินวงเงินที่ตั้งไว้ กรุณาลดขนาดงานหรือปรับวงเงินในร่างก่อนยืนยัน');
+  const spare=total-required,each=Math.floor(spare/active.length),remainder=spare%active.length;
+  const allocations=Object.fromEntries(active.map((item,index)=>[item.category,(reservations[index]+each+(index<remainder?1:0))/1e6]));
+  return {...base,available:true,allocations};
+}
 export function estimateCreative(row:any,pkg:any,rates:Record<string,any>={}){
   const chars=pkg.script.reduce((n:number,s:any)=>n+Array.from(s.text).length,0),sec=pkg.sfx.reduce((n:number,s:any)=>n+s.duration,0);
   const quantities:Record<string,number>={planning:0,style:0,coding:row.creative.engine==='lemo'?pkg.script.length*2:0,narration:chars,sfx:sec,music:pkg.music?.source==='generate'?1:0,compute:1,other:0};
   const models:Record<string,string|undefined>={coding:row.model,narration:pkg.voice?.model_id,sfx:pkg.sfx[0]?.model_id,music:pkg.music?.model_id,compute:row.creative.engine==='lemo'?'canvas2d':'classic'};
   const items=CATEGORIES.map(category=>{const rate=rates[category],quantity=quantities[category];const valid=rate&&rate.model===models[category]&&(!rate.valid_until||Date.parse(rate.valid_until)>Date.now())&&typeof rate.usd_per_unit==='number'&&Number.isFinite(rate.usd_per_unit)&&rate.usd_per_unit>=0&&typeof rate.source==='string'&&rate.source.trim()&&typeof rate.checked_at==='string'&&!Number.isNaN(Date.parse(rate.checked_at));return {category,quantity,unit:{planning:'already incurred',style:'included in planning',coding:'bounded code attempts',narration:'characters',sfx:'seconds',music:'track',compute:'job',other:'none'}[category],estimated_usd:quantity===0?0:valid?quantity*rate.usd_per_unit:null,rate:valid?rate:null,note:category==='planning'?'Planning already incurred; actual provider token usage shown separately':category==='style'?'Included in story planning; explicit regeneration needs a new approval':''};});
-  return {revision:hash({draft:row.draft,storyboard:row.storyboard,creative:row.creative,source_text:row.source_text}),items,known_total_usd:items.reduce((n,i)=>n+(i.estimated_usd||0),0),unknown:items.filter(i=>i.estimated_usd===null).map(i=>i.category),planning_usage:row.usage||{},currency:'USD'};
+  const quote={revision:hash({draft:row.draft,storyboard:row.storyboard,creative:row.creative,source_text:row.source_text}),items,known_total_usd:items.reduce((n,i)=>n+(i.estimated_usd||0),0),unknown:items.filter(i=>i.estimated_usd===null).map(i=>i.category),planning_usage:row.usage||{},currency:'USD'};
+  return {...quote,...(row.creative.engine==='classic'?{classic_approval:classicProductionApproval(row,quote)}:{})};
 }

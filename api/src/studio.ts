@@ -21,7 +21,7 @@ import { Storyboard, reviseStoryboard, validateStoryboardDraft, personCalls, wit
 import { draftRequest } from './draft-request.js';
 import { NARRATION_STYLES, SOURCE_TEXT_LIMIT, SOURCE_READ_LIMIT, parseNarration, parseSourceText, narrationPrompt, sourceMaterialBlock, readSourceMaterial } from './narration.js';
 import { parseRecurringCharacter, parsePresenterKind, withCharacterPolicy, referencePresenterProblem, characterPolicyPrompt, type PresenterKind } from './character-policy.js';
-import { directorVersion, withDirectionPolicy, directionProblems, directionPrompt, exportedDirection } from './direction.js';
+import { directorVersion, withDirectionPolicy, directionProblems, directionPrompt, exportedDirection, soundPolicy } from './direction.js';
 import {LAYOUTS,presentationVersion,withPresentationPolicy,presentationPrompt} from './presentation.js';
 
 const env = process.env;
@@ -857,6 +857,31 @@ export function buildPackage(topic: string, d: DraftT, research: Seen[]) {
   };
 }
 
+/** Validate the sounds that will actually be produced, after Creative replaces the legacy cues. */
+export function creativePackageProblems(pkg:any, board:StoryboardT, ownerNote=''):string[] {
+  const errors:string[]=[], actual:{seg:string;key:string;effect:string}[]=[];
+  const scripts=new Map<string,string>(pkg.script.map((s:any)=>[s.id,s.text]));
+  for(const fx of pkg.sfx)for(const cue of fx.cues){
+    const text=scripts.get(cue.seg)||'',word=String(cue.word||'');
+    let from=0,found=-1;
+    if(word.trim())for(let n=0;n<=(cue.n||0);n++){found=text.indexOf(word,from);if(found<0)break;from=found+1;}
+    if(found<0)errors.push(`Creative sound ${fx.id}: spoken anchor/occurrence is missing in ${cue.seg}`);
+    const effect=String(fx.prompt||'').trim().toLowerCase().replace(/\s+/g,' ');
+    actual.push({seg:cue.seg,effect,key:JSON.stringify([effect,cue.seg,word,cue.n||0,cue.offset||0])});
+    if(board.direction_version===1 && String(fx.purpose||'').trim().length<8)errors.push(`Creative sound ${fx.id}: describe the visible event it makes audible`);
+  }
+  if(board.direction_version===1){
+    let policy;
+    try{policy=soundPolicy(board.sound_policy,ownerNote);}catch(e){errors.push(e instanceof Error?e.message:'Invalid sound policy');}
+    if(policy?.mode==='designed'){
+      if(new Set(actual.map(c=>c.key)).size<6)errors.push('Creative sound design needs at least 6 distinct motivated cues in the production plan');
+      if(new Set(actual.map(c=>c.effect)).size<3)errors.push('Creative sound design needs at least 3 distinct sound effects in the production plan');
+      if(new Set(actual.map(c=>c.seg)).size<Math.ceil(board.shots.length/2))errors.push('Creative sound design must cover at least half of the production shots');
+    }
+  }
+  return errors;
+}
+
 // ---------------------------------------------------------------- the generator
 type Deps = {
   guard: (c: Context, next: Next) => Promise<any>;
@@ -1027,6 +1052,11 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     // No unquoted music generation when a default track is unavailable.
     if(row.creative.engine==='lemo')pkg.music={source:row.music_mode==='ai'?'generate':'default',prompt:'Instrumental soundtrack, no vocals. '+selection.plan.analysis.tone,model_id:'music_v1',volume:.2};
     pkg.storyboard=board.shots;
+    if(settings.engine==='classic'){
+      const problems=[...creativePackageProblems(pkg,board,row.note||''),...deps.validate(pkg)];
+      if(!problems.length && deps.estimateCredits(pkg)>DRAFT_MAX_CREDITS)problems.push(`Creative production audio exceeds the ${DRAFT_MAX_CREDITS} credit limit`);
+      if(problems.length)throw Error(problems.join('; '));
+    }
     return pkg;
   }
   registerCreative(app,pool,{guard:deps.guard,prepare:prepareCreative,signAsset:deps.signAsset});

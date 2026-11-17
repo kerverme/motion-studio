@@ -176,6 +176,8 @@ input[type=datetime-local],input[type=password]{width:100%;padding:10px 12px;bor
 .chart .dot{fill:var(--data);stroke:var(--surface);stroke-width:2}
 .tip{position:absolute;pointer-events:none;background:var(--ink);color:var(--page);padding:6px 10px;border-radius:var(--r-sm);font-size:13px;white-space:nowrap;transform:translate(-50%,-110%)}
 table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+.classic-costs{table-layout:fixed}
+.classic-costs th,.classic-costs td{white-space:normal;overflow-wrap:anywhere;vertical-align:top}
 th,td{text-align:right;padding:10px 8px;border-bottom:1px solid var(--line-2);font-size:14px;white-space:nowrap}
 th{font-weight:500;color:var(--ink-3);font-size:13px}
 th:first-child,td:first-child{text-align:left}
@@ -843,9 +845,11 @@ function studio(st, drafts){
   const voiceModel=h('select',{class:'field','aria-label':'โมเดลเสียง'},['eleven_v4','eleven_v3','eleven_multilingual_v2'].map(x=>h('option',{value:x},x)));
   const creativeBudget=h('input',{class:'field',type:'number',min:.01,max:1000,step:.01,value:10,'aria-label':'งบสูงสุด USD'});
   const lemoOptions=h('div',{hidden:true},h('label',{},'การกำกับภาพ',creativeMode),creativeStyle);
-  engineSel.addEventListener('change',()=>lemoOptions.hidden=engineSel.value!=='lemo');
-  const creativePanel=h('div',{class:'chars'},h('h3',{},'เครื่องมือสร้างภาพ'),engineSel,lemoOptions,h('div',{class:'row'},h('label',{},'เสียงบรรยาย',voiceModel),h('label',{},'งบผลิตสูงสุด (USD)',creativeBudget)),h('p',{class:'sub'},'วางแผนเสียงให้ทุกฉาก · เอฟเฟกต์ v3 · ตรวจราคาและอนุมัติก่อนผลิต เสียงและภาพที่มีแล้วจะใช้ซ้ำ'));
-  const creativeInput=()=>({engine:engineSel.value,mode:creativeMode.value,...(creativeMode.value==='manual'?{manual_style:creativeStyle.value}:{}),tts_model:voiceModel.value,sfx_model:'eleven_text_to_sound_v3',max_usd:Number(creativeBudget.value)});
+  const lemoBudget=h('label',{hidden:true},'งบผลิตสูงสุด (USD)',creativeBudget);
+  const productionNotice=h('p',{class:'sub'},'Classic จัดรายการผลิตให้แล้ว ตรวจสรุปและกดยืนยันครั้งเดียวเมื่อบทพร้อม');
+  engineSel.addEventListener('change',()=>{const lemo=engineSel.value==='lemo';lemoOptions.hidden=!lemo;lemoBudget.hidden=!lemo;productionNotice.textContent=lemo?'วางแผนเสียงให้ทุกฉาก · ตรวจราคาและอนุมัติก่อนผลิต':'Classic จัดรายการผลิตให้แล้ว ตรวจสรุปและกดยืนยันครั้งเดียวเมื่อบทพร้อม';});
+  const creativePanel=h('div',{class:'chars'},h('h3',{},'เครื่องมือสร้างภาพ'),engineSel,lemoOptions,h('div',{class:'row'},h('label',{},'เสียงบรรยาย',voiceModel),lemoBudget),productionNotice);
+  const creativeInput=()=>({engine:engineSel.value,tts_model:voiceModel.value,sfx_model:'eleven_text_to_sound_v3',...(engineSel.value==='lemo'?{mode:creativeMode.value,...(creativeMode.value==='manual'?{manual_style:creativeStyle.value}:{}),max_usd:Number(creativeBudget.value)}:{mode:'auto'})});
   let saved={}; try{ saved=JSON.parse(localStorage.getItem('ms.ai')||'{}'); }catch{}
   const modelSel = h('select',{class:'field','aria-label':'โมเดล',style:'width:auto;padding:8px 10px'}, (st.models||[]).map(m=>h('option',{value:m.id},m.label)));
   modelSel.value = (st.models||[]).some(m=>m.id===saved.model) ? saved.model : st.model;
@@ -1027,7 +1031,7 @@ function studio(st, drafts){
     classicStylePanel,
     musicPanel(),
     charChoice, charsPanel,
-    h('label',{class:'check'}, auto, h('span',{},'งานใหม่ต้องตรวจราคาและอนุมัติก่อนผลิต')),
+    h('p',{class:'sub'},'ตรวจรายการและยืนยันก่อนเริ่มผลิต'),
     h('div',{class:'row'}, h('span',{class:'sub'}, 'วันนี้ใช้ไป '+st.drafts_today+' จาก '+st.daily_limit+' ร่าง · ค่าเสียงไม่เกิน '+fmtN(st.max_credits)+' เครดิต/คลิป'), go),
     err);
   const list = drafts.length ? h('div',{class:'drafts'}, h('h2',{},'ร่างล่าสุด'), drafts.map(d=>{
@@ -1040,8 +1044,63 @@ function studio(st, drafts){
 }
 
 
+async function classicDraftView(body,d,refresh){
+  const script=d.storyboard?.script||d.draft.script||[],plan=d.creative.selection.plan;
+  const error=h('div',{class:'err',role:'alert'}),production=h('section',{class:'chars','aria-label':'ยืนยันการผลิต Classic'});
+  const details=h('details',{},h('summary',{},'อ่านบทและรายละเอียด '+script.length+' ฉาก'),script.map((line,i)=>{
+    const scene=plan.scenes.find(x=>x.seg===line.id);
+    return h('section',{class:'chars'},h('h3',{},'ฉาก '+(i+1)),h('p',{},line.text),scene?h('p',{class:'sub'},scene.objective):'',scene?h('p',{class:'sub'},'เสียง: '+({effects:'เอฟเฟกต์',ambience:'บรรยากาศ',silence:'เว้นเสียง'}[scene.sound.decision])):'');
+  }));
+  const edit=h('details',{},h('summary',{},'ปรับบทเพิ่มเติม (ไม่บังคับ)'));
+  if(d.status==='ready'){
+    const note=h('textarea',{class:'field',rows:3,maxlength:1000,'aria-label':'สิ่งที่ต้องการปรับในบท',placeholder:'เช่น ย่อบทให้กระชับ หรือแก้มุกตอนจบ'});
+    let rewriting=false;
+    edit.append(h('p',{class:'sub'},'การปรับบทจะให้สมองเขียนใหม่และตรวจภาพให้ตรงกับบท มีค่าใช้จ่าย OpenAI เพิ่มตามการใช้งาน'),note,h('button',{class:'btn',on:{click:async function(){
+      if(rewriting)return;if(!note.value.trim()){error.textContent='ระบุสิ่งที่ต้องการปรับก่อน';note.focus();return;}
+      rewriting=true;this.disabled=true;error.textContent='';
+      try{const r=await draftPost('/app/api/studio/drafts/'+d.id+'/rewrite',{note:note.value.trim(),auto_produce:false});openDraft(r.id);}catch(e){error.textContent=e.message;}finally{rewriting=false;this.disabled=false;}
+    }}},'ให้ AI ปรับบท'));
+  }
+  put(body,h('h2',{},d.draft.title_th),h('p',{class:'sub'},'Classic Motion Studio · '+whoWrote(d.model,d.reasoning)+' · '+script.length+' ฉาก'),production,details,d.status==='ready'?edit:'',error);
+  if(d.job_id){
+    try{
+      const job=await api('/app/api/creative/jobs/'+d.job_id);
+      const stages={NEW:'รอคิวผลิต',GENERATING_AUDIO:'กำลังสร้างเสียงพากย์และเสียงประกอบ',BUILDING_TIMELINE:'กำลังจัดจังหวะภาพและเสียง',RENDERING:'กำลังประกอบวิดีโอ',QUALITY_CHECK:'กำลังตรวจคุณภาพคลิป',UPLOADING_DRIVE:'กำลังบันทึกคลิป',READY_TO_POST:'ผลิตเสร็จแล้ว พร้อมให้ตรวจและนำไปใช้',CANCELLED:'ยกเลิกการผลิตแล้ว',FAILED:'ตรวจข้อผิดพลาดแล้วทำต่อจากส่วนที่บันทึกไว้ได้'};
+      const action=(label,path)=>h('button',{class:'btn',on:{click:async function(){if(this.disabled)return;this.disabled=true;error.textContent='';try{await api(path,{method:'POST'});await refresh();}catch(e){error.textContent=e.message;this.disabled=false;}}}},label);
+      put(production,h('h3',{},job.status==='READY_TO_POST'?'คลิปพร้อมใช้':job.status==='FAILED'?'ผลิตยังไม่สำเร็จ':job.status==='CANCELLED'?'ยกเลิกการผลิตแล้ว':'กำลังผลิตคลิป'),h('progress',{value:job.progress||0,max:1}),h('p',{},job.error||(['READY_TO_POST','CANCELLED','FAILED'].includes(job.status)?stages[job.status]:stages[job.stage]||stages[job.status])||'กำลังดำเนินการ'),job.result?.video_url?h('video',{controls:true,src:job.result.video_url,style:'max-width:100%;max-height:500px'}):'',h('button',{class:'btn',on:{click:refresh}},'ตรวจสถานะอีกครั้ง'),job.status==='FAILED'?action('ทำต่อจากส่วนที่บันทึกไว้','/app/api/creative/jobs/'+d.job_id+'/retry'):!['READY_TO_POST','CANCELLED'].includes(job.status)?action('ยกเลิกงาน','/app/api/creative/jobs/'+d.job_id+'/cancel'):'');
+    }catch(e){put(production,h('p',{class:'err',role:'alert'},e.message),h('button',{class:'btn',on:{click:refresh}},'โหลดสถานะอีกครั้ง'));}
+  }else if(d.status==='ready')await classicCostDialog(production,d.id);
+}
+async function classicCostDialog(target,id){
+  put(target,h('p',{class:'sub',role:'status'},'กำลังโหลดรายการผลิต…'));
+  let q;
+  try{q=await api('/app/api/creative/'+id+'/estimate');}
+  catch(e){put(target,h('p',{class:'err',role:'alert'},e.message),h('button',{class:'btn',on:{click:()=>classicCostDialog(target,id)}},'โหลดรายการผลิตอีกครั้ง'));return;}
+  const approval=q.classic_approval,labels={coding:'เขียนภาพ',narration:'เสียงบรรยาย',sfx:'เสียงประกอบ',music:'ดนตรี',compute:'ประกอบวิดีโอ',other:'อื่น ๆ'};
+  const units={narration:'ตัวอักษร',sfx:'วินาที',music:'เพลง',compute:'งาน',coding:'ครั้ง'};
+  const dollars=value=>Number(value).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4})+' USD';
+  const error=h('div',{class:'err',role:'alert'}),rows=q.items.filter(item=>item.quantity>0).map(item=>h('tr',{},h('td',{},labels[item.category]||item.category),h('td',{},item.quantity+' '+(units[item.category]||'')),h('td',{},item.estimated_usd===null?'ยังไม่ทราบราคา':dollars(item.estimated_usd))));
+  let sending=false;
+  const confirm=h('button',{class:'btn primary',disabled:!approval?.available,on:{click:async function(){
+    if(sending||!approval?.available)return;sending=true;this.disabled=true;this.textContent='กำลังส่งผลิต…';error.textContent='';
+    try{await api('/app/api/creative/'+id+'/approve',{method:'POST',body:JSON.stringify({revision:q.revision,quote_hash:q.quote_hash,confirm:true})});toast('ส่งเข้าคิวผลิตแล้ว');openDraft(id);}
+    catch(e){
+      if(e.status===409){await classicCostDialog(target,id);target.append(h('p',{class:'err',role:'alert'},'รายการผลิตเปลี่ยนหรือยังส่งผลิตไม่ได้ โปรดตรวจรายการล่าสุดก่อนยืนยันอีกครั้ง · '+e.message));return;}
+      error.textContent=e.status?e.message:'ติดต่อไม่สำเร็จ กดยืนยันอีกครั้งได้ ระบบจะตรวจงานเดิมเพื่อป้องกันการผลิตซ้ำ';this.disabled=false;this.textContent='ยืนยันผลิตคลิป';
+    }finally{sending=false;}
+  }}},'ยืนยันผลิตคลิป');
+  put(target,h('h3',{},'พร้อมผลิตคลิป'),h('p',{},'ภาพและบทเตรียมไว้แล้ว ขั้นตอนนี้จะผลิตเสียงและประกอบวิดีโอ'),
+    h('table',{class:'classic-costs'},h('thead',{},h('tr',{},h('th',{},'รายการ'),h('th',{},'จำนวน'),h('th',{},'ประมาณการ'))),h('tbody',{},rows)),
+    approval?h('p',{},'วงเงินอนุมัติในระบบ '+dollars(approval.max_usd)+' · ระบบจัดสรรให้แล้ว'):'',
+    (approval?.unknown_ack_required||q.unknown?.length)?h('p',{class:'warn'},'ราคาบางรายการยังไม่ยืนยัน ยอดเรียกเก็บจริงขึ้นกับผู้ให้บริการ วงเงินนี้ไม่ใช่ราคาที่รับประกัน การกดยืนยันคือการอนุมัติรายการเหล่านี้ตามวงเงินที่แสดง'):h('p',{class:'sub'},'ประมาณการรวม '+dollars(q.known_total_usd)),
+    approval?.style_ack_required?h('p',{class:'warn'},'AI ยังไม่มั่นใจแนวภาพ กรุณาอ่านรายละเอียดฉากด้านล่างก่อนยืนยัน'): '',
+    h('p',{class:'sub'},'ค่า OpenAI ที่เตรียมบทและภาพใช้ไปแล้วแยกต่างหาก · ยืนยันครั้งเดียวเพื่อผลิต คลิปจะไม่เผยแพร่อัตโนมัติ'),
+    !approval?.available?h('p',{class:'err',role:'alert'},approval?.reason||'ยังไม่มีรายการอนุมัติสำหรับ Classic กรุณาโหลดใหม่ภายหลัง'):'',confirm,error);
+}
+
 let LEMO_PREVIEWS=null;
 async function creativeDraftView(body,d,refresh){
+  if(d.creative.engine==='classic')return classicDraftView(body,d,refresh);
   const creative=d.creative,selection=creative.selection,plan=structuredClone(selection.plan),settings=structuredClone(creative.settings),script=structuredClone(d.storyboard.script);
   const err=h('div',{class:'err',role:'alert'}),status=h('div',{class:'sub',role:'status'});
   if(LEMO_PREVIEWS===null){try{LEMO_PREVIEWS=(await api('/app/api/creative/capabilities')).styles||[];}catch{LEMO_PREVIEWS=[];}}

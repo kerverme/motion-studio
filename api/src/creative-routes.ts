@@ -3,6 +3,7 @@ import type pg from 'pg';
 import {z} from 'zod';
 import {randomUUID} from 'node:crypto';
 import {CreativeSettings,CreativePlan,chooseStyle,estimateCreative,releaseGates,LEMO_STYLES,publicStyles,CATEGORIES,hash} from './creative.js';
+import {retryCreativeJob} from './creative-retry.js';
 
 export function registerCreative(app:Hono,pool:pg.Pool,deps:{guard:(c:Context,n:Next)=>Promise<any>,prepare:(row:any)=>any,signAsset?:(key:string)=>Promise<string|null>}){
   const g=deps.guard;
@@ -38,24 +39,35 @@ export function registerCreative(app:Hono,pool:pg.Pool,deps:{guard:(c:Context,n:
     }catch(e){await cl.query('ROLLBACK');return c.json({error:String(e)},422);}finally{cl.release();}
   });
   app.post('/app/api/creative/:id/approve',g,async c=>{
-    const parsed=z.object({revision:z.string(),quote_hash:z.string(),max_usd:z.number().positive().max(1000),allocations:z.record(z.number().min(0).max(1000)),unknown_ack:z.boolean(),style_ack:z.boolean().default(false)}).strict().safeParse(await c.req.json());
+    const advanced=z.object({revision:z.string(),quote_hash:z.string(),max_usd:z.number().positive().max(1000),allocations:z.record(z.number().min(0).max(1000)),unknown_ack:z.boolean(),style_ack:z.boolean().default(false)}).strict();
+    const simple=z.object({revision:z.string(),quote_hash:z.string(),confirm:z.literal(true)}).strict();
+    const parsed=z.union([simple,advanced]).safeParse(await c.req.json().catch(()=>null));
     if(!parsed.success)return c.json({error:'Invalid approval'},422);
-    const b=parsed.data,cl=await pool.connect();
+    const input=parsed.data,cl=await pool.connect();
     try{
       await cl.query('BEGIN');const r=(await cl.query('SELECT * FROM drafts WHERE id=$1 FOR UPDATE',[c.req.param('id')])).rows[0];
       if(!r?.creative)throw Error('No creative project');
-      const old=(await cl.query('SELECT job_id FROM creative_approvals WHERE draft_id=$1 AND revision=$2',[r.id,b.revision])).rows[0];
-      if(old?.job_id){await cl.query('COMMIT');return c.json({id:old.job_id,duplicate:true});}
+      if('confirm' in input&&r.creative.engine!=='classic')throw Error('Simple confirmation is available only for Classic');
+      const old=(await cl.query('SELECT job_id,quote FROM creative_approvals WHERE draft_id=$1 AND revision=$2',[r.id,input.revision])).rows[0];
+      if(old?.job_id){if(hash(old.quote)!==input.quote_hash)throw Error('Approval does not match the saved quote');await cl.query('COMMIT');return c.json({id:old.job_id,duplicate:true});}
       if(r.status!=='ready')throw Error('Draft is not ready');
       if(r.creative.engine==='lemo'&&!releaseGates().enabled)throw Error('Lemo release gates are not cleared; development previews use mocks');
       const pkg=deps.prepare(r),q=estimateCreative(r,pkg,rates());
-      if(q.revision!==b.revision||hash(q)!==b.quote_hash)throw Error('Story, rates or settings changed; review a new quote');
+      if(q.revision!==input.revision||hash(q)!==input.quote_hash)throw Error('Story, rates or settings changed; review a new quote');
+      let b:z.infer<typeof advanced>;
+      if('confirm' in input){
+        const recommendation=q.classic_approval;
+        if(!recommendation?.available)throw Error(recommendation&&'reason' in recommendation?recommendation.reason:'Classic estimate is unavailable');
+        // The single confirmation acknowledges the displayed quote, including its
+        // unknown-price and style notices. No client-supplied allocations are trusted.
+        b={revision:input.revision,quote_hash:input.quote_hash,max_usd:recommendation.max_usd,allocations:recommendation.allocations,unknown_ack:true,style_ack:true};
+      }else b=input;
       if(q.unknown.length&&!b.unknown_ack)throw Error('Unknown prices require explicit bounded approval');
       if(r.creative.selection.low_confidence&&!b.style_ack)throw Error('Review uncertain style selection first');
       if(b.max_usd>r.creative.settings.max_usd)throw Error('Approval exceeds the project budget');
       if(Object.keys(b.allocations).some(k=>!CATEGORIES.includes(k as any)))throw Error('Unknown cost category');
       if(Object.values(b.allocations).reduce((a,v)=>a+v,0)>b.max_usd+.000001)throw Error('Allocations exceed budget');
-      for(const item of q.items)if(item.quantity>0&&(!(b.allocations[item.category]>0)||b.allocations[item.category]<(item.estimated_usd||0)))throw Error(`Insufficient allocation for ${item.category}`);
+      for(const item of q.items)if(item.quantity>0&&(!(b.allocations[item.category]>0)||b.allocations[item.category]+1e-9<(item.estimated_usd||0)))throw Error(`Insufficient allocation for ${item.category}`);
       const episode=(await cl.query("INSERT INTO episodes(topic,title_th,status) VALUES($1,$2,'NEW') RETURNING id",[r.topic,pkg.title_th])).rows[0];
       const approval=(await cl.query('INSERT INTO creative_approvals(draft_id,revision,quote,allocations,max_usd,unknown_ack) VALUES($1,$2,$3,$4,$5,$6) RETURNING id',[r.id,q.revision,JSON.stringify(q),JSON.stringify(b.allocations),b.max_usd,b.unknown_ack])).rows[0];
       pkg.creative={...r.creative,approval_id:approval.id,revision:q.revision,allocations:b.allocations,max_usd:b.max_usd,rates:rates(),planning_usage:r.usage,model:r.model,reasoning:r.reasoning};
@@ -97,12 +109,8 @@ export function registerCreative(app:Hono,pool:pg.Pool,deps:{guard:(c:Context,n:
     return c.json({cancelled:!!r.rowCount,note:'Already submitted provider requests may still incur costs; completed assets are retained'});
   });
   app.post('/app/api/creative/jobs/:id/retry',g,async c=>{
-    const cl=await pool.connect();try{
-      await cl.query('BEGIN');const job=(await cl.query("SELECT * FROM jobs WHERE id=$1 AND package ? 'creative' FOR UPDATE",[c.req.param('id')])).rows[0];
-      if(!job||job.status!=='FAILED')throw Error('Only failed jobs can resume');
-      if((await cl.query("SELECT 1 FROM creative_calls WHERE job_id=$1 AND status IN ('started','uncertain') AND NOT (provider='openai' AND provider_id IS NOT NULL)",[job.id])).rowCount)throw Error('Reconcile ambiguous provider calls before retry; no duplicate paid submission');
-      await cl.query("UPDATE jobs SET status='NEW',error=NULL,locked_by=NULL,locked_until=NULL,updated_at=now() WHERE id=$1",[job.id]);await cl.query('COMMIT');return c.json({id:job.id,resumed:true});
-    }catch(e){await cl.query('ROLLBACK');return c.json({error:String(e)},409);}finally{cl.release();}
+    const result=await retryCreativeJob(pool,c.req.param('id'));
+    return c.json(result,result.ok?200:409);
   });
   for(const [route,repairStage,version,versionField] of [
     ['repair-captions','CAPTION_REPAIR','kanit-portrait-v2','caption_version'],
