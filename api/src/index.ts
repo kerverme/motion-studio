@@ -12,7 +12,7 @@ import { registerUi } from './ui.js';
 import * as buffer from './buffer.js';
 import { alertSweep, retention } from './ops.js';
 import { syncPosts } from './metrics.js';
-import { registerStudio, configured as studioConfigured, OPENAI_MODELS } from './studio.js';
+import { registerStudio, configured as studioConfigured } from './studio.js';
 import { registerTopicSuggestions } from './topic-suggestions.js';
 import { registerNarrationPreviews } from './narration-previews.js';
 import { registerTextVideo } from './text-video.js';
@@ -413,9 +413,9 @@ app.get('/internal/google/access-token', async (c) => {
 
 const ui = registerUi(app, pool, { API_TOKEN, retryJob });
 registerReverse(app,pool,{guard:ui.requireUi});
-const suggestions = registerTopicSuggestions(app,pool,{guard:ui.requireUi,models:OPENAI_MODELS});
-const narrationPreviews = registerNarrationPreviews(app,pool,{guard:ui.requireUi,models:OPENAI_MODELS});
-const textVideo = registerTextVideo(app,pool,{guard:ui.requireUi,models:OPENAI_MODELS});
+const suggestions = registerTopicSuggestions(app,pool,{guard:ui.requireUi});
+const narrationPreviews = registerNarrationPreviews(app,pool,{guard:ui.requireUi});
+const textVideo = registerTextVideo(app,pool,{guard:ui.requireUi});
 const studio = registerStudio(app, pool, { guard: ui.requireUi, signAsset:async key=>s3&&env.BUCKET?getSignedUrl(s3,new GetObjectCommand({Bucket:env.BUCKET,Key:key}),{expiresIn:3600}):null, createJob, estimateCredits: (p: unknown) => estimateCredits(Package.parse(p)), researchFreshness: (p: unknown) => researchFreshness(Package.parse(p)), validate: (p: unknown) => {
   const r = Package.safeParse(p);
   return r.success ? [] : r.error.issues.slice(0, 10).map((i) => `${i.path.join('.')}: ${i.message}`);

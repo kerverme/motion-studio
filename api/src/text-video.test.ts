@@ -11,12 +11,12 @@ process.env.OPENAI_API_KEY='test-only';process.env.FAL_KEY='test-only';
 const db=new PGlite();let locked=Promise.resolve();
 const query=async(sql:string,args:any[]=[])=>{const r=await db.query<any>(sql,args);return{...r,rowCount:r.affectedRows??r.rows.length};};
 const pool={query,connect:async()=>{const prev=locked;let release!:()=>void;locked=new Promise(r=>release=r);await prev;return{query,release};}};
-const input=parseVideoInput({topic:'นิทานเรือลำน้อย',model:'gpt-6.1-sol',duration:60});
+const input=parseVideoInput({topic:'นิทานเรือลำน้อย',duration:60});
 const plan=(n=4)=>({title:'เรือลำน้อยเดินทางกลับบ้าน',synopsis:'นิทานสมมติเรื่องเรือลำน้อยที่ตามแสงกลับบ้าน',kind:'fiction',visual_bible:'A warm storybook paper boat with a red sail, golden light, calm river, consistent watercolor style.',sources:[],shots:Array.from({length:n},(_,i)=>({id:`shot_${String(i+1).padStart(2,'0')}`,narration:'เรือลำน้อยค่อยค่อยลอยไปตามลำน้ำ มองหาแสงไฟเพื่อกลับบ้าน',visual_prompt:'The same small paper boat with a red sail drifts toward a lantern beside the river, slow tracking camera.',end_frame:'The red sail boat rests on the lower left beside a warm lantern.',source_ids:[]}))});
 const rates=VIDEO_MODELS.flatMap(m=>[m.t2v,m.i2v].map(endpoint_id=>({endpoint_id,unit:'seconds',unit_price:m.baseline,currency:'USD'})));
 const path='/app/api/text-video/plans';let llmCalls=0,invalidSource=false,failResponse=false;
-function server(){const app=new Hono();const service=registerTextVideo(app,pool as any,{autoStart:false,models:['gpt-6.1-sol','gpt-6.1-terra','gpt-6-astra'],guard:async(c,next)=>c.req.header('x-test-auth')==='yes'?next():c.json({error:'unauthorized'},401),prices:async()=>rates,response:async(body,opts)=>{
-  llmCalls++;assert.equal(body.model,input.model);assert.equal(body.max_tool_calls,4);assert.match(body.instructions,/complete supplied source/);assert.equal(body.text,undefined,'hosted search must not request legacy JSON mode');await opts.onProgress?.('OpenAI accepted [resp_test123]');if(failResponse)throw new Error('OpenAI ตรวจสถานะไม่สำเร็จ [resp_test123]');
+function server(models=['gpt-6.2-sol','gpt-6.1-sol','gpt-6.1-terra','gpt-6-astra']){const app=new Hono();const service=registerTextVideo(app,pool as any,{autoStart:false,models,guard:async(c,next)=>c.req.header('x-test-auth')==='yes'?next():c.json({error:'unauthorized'},401),prices:async()=>rates,response:async(body,opts)=>{
+  llmCalls++;assert.equal(body.model,'gpt-6.2-sol');assert.equal(body.reasoning.effort,'high');assert.equal(body.max_tool_calls,4);assert.match(body.instructions,/complete supplied source/);assert.equal(body.text,undefined,'hosted search must not request legacy JSON mode');await opts.onProgress?.('OpenAI accepted [resp_test123]');if(failResponse)throw new Error('OpenAI ตรวจสถานะไม่สำเร็จ [resp_test123]');
   const p:any=plan(JSON.parse(body.input[0].content).duration/15);if(invalidSource){p.kind='educational';p.sources=[{url:'https://invented.example/source',title:'Fake',publisher:'Fake',published:'unknown',claim:'unsupported'}];p.shots[0].source_ids=[0];}
   return {status:'completed',id:'resp_test123',output:[{type:'message',content:[{type:'output_text',text:JSON.stringify(p)}]}]};}});return{app,service};}
 const headers={'content-type':'application/json','x-test-auth':'yes'};
@@ -56,8 +56,20 @@ test('edited, expired or mismatched quotes cannot start production; duplicate ap
   await query("UPDATE text_video_plans SET quote=jsonb_set(quote,'{expires_at}','\"2000-01-01T00:00:00Z\"') WHERE id=$1",[p.id]);assert.equal((await send(app,path+'/'+p.id+'/produce',approval(q,p.revision))).status,409);
   q=await(await send(app,path+'/'+p.id+'/quote',{eleven_usd_per_1000_characters:.3})).json();const responses=await Promise.all([send(app,path+'/'+p.id+'/produce',approval(q,p.revision)),send(app,path+'/'+p.id+'/produce',approval(q,p.revision))]);
   assert.deepEqual(responses.map(r=>r.status),[201,200]);const bodies=await Promise.all(responses.map(r=>r.json()));assert.equal(bodies[0].id,bodies[1].id);
-  const jobs=(await query('SELECT * FROM jobs')).rows;assert.equal(jobs.length,1);const job:any=jobs[0];assert.equal(job.kind,'text_video');assert.equal(job.package.generation_model,'gpt-6.1-sol');assert.equal(job.package.text_video.approval.id,q.id);assert.equal(job.package.music,null);assert.equal((await query('SELECT * FROM publish_log')).rows.length,0);
+  const jobs=(await query('SELECT * FROM jobs')).rows;assert.equal(jobs.length,1);const job:any=jobs[0];assert.equal(job.kind,'text_video');assert.equal(job.package.generation_model,'gpt-6.2-sol');assert.equal(job.package.text_video.approval.id,q.id);assert.equal(job.package.music,null);assert.equal((await query('SELECT * FROM publish_log')).rows.length,0);
   assert.equal((await send(app,path+'/'+p.id,{revision:p.revision,plan:p.plan},'PATCH')).status,409);
+});
+
+test('replaying an older Text to Video request uses its saved defaults after catalog turnover',async()=>{
+  const id=randomUUID(),body={topic:'นิทานเรือใบสีฟ้า'},old=parseVideoInput({...body,model:'gpt-6.1-sol',reasoning:'medium'});
+  const create=await send(server().app,path,old,'POST',id);assert.equal(create.status,202);
+  await query("UPDATE text_video_plans SET status='ready' WHERE id=$1",[id]);
+  const current=server(['gpt-6.2-sol']).app;
+  const replay=await send(current,path,body,'POST',id);assert.equal(replay.status,200);
+  assert.equal((await replay.json()).request.model,'gpt-6.1-sol');
+  assert.equal((await send(current,path,{...body,model:'gpt-6.2-sol'},'POST',id)).status,409);
+  assert.equal((await send(current,path,old,'POST')).status,422);
+  assert.equal((await query('SELECT count(*)::int AS n FROM text_video_plans WHERE id=$1',[id])).rows[0].n,1);
 });
 
 test('repair quotes charge only missing calls and stop when a paid POST has unknown outcome',()=>{

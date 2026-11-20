@@ -12,7 +12,7 @@ const calls:{method:string,body:any,url:string}[]=[];
 let queued=false,fail=false,malformed=false,pollFailure=false,seq=0;
 const example={text:'ลองนึกว่าร่างกายมีนาฬิกาเล็ก ๆ คอยบอกว่าเมื่อไรควรตื่นและเมื่อไรควรพัก นี่เป็นคำเปรียบเทียบเพื่อให้เห็นภาพ ไม่ใช่นาฬิกาจริงที่อยู่ในตัวเรา การนอนจึงมีทั้งเรื่องเวลาและความต้องการที่แตกต่างกันในแต่ละคน',notes:['ตัวอย่างนี้แสดงสไตล์การเล่า ยังไม่ได้ตรวจข้อกล่าวอ้างกับแหล่งต้นฉบับ']};
 const response=(id='resp_test')=>({id,status:'completed',output:[{type:'message',content:[{type:'output_text',text:JSON.stringify(example)}]}]});
-function server(){const app=new Hono();const service=registerNarrationPreviews(app,pool,{models:['gpt-6.1-sol','gpt-6.1-terra'],guard:async(c,next)=>c.req.header('authorization')==='Bearer owner'?next():c.json({error:'unauthorized'},401)});return {app,...service};}
+function server(){const app=new Hono();const service=registerNarrationPreviews(app,pool,{models:['gpt-6.2-sol','gpt-6.1-sol','gpt-6.1-terra'],guard:async(c,next)=>c.req.header('authorization')==='Bearer owner'?next():c.json({error:'unauthorized'},401)});return {app,...service};}
 const headers={authorization:'Bearer owner','content-type':'application/json'};
 const post=(app:Hono,data:any)=>app.request('/app/api/studio/narration-previews',{method:'POST',headers,body:JSON.stringify(data)});
 async function done(id:string){for(let i=0;i<600;i++){const row:any=(await db.query('SELECT * FROM narration_previews WHERE id=$1',[id])).rows[0];if(row&&['done','failed','paused'].includes(row.status))return row;await new Promise(r=>setTimeout(r,10));}throw new Error('preview timed out in test');}
@@ -68,7 +68,7 @@ test('duplicate clicks and response-loss replay share one call; changed inputs n
  assert.equal((await post(server().app,input)).status,200);assert.equal(calls.filter(x=>x.method==='POST').length,n+1);
  assert.equal((await post(app,{...input,narration_custom:'สารคดีจริงจัง'})).status,409);
  assert.equal((await post(app,{...input,source_text:'อีกเอกสาร'})).status,409);
- const req=calls.filter(x=>x.method==='POST').at(-1)!.body;assert.ok(req.input[0].content.includes(input.narration_custom));assert.equal(req.model,'gpt-6.1-sol');
+ const req=calls.filter(x=>x.method==='POST').at(-1)!.body;assert.ok(req.input[0].content.includes(input.narration_custom));assert.equal(req.model,'gpt-6.2-sol');assert.equal(req.reasoning.effort,'high');
  const next={...input,request_id:randomUUID()};await post(app,next);await done(next.request_id);assert.equal(calls.filter(x=>x.method==='POST').length,n+2);
 });
 

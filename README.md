@@ -189,7 +189,7 @@ this change does not persist the whole model conversation for restart recovery.
 Validate the transport with `cd api && npm run typecheck && node --import tsx --test src/openai-response.test.ts`.
 
 The studio works with either provider: `ANTHROPIC_API_KEY` (default model `claude-opus-5-5`) or `OPENAI_API_KEY`
-(Responses API, default model `gpt-6.1-sol`). With only one key set, that provider is used; force one with
+(Responses API, default `gpt-6.2-sol` with high reasoning). Create and Text to Video refresh the account’s general-purpose GPT models from `/v1/models` on use, with a 15-minute cache. A temporary outage uses the last successful list or the bundled choices on first start. Drafts retain their selected model and effort. The topic idea generator defaults to `gpt-6.1-terra`. With only one key set, that provider is used; force one with
 `MOTION_LLM_PROVIDER=anthropic|openai`, pick a model with `MOTION_LLM_MODEL`. Firecrawl, the rule checks and the renderer are the same for both.
 
 ### Bespoke story art and reference characters
