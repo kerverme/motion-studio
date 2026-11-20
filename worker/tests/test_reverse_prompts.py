@@ -81,3 +81,17 @@ def test_action_sampling_retains_cut_anchors_and_adds_motion_evidence_without_re
     assert indices==sorted(set(indices)) and max(indices)<450
     short,dense=p.selection_frames(timing,shots,0,2,'action_v2')
     assert len(dense)>=24 and short['duration_s']==2
+
+
+def test_dispatch_accepts_only_renewed_prices_matching_worker_configuration():
+    from motion_worker.reverse_rate import current_rate
+    from types import SimpleNamespace
+    original={'model':'gpt-6.2-sol','output_per_million':10,'valid_until':'2000-01-01T00:00:00Z','checked_at':'1999-12-01T00:00:00Z'}
+    updated={**original,'valid_until':'2099-01-01T00:00:00Z','checked_at':'2098-12-25T00:00:00Z'}
+    entry={'configured':original,'rate':updated}
+    ctx=SimpleNamespace(db=SimpleNamespace(one=lambda *args:{'data':entry}))
+    assert current_rate(original,ctx)==updated
+    assert current_rate(original) is None
+    assert current_rate({**original,'output_per_million':9},ctx) is None
+    entry['rate']={**updated,'output_per_million':12}
+    assert current_rate(original,ctx) is None

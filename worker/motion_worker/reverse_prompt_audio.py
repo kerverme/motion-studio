@@ -63,8 +63,9 @@ def prepare_audio(ctx, project, row, source, timing, evidence):
     return audio
 
 
-def transcription_rate():
-    rate = json.loads(os.environ.get('MOTION_REVERSE_TRANSCRIBE_RATE_JSON', 'null'))
+def transcription_rate(ctx=None):
+    from .reverse_rate import current_rate
+    rate = current_rate(json.loads(os.environ.get('MOTION_REVERSE_TRANSCRIBE_RATE_JSON', 'null')),ctx)
     model = os.environ.get('MOTION_REVERSE_TRANSCRIBE_MODEL', 'gpt-transcribe')
     if not rate or rate.get('model') != model or model != 'gpt-transcribe' or dt.datetime.now(dt.timezone.utc) >= dt.datetime.fromisoformat(rate['valid_until'].replace('Z', '+00:00')):
         raise ApprovalRequired('Transcription rate/model unavailable; configure Railway')
@@ -79,7 +80,7 @@ def _transcription_call(ctx, project, task, quote):
     if not old:
         if dt.datetime.now(dt.timezone.utc) > dt.datetime.fromisoformat(quote['valid_until'].replace('Z', '+00:00')):
             raise ApprovalRequired('Approval expired')
-        if transcription_rate() != task['rate'] or task['model'] != task['rate']['model']:
+        if transcription_rate(ctx) != task['rate'] or task['model'] != task['rate']['model']:
             raise ApprovalRequired('Transcription rate/model changed')
         status = requests.get('https://api.openai.com/v1/models/' + task['model'], headers={'Authorization': 'Bearer ' + os.environ['OPENAI_API_KEY']}, timeout=25, allow_redirects=False)
         if status.status_code != 200 or status.json().get('id') != task['model']:

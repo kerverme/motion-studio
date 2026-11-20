@@ -160,8 +160,9 @@ def validate_document(raw,evidence):
     return raw
 
 
-def rate_config():
-    r=json.loads(os.environ.get('MOTION_REVERSE_OPENAI_RATE_JSON','null') or 'null')
+def rate_config(ctx=None):
+    from .reverse_rate import current_rate
+    r=current_rate(json.loads(os.environ.get('MOTION_REVERSE_OPENAI_RATE_JSON','null') or 'null'),ctx)
     if not r or dt.datetime.now(dt.timezone.utc)>=dt.datetime.fromisoformat(r['valid_until'].replace('Z','+00:00')):raise ApprovalRequired('OpenAI rate expired; configure Railway')
     return r
 
@@ -174,7 +175,7 @@ def _response_call(ctx,project,task,quote):
         if dt.datetime.now(dt.timezone.utc)>dt.datetime.fromisoformat(quote['valid_until'].replace('Z','+00:00')):raise ApprovalRequired('Approval expired')
         status=requests.get('https://api.openai.com/v1/models/'+task['model'],headers={'Authorization':'Bearer '+os.environ['OPENAI_API_KEY']},timeout=25,allow_redirects=False)
         if status.status_code!=200 or status.json().get('id')!=task['model']:raise ApprovalRequired('Configured OpenAI model is unavailable for this account')
-        if rate_config()!=task['rate'] or task['model']!=os.environ.get('MOTION_REVERSE_BRAIN_MODEL','gpt-6.2-sol'):raise ApprovalRequired('OpenAI rate/model changed')
+        if rate_config(ctx)!=task['rate'] or task['model']!=os.environ.get('MOTION_REVERSE_BRAIN_MODEL','gpt-6.2-sol'):raise ApprovalRequired('OpenAI rate/model changed')
     row=Ledger(ctx).reserve(key,'openai',task['model'],'planning',task['payload'],task['usd'])
     if row['status'] in ('complete','reconciled'):return row['result']
     headers={'Authorization':'Bearer '+os.environ['OPENAI_API_KEY'],'Content-Type':'application/json'};base='https://api.openai.com/v1/responses'

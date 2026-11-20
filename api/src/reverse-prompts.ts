@@ -1,5 +1,6 @@
 /** Focused Prompt A/B workflow. No provider request on read or remake. */
 import {z} from 'zod';
+import {configuredRate,currentReverseRate} from './reverse-rate.js';
 import {registerRangeVideo} from './prompt-video.js';
 import {sha} from './reverse-contract.js';
 import {randomUUID} from 'node:crypto';
@@ -29,14 +30,12 @@ export function promptText(doc:any,replacements:any={characters:{},locations:{}}
 }
 export function motionLock(doc:any){return sha({duration_s:doc.duration_s,characters:doc.characters.map((x:any)=>x.id),locations:doc.locations.map((x:any)=>x.id),shots:doc.shots,compatibility:doc.compatibility,...(doc.audio?{audio:doc.audio}:{})});}
 export function promptModel(){return process.env.MOTION_REVERSE_BRAIN_MODEL||'gpt-6.2-sol';}
-export function promptRate(){
- let r:any;try{r=JSON.parse(process.env.MOTION_REVERSE_OPENAI_RATE_JSON||'null');}catch{}
+export function promptRate(r:any=configuredRate(process.env.MOTION_REVERSE_OPENAI_RATE_JSON)){
  if(!r||r.model!==promptModel()||r.currency!=='USD'||![r.input_per_million,r.output_per_million].every(x=>typeof x==='number'&&Number.isFinite(x)&&x>0)||!r.source?.startsWith('https://developers.openai.com/')||!Number.isFinite(Date.parse(r.checked_at))||!Number.isFinite(Date.parse(r.valid_until))||Date.parse(r.valid_until)<=Date.now())throw Error('ราคา OpenAI ยังไม่พร้อมหรือหมดอายุ จัดการผ่าน Railway');
  return r;
 }
 export function transcriptionModel(){return process.env.MOTION_REVERSE_TRANSCRIBE_MODEL||'gpt-transcribe';}
-export function transcriptionRate(){
- let r:any;try{r=JSON.parse(process.env.MOTION_REVERSE_TRANSCRIBE_RATE_JSON||'null');}catch{}
+export function transcriptionRate(r:any=configuredRate(process.env.MOTION_REVERSE_TRANSCRIBE_RATE_JSON)){
  if(!r||r.model!==transcriptionModel()||r.model!=='gpt-transcribe'||r.currency!=='USD'||!(r.per_minute>0)||!Number.isFinite(r.per_minute)||!r.source?.startsWith('https://developers.openai.com/')||!Number.isFinite(Date.parse(r.checked_at))||!Number.isFinite(Date.parse(r.valid_until))||Date.parse(r.valid_until)<=Date.now())throw Error('ราคาถอดเสียงยังไม่พร้อมหรือหมดอายุ จัดการผ่าน Railway');
  return r;
 }
@@ -48,7 +47,7 @@ export async function verifyOpenAIModel(model=promptModel()){
 export function registerPromptRoutes(app:any,pool:any,ctx:any){
  const {P,guard,project,worker,queue,fail}=ctx;
  const validateReplacements=(old:any,r:any)=>{for(const group of ['characters','locations']){const known=new Set(old.document[group].map((x:any)=>x.id));if(Object.keys(r[group]).some(k=>!known.has(k)))throw Error('Unknown character/location slot');}if(motionLock(old.document)!==old.locks_hash)throw Error('Original motion contract mismatch');};
- const brainTask=(s:any,payload:any,w:any,role:string)=>{const rate=promptRate(),model=promptModel();if(w.prompt_model!==model||sha(w.prompt_rate)!==sha(rate))throw Error('OpenAI model/rate configuration differs between API and worker');
+ const brainTask=async(s:any,payload:any,w:any,role:string)=>{const model=promptModel(),rate=promptRate(await currentReverseRate(pool,process.env.MOTION_REVERSE_OPENAI_RATE_JSON,w.prompt_rate,model));if(w.prompt_model!==model)throw Error('OpenAI model/rate configuration differs between API and worker');
  const input_tokens=Buffer.byteLength(JSON.stringify(payload),'utf8')+(payload.evidence?.frames.length||0)*4096+12000;if(input_tokens>500000)throw Error('ช่วงนี้มีหลักฐานมากเกินขอบเขตราคา เลือกช่วงสั้นลง');const long=input_tokens>272000;
  const usd=Math.ceil((input_tokens*Math.max(rate.input_per_million,rate.cache_write_per_million||0)*(long?2:1)+payload.max_output_tokens*rate.output_per_million*(long?1.5:1))/1e6*1.1*1e4)/1e4;
  return {slot:role+':'+s.id,role,provider:'openai',endpoint:'https://api.openai.com/v1/responses',model,category:'planning',selection_id:s.id,payload,rate,usd,input_tokens_estimate:input_tokens};};
@@ -79,9 +78,9 @@ export function registerPromptRoutes(app:any,pool:any,ctx:any){
  if(input.refresh_model){if(!old||old.provenance?.model===promptModel())throw Error('เวอร์ชันนี้ใช้โมเดลปัจจุบันแล้ว');old=null;}
  if(old?.document.audio)throw Error('เวอร์ชันนี้มีผลตรวจเสียงแล้ว เลือกช่วงใหม่หากต้องการวิเคราะห์ใหม่');
  const tasks:any[]=[];const disclosures:string[]=[];
- if(!old){await ctx.checkOpenAI(promptModel());const payload={model:promptModel(),system:PROMPT_SYSTEM,evidence:s.evidence,max_output_tokens:16000,reasoning:'high',schema_version:'motion.prompt-pair.v1'};tasks.push(brainTask(s,payload,w,'prompt_extract'));disclosures.push(`${s.evidence.frames.length} timestamped frames from ${s.evidence.start_s}–${s.evidence.end_s}s are sent to Sol.`);}
+ if(!old){await ctx.checkOpenAI(promptModel());const payload={model:promptModel(),system:PROMPT_SYSTEM,evidence:s.evidence,max_output_tokens:16000,reasoning:'high',schema_version:'motion.prompt-pair.v1'};tasks.push(await brainTask(s,payload,w,'prompt_extract'));disclosures.push(`${s.evidence.frames.length} timestamped frames from ${s.evidence.start_s}–${s.evidence.end_s}s are sent to Sol.`);}
  if(s.audio.status==='available'){
-  const rate=transcriptionRate(),model=transcriptionModel();if(w.transcribe_model!==model||sha(w.transcribe_rate)!==sha(rate))throw Error('Transcription configuration differs between API and worker');await ctx.checkOpenAI(model);
+  const model=transcriptionModel(),rate=transcriptionRate(await currentReverseRate(pool,process.env.MOTION_REVERSE_TRANSCRIBE_RATE_JSON,w.transcribe_rate,model));if(w.transcribe_model!==model)throw Error('Transcription configuration differs between API and worker');await ctx.checkOpenAI(model);
   const usd=Math.ceil(Math.ceil(s.audio.duration_s)/60*rate.per_minute*1.1*1e4)/1e4;
   tasks.push({slot:'prompt_transcribe:'+s.id,role:'prompt_transcribe',provider:'openai',endpoint:'https://api.openai.com/v1/audio/transcriptions',model,category:'planning',selection_id:s.id,payload:{model,audio:s.audio,response_format:'json',schema_version:'motion.source-dialogue.v1',version_id:old?.id||null},rate,usd});
   disclosures.push(`Only the selected ${s.audio.duration_s}-second audio clip is sent to OpenAI transcription. The original language is retained. Word timings and speaker identity are not provided.`);
@@ -96,7 +95,7 @@ export function registerPromptRoutes(app:any,pool:any,ctx:any){
  if(!old.document.characters.some((x:any)=>x.id===input.character_id))throw Error('Unknown main character');
  await ctx.checkOpenAI(promptModel());
  const payload={model:promptModel(),system:CHARACTER_SYSTEM,context:{character_id:input.character_id,brief:input.brief,document:old.document,replacements:input.replacements},version_id:old.id,max_output_tokens:4000,reasoning:'medium',schema_version:'motion.character-design.v1'};
- const task=brainTask({id:old.selection_id},payload,w,'prompt_character');
+ const task=await brainTask({id:old.selection_id},payload,w,'prompt_character');
  return c.json(await saveQuote(p,w,[task],'prompt_character',`Sol receives the saved story text, the selected character ${input.character_id}, your brief and replacements to design appearance and clothing. No video, image or audio is sent for this step. Other characters, actions, timing and dialogue remain unchanged.`));
  }catch(e){return fail(c,e);}});
  app.post(P+'/projects/:id/prompt-remake',guard,async(c:any)=>{try{
