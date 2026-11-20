@@ -1,3 +1,4 @@
+import {FALLBACK_MODELS} from './openai-models.js';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync,readdirSync} from 'node:fs';
@@ -19,7 +20,7 @@ test('Lemo reuses the research planner, persists direction and stops before draw
     calls++;const body=JSON.parse(opts.body);assert.equal(body.model,'gpt-6.1-sol');assert.ok(!body.tools.some((t:any)=>t.name==='draw_scene'),'Lemo planning must not draw Classic artwork');assert.ok(body.tools.find((t:any)=>t.name==='plan_story').parameters.required.includes('creative'));const name=calls===1?'plan_story':'submit_episode';return new Response(JSON.stringify({id:'resp_mock_'+calls,status:'completed',usage:{input_tokens:100,output_tokens:100},output:[{type:'function_call',id:'fc_'+calls,call_id:'call_'+calls,name,arguments:JSON.stringify(calls===1?board:metadata)}]}),{headers:{'content-type':'application/json'}});}) as typeof fetch;
   globalThis.setTimeout=((cb:any,ms?:number,...args:any[])=>nativeTimeout(ms===8000?()=>{}:cb,ms===8000?0:ms,...args)) as typeof setTimeout;
   try{
-    const app=new Hono();registerStudio(app,{query,connect:async()=>({query,release(){}})} as any,{guard:async(_c,n)=>n(),createJob:async()=>{throw Error('Unapproved production');},validate:()=>[],researchFreshness:()=>{throw Error('A fictional story with no factual claims must not be sent to factual source freshness checks');},estimateCredits:()=>0});
+    const app=new Hono();registerStudio(app,{query,connect:async()=>({query,release(){}})} as any,{models:FALLBACK_MODELS,guard:async(_c,n)=>n(),createJob:async()=>{throw Error('Unapproved production');},validate:()=>[],researchFreshness:()=>{throw Error('A fictional story with no factual claims must not be sent to factual source freshness checks');},estimateCredits:()=>0});
     const res=await app.request('/app/api/studio/drafts',{method:'POST',headers:{'content-type':'application/json','idempotency-key':'lemo-planner-test-000001'},body:JSON.stringify({topic:story.topic,story_mode:'general',presenter_kind:'context',recurring_character:false,model:'gpt-6.1-sol',creative:{engine:'lemo'},auto_produce:true,characters:[]})});
     assert.equal(res.status,201,await res.clone().text());const {id}=await res.json() as any;
     let row:any;const deadline=Date.now()+10000;
