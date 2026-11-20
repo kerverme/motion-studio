@@ -13,8 +13,20 @@ const inputSchema=z.object({
   main_character_id:z.string().regex(/^C[1-9][0-9]?$/).optional()
 }).strict();
 
+async function rangeVersions(db:any,pid:string,selection:string){
+    const base=(await db.query(`SELECT * FROM reverse_prompt_versions WHERE selection_id=$1 AND project_id=$2
+      AND replacements->'characters'='{}'::jsonb AND replacements->'locations'='{}'::jsonb
+      ORDER BY (document ? 'audio') DESC,created_at DESC,id DESC LIMIT 1`,[selection,pid])).rows[0];
+    const remake=base?(await db.query(`SELECT * FROM reverse_prompt_versions WHERE selection_id=$1 AND project_id=$2 AND locks_hash=$3
+      AND (replacements->'characters'<>'{}'::jsonb OR replacements->'locations'<>'{}'::jsonb)
+      ORDER BY created_at DESC,id DESC LIMIT 1`,[selection,pid,base.locks_hash])).rows[0]:null;
+    return {base,remake};
+}
+
 async function rangeRequest(db:any,p:any,input:z.infer<typeof inputSchema>){
   const {g,v}=await sceneGraph(db,p,input.graph_id);
+  const versions=await rangeVersions(db,p.id,v.selection_id);
+  if((input.variant==='a'?versions.base:versions.remake)?.id!==input.version_id)throw Error('มี Prompt เวอร์ชันใหม่แล้ว กรุณาเปิดผลงานปัจจุบันและดูราคาอีกครั้ง');
   if(v.id!==input.version_id||(await latestScene(db,v,input.main_character_id))?.id!==g.id)
     throw Error('ผลตรวจฉากเปลี่ยนแล้ว กรุณาดูราคาใหม่');
   const source=p.analysis.source,endpoint=guidedModel.t2v;
@@ -56,12 +68,7 @@ export function registerRangeVideo(app:any,db:any,ctx:any){
       AND abs((s.request->>'end_s')::numeric-$3::numeric)<0.000001
       ORDER BY EXISTS (SELECT 1 FROM reverse_prompt_versions v WHERE v.selection_id=s.id) DESC,
       (s.request->>'sampling'='action_v2') DESC NULLS LAST,s.created_at DESC LIMIT 1`,[p.id,p.source_sha256,end])).rows[0]:null;
-    const base=row?(await db.query(`SELECT * FROM reverse_prompt_versions WHERE selection_id=$1 AND project_id=$2
-      AND replacements->'characters'='{}'::jsonb AND replacements->'locations'='{}'::jsonb
-      ORDER BY (document ? 'audio') DESC,created_at DESC,id DESC LIMIT 1`,[row.id,p.id])).rows[0]:null;
-    const remake=base?(await db.query(`SELECT * FROM reverse_prompt_versions WHERE selection_id=$1 AND project_id=$2 AND locks_hash=$3
-      AND (replacements->'characters'<>'{}'::jsonb OR replacements->'locations'<>'{}'::jsonb)
-      ORDER BY created_at DESC,id DESC LIMIT 1`,[row.id,p.id,base.locks_hash])).rows[0]:null;
+    const {base,remake}=row?await rangeVersions(db,p.id,row.id):{base:null,remake:null};
     const summary=(v:any)=>{
       if(!v)return null;
       const main=effectiveReplacements(v).main_character_id,location=v.document.shots[0]?.location_id;

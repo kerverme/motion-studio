@@ -10,6 +10,10 @@ test('director quote binds exact B, discloses image reasoning and submits nothin
 test('compiler preserves accident/collision causes and binds main-character choice',async()=>{g={id:sha(graph),project_id:p.id,version_id:v.id,source_sha256:p.source_sha256,locks_hash:v.locks_hash,input_hash:sceneInputHash(v,'C1'),graph,review:{},provenance:{main_character_id:'C1'}};await query('INSERT INTO reverse_scene_graphs(id,project_id,version_id,source_sha256,locks_hash,input_hash,graph,review,provenance) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',[g.id,p.id,v.id,p.source_sha256,v.locks_hash,g.input_hash,JSON.stringify(graph),'{}',JSON.stringify(g.provenance)]);const exp=await(await request('/projects/'+p.id+'/prompt-export?'+new URLSearchParams({version_id:v.id,endpoint_id:'minimax/h3-max/text-to-video',main_character_id:'C1'}))).json();assert(exp.copy_allowed);assert(exp.prompt_b.includes('E1 causes E2'));assert(exp.prompt_b.includes('accidental'));assert.equal(exp.scene_logic.graph_id,g.id);const other=await(await request('/projects/'+p.id+'/scene-logic?'+new URLSearchParams({version_id:v.id,main_character_id:'C2'}))).json();assert.equal(other.graphs.length,0);assert.throws(()=>applySceneExport(compileExport(doc,v.replacements,'minimax/h3-max/text-to-video',p.analysis.source,undefined,'C2'),v,g,p.analysis.source,undefined,'C2'));});
 test('range price, exact export, consent and Finish retrieval are independently bound',async()=>{
  const path='/projects/'+p.id;
+ const original=sha({original:v.id}),newer=sha({newer:v.id});
+ const addVersion=(id:string,replacements:any)=>query(`INSERT INTO reverse_prompt_versions(id,project_id,selection_id,document,replacements,prompt_a,prompt_b,locks_hash,provenance)
+   SELECT $1,project_id,selection_id,document,$2,prompt_a,prompt_b,locks_hash,provenance FROM reverse_prompt_versions WHERE id=$3`,[id,JSON.stringify(replacements),v.id]);
+ await addVersion(original,{characters:{},locations:{}});
  const wrong=await request(path+'/prompt-video-quote',{version_id:v.id,graph_id:'x'.repeat(64),variant:'b'});
  assert.equal(wrong.status,409);
  const status=await request(path+'/guided');assert.equal(status.status,200,await status.clone().text());assert.equal((await status.json()).end_s,2);
@@ -23,6 +27,9 @@ test('range price, exact export, consent and Finish retrieval are independently 
  assert.equal(task.estimate_usd,price.estimate_usd);assert.equal(task.payload.prompt_expansion_mode,'disabled');assert(!('image_url' in task.payload));
  assert.equal((await query("SELECT count(*)::int n FROM jobs WHERE package->'reverse'->>'action'='prompt_video'")).rows[0].n,0);
  const consent={quote_id:q.id,binding:q.binding,accepted_usd:q.total_usd,source_confirmed:true,rights_confirmed:true};
+ await addVersion(newer,v.replacements);
+ assert.equal((await request(path+'/approve',consent)).status,409);
+ await query('DELETE FROM reverse_prompt_versions WHERE id=$1',[newer]);
  const missing=await request(path+'/approve',{...consent,rights_confirmed:false});assert.equal(missing.status,409);
  await query("UPDATE reverse_scene_graphs SET review=$2 WHERE id=$1",[g.id,JSON.stringify({reason:'new review'})]);
  assert.equal((await request(path+'/approve',consent)).status,409);

@@ -432,3 +432,23 @@ def test_new_owner_review_between_tasks_prevents_next_audio_charge(tmp_path):
     with patch.object(reverse,'check_active'),patch.object(reverse,'produce_audio',side_effect=first_audio) as audio,patch.object(reverse,'fal_call') as fal:
         with pytest.raises(ApprovalRequired,match='binding changed'):reverse.run(ctx)
         assert audio.call_count==1 and not fal.called
+
+
+def test_guided_dispatch_rechecks_current_prompt_version_and_exact_payload(tmp_path):
+    ctx,project,quote,graph,version,_=generation_fixture(tmp_path)
+    version['selection_id']='selection'
+    payload={'prompt':'Locked original action','duration':2,'aspect_ratio':'16:9'}
+    quote.update(purpose='prompt_video',tasks=[{'role':'prompt_video','endpoint':'minimax/h3-max/text-to-video','payload':payload}])
+    quote['scene_logic'].update(variant='b',payload_hash=prompts.canonical_hash(payload))
+    original_read=ctx.db.one.side_effect
+    selected={'id':version['id']}
+    def read(sql,args):
+        if 'SELECT id,locks_hash FROM reverse_prompt_versions' in sql:return {'id':'original','locks_hash':graph['locks_hash']}
+        if 'SELECT id FROM reverse_prompt_versions' in sql:return selected
+        return original_read(sql,args)
+    ctx.db.one.side_effect=read
+    logic.generation_preflight(ctx,project,quote)
+    selected['id']='edited-in-another-tab'
+    with pytest.raises(ApprovalRequired,match='newer'):logic.generation_preflight(ctx,project,quote)
+    selected['id']=version['id'];payload['prompt']='changed'
+    with pytest.raises(ApprovalRequired,match='differs'):logic.generation_preflight(ctx,project,quote)

@@ -164,6 +164,16 @@ def generation_preflight(ctx,project,quote):
         raise ApprovalRequired('Scene generation binding changed; obtain a new quote')
     _graph_gate(graph)
     if quote['purpose']=='prompt_video':
+        source=ctx.db.one("""SELECT id,locks_hash FROM reverse_prompt_versions WHERE project_id=%s AND selection_id=%s
+            AND replacements->'characters'='{}'::jsonb AND replacements->'locations'='{}'::jsonb
+            ORDER BY (document ? 'audio') DESC,created_at DESC,id DESC LIMIT 1""",(project['id'],version['selection_id']))
+        active=source
+        if source and binding.get('variant')=='b':
+            active=ctx.db.one("""SELECT id FROM reverse_prompt_versions WHERE project_id=%s AND selection_id=%s AND locks_hash=%s
+                AND (replacements->'characters'<>'{}'::jsonb OR replacements->'locations'<>'{}'::jsonb)
+                ORDER BY created_at DESC,id DESC LIMIT 1""",(project['id'],version['selection_id'],source['locks_hash']))
+        if not active or active['id']!=version['id']:
+            raise ApprovalRequired('A newer saved prompt invalidated this range quote')
         tasks=quote.get('tasks') or []
         if len(tasks)!=1 or tasks[0].get('role')!='prompt_video' or tasks[0].get('endpoint')!='minimax/h3-max/text-to-video' or prompts.canonical_hash(tasks[0]['payload'])!=binding.get('payload_hash'):
             raise ApprovalRequired('Range prompt differs from approved review')
