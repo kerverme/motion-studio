@@ -54,7 +54,7 @@ def test_real_frame_selection_and_preparation_preserves_absolute_pts(tmp_path):
 
 def test_openai_submission_is_one_post_and_accepted_id_resume_is_get_only(tmp_path,monkeypatch):
     monkeypatch.setenv('OPENAI_API_KEY','fixture-key')
-    rate={'input_per_million':2,'output_per_million':10};task={'slot':'prompt','model':'gpt-6.1-sol','usd':1,'rate':rate,'payload':{'evidence':{'frames':[]},'max_output_tokens':16000,'reasoning':'high','system':'test'}}
+    rate={'input_per_million':2,'output_per_million':10};task={'slot':'prompt','model':'gpt-6.2-sol','usd':1,'rate':rate,'payload':{'evidence':{'frames':[]},'max_output_tokens':16000,'reasoning':'high','system':'test'}}
     quote={'id':'quote','binding':'binding','key_fingerprints':{'openai':p.fingerprint('OPENAI_API_KEY')},'valid_until':'2099-01-01T00:00:00+00:00'}
     row={'id':'call','provider_id':None,'status':'started'};ctx=SimpleNamespace(db=SimpleNamespace(one=Mock(return_value=None),q=Mock()),job={'id':'job'},path=lambda *parts:str(tmp_path.joinpath(*parts)))
     class Response:
@@ -62,7 +62,7 @@ def test_openai_submission_is_one_post_and_accepted_id_resume_is_get_only(tmp_pa
         def __init__(self,data):self.data=data
         def json(self):return self.data
         def raise_for_status(self):pass
-    with patch.object(p,'rate_config',return_value=rate),patch.object(p,'check_active'),patch.object(Ledger,'reserve',return_value=row),patch.object(requests,'get',return_value=Response({'id':'gpt-6.1-sol'})),patch.object(requests,'post',side_effect=requests.ReadTimeout('lost')) as post:
+    with patch.object(p,'rate_config',return_value=rate),patch.object(p,'check_active'),patch.object(Ledger,'reserve',return_value=row),patch.object(requests,'get',return_value=Response({'id':'gpt-6.2-sol'})),patch.object(requests,'post',side_effect=requests.ReadTimeout('lost')) as post:
         with pytest.raises(requests.ReadTimeout):p._response_call(ctx,{'id':'project'},task,quote)
         assert post.call_count==1;assert any('uncertain' in c.args[0] for c in ctx.db.q.call_args_list)
         assert all(c.args[1][2].obj['completed'] is None for c in ctx.db.q.call_args_list if 'jsonb_build_object' in c.args[0])

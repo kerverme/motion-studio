@@ -145,9 +145,10 @@ def canonical_source_action(document,event):
 
 def generation_preflight(ctx,project,quote):
     """Run before ANY task (including ElevenLabs), and again before Fal dispatch."""
-    if quote.get('purpose') not in ('generate','repair'):return
+    if quote.get('purpose') not in ('generate','repair','prompt_video'):return
     binding=quote.get('scene_logic')
     if not binding:
+        if quote.get('purpose')=='prompt_video':raise ApprovalRequired('Missing range scene review')
         if ctx.db.one('SELECT id FROM reverse_prompt_versions WHERE project_id=%s LIMIT 1',(project['id'],)):
             raise ApprovalRequired('Generation requires the checked scene graph and a fresh bound quote')
         return # Existing projects without the focused A/B workflow remain unchanged.
@@ -162,6 +163,10 @@ def generation_preflight(ctx,project,quote):
     if graph['source_sha256']!=project['source_sha256'] or expected!=graph['input_hash'] or prompts.motion_lock(version['document'])!=graph['locks_hash'] or any(binding.get(k)!=v for k,v in [('version_id',version['id']),('input_hash',expected),('locks_hash',graph['locks_hash']),('graph_hash',prompts.canonical_hash(graph['graph'])),('review_hash',prompts.canonical_hash(graph['review']))]):
         raise ApprovalRequired('Scene generation binding changed; obtain a new quote')
     _graph_gate(graph)
+    if quote['purpose']=='prompt_video':
+        tasks=quote.get('tasks') or []
+        if len(tasks)!=1 or tasks[0].get('role')!='prompt_video' or tasks[0].get('endpoint')!='minimax/h3-max/text-to-video' or prompts.canonical_hash(tasks[0]['payload'])!=binding.get('payload_hash'):
+            raise ApprovalRequired('Range prompt differs from approved review')
     for task in quote.get('tasks',[]):
         if task['role']=='video':
             shot_id=task.get('shot_id') or task.get('shot',{}).get('shot_id');wanted=binding.get('prompt_hashes',{}).get(shot_id)

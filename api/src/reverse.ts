@@ -11,6 +11,7 @@ import {falPrices} from './text-video.js';
 import {catalogModels} from './reverse-catalog.js';
 import {registerPromptRoutes,promptModel,transcriptionModel,verifyOpenAIModel} from './reverse-prompts.js';
 import {generationSceneBinding,assertSceneApproval} from './scene-routes.js';
+import {assertRangeApproval} from './prompt-video.js';
 import {registerSceneUpload} from './scene-upload.js';
 import {parseByteRange} from './byte-range.js';
 const P='/app/api/reverse',UUID=z.string().uuid();
@@ -32,7 +33,7 @@ export function registerReverse(app:Hono,pool:pg.Pool,options:Options){
     if(old){if(old.package_sha256!==sha(pkg))throw Error('Idempotency key belongs to different inputs');return old;}
     return (await cl.query("INSERT INTO jobs(kind,status,package,package_sha256,idempotency_key,budget_credits,max_attempts) VALUES('reverse','NEW',$1,$2,$3,0,3) RETURNING *",[JSON.stringify(pkg),sha(pkg),idempotency])).rows[0];
   }
-  app.get(P+'/config',guard,async c=>{let w=null;try{w=await worker();}catch{}const recipes=(await pool.query('SELECT id,name,version,validated FROM reverse_recipes ORDER BY name,version DESC')).rows;return c.json({schema:'motion.reverse.api.v1',primary_backend:'motion',worker:w,vision_models:VISION_MODELS,planner_models:PLANNER_MODELS,video_models:catalogModels(),recipes,storage_configured:!!process.env.MOTION_REVERSE_STORAGE_KEY,paid_dispatch:'quote_then_owner_approval',legacy_unchanged:true,prompt_brain:{provider:'openai',model:promptModel(),configured:!!w?.openai,input:'timestamped_frames_and_separate_audio_transcription',transcription_model:transcriptionModel(),max_range_s:15},key_management:'railway'});});
+  app.get(P+'/config',guard,async c=>{let w=null;try{w=await worker();}catch{}const recipes=(await pool.query('SELECT id,name,version,validated FROM reverse_recipes ORDER BY name,version DESC')).rows;return c.json({schema:'motion.reverse.api.v1',primary_backend:'motion',worker:w,vision_models:VISION_MODELS,planner_models:PLANNER_MODELS,video_models:catalogModels(),recipes,storage_configured:!!process.env.MOTION_REVERSE_STORAGE_KEY,paid_dispatch:'quote_then_owner_approval',legacy_unchanged:true,prompt_brain:{provider:'openai',model:promptModel(),reasoning:'high',configured:!!w?.openai,input:'timestamped_frames_and_separate_audio_transcription',transcription_model:transcriptionModel(),max_range_s:15},key_management:'railway'});});
   app.get(P+'/projects',guard,async c=>c.json({projects:(await pool.query('SELECT id,origin_key,title,status,source_sha256,current_revision,created_at,updated_at FROM reverse_projects ORDER BY created_at DESC LIMIT 100')).rows}));
   // Poll metadata only: a source analysis and its duplicate job result can be large.
   app.get(P+'/projects/:id/progress',guard,async c=>{try{
@@ -61,8 +62,10 @@ export function registerReverse(app:Hono,pool:pg.Pool,options:Options){
     await cl.query("INSERT INTO reverse_assets(id,project_id,role,storage_key,sha256,bytes,content_type,encryption) VALUES($1,$2,'source',$3,$4,$5,$6,$7)",[id,p.id,sealed.storage_key,sealed.sha256,sealed.bytes,p.source.content_type,JSON.stringify(sealed.encryption)]);
     await cl.query("UPDATE reverse_projects SET source_asset_id=$2,status='source_ready',updated_at=now() WHERE id=$1",[p.id,id]);await cl.query('COMMIT');return c.json({asset_id:id},201);
   }catch(e){await cl.query('ROLLBACK');return fail(c,e);}finally{cl.release();}});
-  app.get(P+'/assets/:id',guard,async c=>{try{
-    const id=UUID.parse(c.req.param('id')),a=(await pool.query('SELECT * FROM reverse_assets WHERE id=$1',[id])).rows[0];if(!a)throw Error('Asset not found');
+  const serveAsset=async(c:Context)=>{try{
+    const id=UUID.parse(c.req.param('id')),scope=c.req.param('projectId');
+    const a=(await pool.query('SELECT * FROM reverse_assets WHERE id=$1'+(scope?' AND project_id=$2':''),scope?[id,UUID.parse(scope)]:[id])).rows[0];
+    if(!a)return c.json({error:'Asset not found'},404);
     const size=Number(a.bytes);let range;
     try{range=parseByteRange(c.req.header('Range'),size);}catch{c.header('Content-Range',`bytes */${size}`);c.header('Accept-Ranges','bytes');return c.body(null,416);}
     // The storage reader authenticates the complete encrypted object before exposing any requested bytes.
@@ -70,7 +73,9 @@ export function registerReverse(app:Hono,pool:pg.Pool,options:Options){
     if(options.asset){const plain=await options.asset(a);if(plain.length!==size)throw Error('Asset length mismatch');body=new Uint8Array(range?plain.subarray(range.start,range.end+1):plain);}else body=await streamPrivateAsset(a,undefined,range);
     c.header('Content-Type',a.content_type);c.header('X-Content-Type-Options','nosniff');c.header('Content-Security-Policy',"default-src 'none'; sandbox");c.header('Accept-Ranges','bytes');c.header('Content-Length',String(range?range.end-range.start+1:size));
     if(range){c.header('Content-Range',`bytes ${range.start}-${range.end}/${size}`);return c.body(body,206);}return c.body(body);
-  }catch(e){return fail(c,e);}});
+  }catch(e){return fail(c,e);}};
+  app.get(P+'/assets/:id',guard,serveAsset);
+  app.get(P+'/projects/:projectId/assets/:id',guard,serveAsset);
   app.post(P+'/projects/:id/reference',guard,async c=>{try{const p=await project(c.req.param('id')),input=z.object({sha256:z.string().regex(/^[a-f0-9]{64}$/),bytes:z.number().int().min(1).max(8*1024*1024),content_type:z.enum(['image/png','image/jpeg','image/webp']),rights_confirmed:z.literal(true)}).strict().parse(JSON.parse(c.req.header('x-reference-metadata')||'{}'));
     if(!c.req.raw.body)throw Error('Missing reference image');const id=randomUUID(),sealed=await(options.upload||sealUpload)(Readable.fromWeb(c.req.raw.body as any),`reverse-private/${p.id}/${id}.sealed`,input.sha256,input.bytes);
     if(sealed.bytes!==input.bytes)throw Error('Reference size changed');await pool.query("INSERT INTO reverse_assets(id,project_id,role,storage_key,sha256,bytes,content_type,encryption,metadata) VALUES($1,$2,'owner_reference',$3,$4,$5,$6,$7,$8)",[id,p.id,sealed.storage_key,sealed.sha256,sealed.bytes,input.content_type,JSON.stringify(sealed.encryption),JSON.stringify({rights_confirmed:true})]);return c.json({asset_id:id},201);
@@ -159,7 +164,7 @@ export function registerReverse(app:Hono,pool:pg.Pool,options:Options){
   }catch(e){return fail(c,e);}});
   app.post(P+'/projects/:id/approve',guard,async c=>{const cl=await pool.connect();try{const input=Approval.parse(await c.req.json());await cl.query('BEGIN');const p=await project(c.req.param('id'),cl,true),row=(await cl.query('SELECT * FROM reverse_quotes WHERE id=$1 AND project_id=$2 FOR UPDATE',[input.quote_id,p.id])).rows[0];if(!row)throw Error('Quote not found');
     const old=(await cl.query('SELECT job_id FROM reverse_approvals WHERE quote_id=$1',[input.quote_id])).rows[0];if(old){await cl.query('COMMIT');return c.json(old);}
-    const q=row.quote;assertApproval(q,input,p);await assertSceneApproval(cl,p,q);const w=await worker(cl);if(sha(q.key_fingerprints)!==sha(w.key_fingerprints))throw Error('Provider key identity changed; quote again');
+    const q=row.quote;assertApproval(q,input,p);await assertSceneApproval(cl,p,q);await assertRangeApproval(cl,p,q);const w=await worker(cl);if(sha(q.key_fingerprints)!==sha(w.key_fingerprints))throw Error('Provider key identity changed; quote again');
     const job=await queue(cl,p,q.purpose,{quote:q},'reverse:approved:'+q.id);
     await cl.query('INSERT INTO reverse_approvals(project_id,quote_id,binding,accepted_usd,source_confirmed,rights_confirmed,approval_origin,job_id) VALUES($1,$2,$3,$4,true,true,$5,$6)',[p.id,q.id,q.binding,q.total_usd,input.approval_origin,job.id]);
     if(q.total_usd>0){const draft=(await cl.query("INSERT INTO drafts(topic,status,creative) VALUES($1,'submitted',$2) RETURNING id",[p.title,JSON.stringify({reverse_project:p.id,quote_id:q.id})])).rows[0];const allocations:Record<string,number>={};for(const t of q.tasks)allocations[t.category]=(allocations[t.category]||0)+t.usd;
@@ -169,6 +174,6 @@ export function registerReverse(app:Hono,pool:pg.Pool,options:Options){
   app.post(P+'/projects/:id/recipe',guard,async c=>{try{const p=await project(c.req.param('id')),input=z.object({name:z.string().regex(/^[a-z0-9_-]{1,80}$/),display_name:z.string().max(120).optional(),recipe:z.record(z.unknown()),reviewed:z.literal(true)}).strict().parse(await c.req.json());if(JSON.stringify(input).length>100000)throw Error('Recipe too large');const job=await queue(pool,p,'recipe',{recipe:input},'reverse:recipe:'+p.id+':'+sha(input));return c.json({job_id:job.id,paid_requests:0},202);}catch(e){return fail(c,e);}});
   app.post(P+'/projects/:id/assemble',guard,async c=>{try{const p=await project(c.req.param('id'));const input=z.object({revision:z.string().length(64),assets:z.record(z.string().uuid()),rights_confirmed:z.literal(true)}).strict().parse(await c.req.json());if(input.revision!==p.current_revision)throw Error('Plan changed before assembly');const job=await queue(pool,p,'assemble',input,'reverse:assemble:'+sha({project:p.id,...input}));return c.json({job_id:job.id,paid_requests:0},202);}catch(e){return fail(c,e);}});
   registerSceneUpload(app,pool,{P,guard,project,fail,upload:options.upload||sealUpload});
-  registerPromptRoutes(app,pool,{P,guard,project,worker,queue,fail,checkOpenAI:options.openaiModelCheck||verifyOpenAIModel});
+  registerPromptRoutes(app,pool,{P,guard,project,worker,queue,fail,prices,checkOpenAI:options.openaiModelCheck||verifyOpenAIModel});
   return {project,queue};
 }

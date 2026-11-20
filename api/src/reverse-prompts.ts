@@ -1,5 +1,6 @@
 /** Focused Prompt A/B workflow. No provider request on read or remake. */
 import {z} from 'zod';
+import {registerRangeVideo} from './prompt-video.js';
 import {sha} from './reverse-contract.js';
 import {randomUUID} from 'node:crypto';
 import {compileExport,exportModels} from './prompt-export.js';
@@ -27,7 +28,7 @@ export function promptText(doc:any,replacements:any={characters:{},locations:{}}
  lines.push(doc.audio?'Do not add, remove or reorder actions, shots or characters. Keep screen direction, poses, camera and timing. No added captions or logos. Use only the source dialogue above; do not invent additional speech.':'Do not add, remove or reorder actions, shots or characters. Keep screen direction, poses, camera and timing. No added captions, logos or dialogue.');return lines.join('\n');
 }
 export function motionLock(doc:any){return sha({duration_s:doc.duration_s,characters:doc.characters.map((x:any)=>x.id),locations:doc.locations.map((x:any)=>x.id),shots:doc.shots,compatibility:doc.compatibility,...(doc.audio?{audio:doc.audio}:{})});}
-export function promptModel(){return process.env.MOTION_REVERSE_BRAIN_MODEL||'gpt-6.1-sol';}
+export function promptModel(){return process.env.MOTION_REVERSE_BRAIN_MODEL||'gpt-6.2-sol';}
 export function promptRate(){
  let r:any;try{r=JSON.parse(process.env.MOTION_REVERSE_OPENAI_RATE_JSON||'null');}catch{}
  if(!r||r.model!==promptModel()||r.currency!=='USD'||![r.input_per_million,r.output_per_million].every(x=>typeof x==='number'&&Number.isFinite(x)&&x>0)||!r.source?.startsWith('https://developers.openai.com/')||!Number.isFinite(Date.parse(r.checked_at))||!Number.isFinite(Date.parse(r.valid_until))||Date.parse(r.valid_until)<=Date.now())throw Error('ราคา OpenAI ยังไม่พร้อมหรือหมดอายุ จัดการผ่าน Railway');
@@ -51,7 +52,7 @@ export function registerPromptRoutes(app:any,pool:any,ctx:any){
  const input_tokens=Buffer.byteLength(JSON.stringify(payload),'utf8')+(payload.evidence?.frames.length||0)*4096+12000;if(input_tokens>500000)throw Error('ช่วงนี้มีหลักฐานมากเกินขอบเขตราคา เลือกช่วงสั้นลง');const long=input_tokens>272000;
  const usd=Math.ceil((input_tokens*Math.max(rate.input_per_million,rate.cache_write_per_million||0)*(long?2:1)+payload.max_output_tokens*rate.output_per_million*(long?1.5:1))/1e6*1.1*1e4)/1e4;
  return {slot:role+':'+s.id,role,provider:'openai',endpoint:'https://api.openai.com/v1/responses',model,category:'planning',selection_id:s.id,payload,rate,usd,input_tokens_estimate:input_tokens};};
- const saveQuote=async(p:any,w:any,tasks:any[],purpose:string,source:string)=>{const q:any={id:randomUUID(),project_id:p.id,purpose,revision:p.current_revision||'none',source_sha256:p.source_sha256,analysis_sha256:sha(p.analysis),created_at:new Date().toISOString(),expires_at:new Date(Date.now()+900000).toISOString(),valid_until:new Date(Date.now()+8*3600000).toISOString(),tasks,total_usd:Math.round(tasks.reduce((n,t)=>n+t.usd,0)*1e4)/1e4,currency:'USD',key_fingerprints:w.key_fingerprints,blockers:[],disclosure:{source,pricing:'Conservative estimate; provider invoice can differ. Manual character/location edits are local and free. Transcription is billed by audio duration; character design is billed by tokens.',retention:'OpenAI retention applies. Background text responses are stored to follow the same request safely.'}};q.binding=sha(q);await pool.query('INSERT INTO reverse_quotes(id,project_id,purpose,revision,quote,binding,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7)',[q.id,p.id,q.purpose,q.revision,JSON.stringify(q),q.binding,q.expires_at]);return q;};
+ const saveQuote=async(p:any,w:any,tasks:any[],purpose:string,source:string,extra:Record<string,unknown>={})=>{const q:any={id:randomUUID(),project_id:p.id,purpose,revision:p.current_revision||'none',source_sha256:p.source_sha256,analysis_sha256:sha(p.analysis),created_at:new Date().toISOString(),expires_at:new Date(Date.now()+900000).toISOString(),valid_until:new Date(Date.now()+8*3600000).toISOString(),tasks,total_usd:Math.round(tasks.reduce((n,t)=>n+t.usd,0)*1e4)/1e4,currency:'USD',key_fingerprints:w.key_fingerprints,blockers:[],disclosure:{source,pricing:'Conservative estimate; provider invoice can differ. Manual character/location edits are local and free. Transcription is billed by audio duration; character design is billed by tokens.',retention:'OpenAI retention applies. Background text responses are stored to follow the same request safely.'},...extra};q.binding=sha(q);await pool.query('INSERT INTO reverse_quotes(id,project_id,purpose,revision,quote,binding,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7)',[q.id,p.id,q.purpose,q.revision,JSON.stringify(q),q.binding,q.expires_at]);return q;};
  app.post(P+'/projects/:id/prompt-range',guard,async(c:any)=>{const cl=await pool.connect();try{await cl.query('BEGIN');const p=await project(c.req.param('id'),cl,true),input=RangeInput.parse(await c.req.json());if(!p.analysis||input.end_s>p.analysis.source.end_s+.001)throw Error('ช่วงเวลาอยู่นอกคลิปที่วัดแล้ว');
  if(!(await worker(cl)).transcribe_model)throw Error('ตัวประมวลผลเสียงยังไม่พร้อม กรุณารออัปเดตสักครู่');
  if(input.sampling&&!(await worker(cl)).prompt_action_sampling)throw Error('รอตัวประมวลผลอัปเดตการอ่านฉากแอ็กชันสักครู่');
@@ -61,18 +62,22 @@ export function registerPromptRoutes(app:any,pool:any,ctx:any){
  }catch(e){await cl.query('ROLLBACK');return fail(c,e);}finally{cl.release();}});
  app.get(P+'/projects/:id/prompts',guard,async(c:any)=>{try{const p=await project(c.req.param('id'));return c.json({selections:(await pool.query('SELECT * FROM reverse_prompt_selections WHERE project_id=$1 ORDER BY created_at DESC',[p.id])).rows,versions:(await pool.query('SELECT * FROM reverse_prompt_versions WHERE project_id=$1 ORDER BY created_at DESC LIMIT 100',[p.id])).rows,export_models:exportModels(),export_default:'minimax/h3-max/text-to-video'});}catch(e){return fail(c,e);}});
  app.get(P+'/projects/:id/prompt-export',guard,async(c:any)=>{try{
- const p=await project(c.req.param('id')),input=z.object({version_id:z.string().length(64),endpoint_id:z.string().min(1).max(200),shot_id:z.string().max(100).optional(),main_character_id:z.string().regex(/^C[1-9][0-9]?$/).optional()}).strict().parse(c.req.query());
+ const p=await project(c.req.param('id')),input=z.object({version_id:z.string().length(64),endpoint_id:z.string().min(1).max(200),guided_variant:z.enum(['a','b']).optional(),shot_id:z.string().max(100).optional(),main_character_id:z.string().regex(/^C[1-9][0-9]?$/).optional()}).strict().parse(c.req.query());
  const v=(await pool.query('SELECT * FROM reverse_prompt_versions WHERE id=$1 AND project_id=$2',[input.version_id,p.id])).rows[0];if(!v)throw Error('Prompt version not found');
  if(motionLock(v.document)!==v.locks_hash)throw Error('Original motion contract mismatch');
- const graph=await latestScene(pool,v,input.main_character_id);const exported=applySceneExport(compileExport(v.document,v.replacements,input.endpoint_id,p.analysis?.source,input.shot_id,input.main_character_id),v,graph,p.analysis?.source,input.shot_id,input.main_character_id);return c.json({...exported,version_id:v.id,locks_hash:v.locks_hash});
+ const graph=await latestScene(pool,v,input.main_character_id);const exported=applySceneExport(compileExport(v.document,v.replacements,input.endpoint_id,p.analysis?.source,input.shot_id,input.main_character_id),v,graph,p.analysis?.source,input.shot_id,input.main_character_id);
+ if(input.guided_variant==='b'&&graph?.review?.overrides?.length){exported.blockers.push('เวอร์ชันนี้มีการแก้เหตุการณ์ เปิดเครื่องมือขั้นสูงเพื่อตรวจเวอร์ชันก่อนผลิต');exported.copy_allowed=false;}
+ return c.json({...exported,version_id:v.id,locks_hash:v.locks_hash});
  }catch(e){return fail(c,e);}});
  app.post(P+'/projects/:id/prompt-quote',guard,async(c:any)=>{try{
- const p=await project(c.req.param('id')),input=z.object({selection_id:z.string().length(64),version_id:z.string().length(64).optional()}).strict().parse(await c.req.json()),w=await worker();
+ const p=await project(c.req.param('id')),input=z.object({selection_id:z.string().length(64),version_id:z.string().length(64).optional(),refresh_model:z.literal(true).optional()}).strict().parse(await c.req.json()),w=await worker();
  if(!w.openai||!w.key_fingerprints?.openai)throw Error('OpenAI worker ยังไม่พร้อม ตรวจตัวแปร Railway');
  const s=(await pool.query('SELECT * FROM reverse_prompt_selections WHERE id=$1 AND project_id=$2',[input.selection_id,p.id])).rows[0];if(!s?.evidence||!s.audio)throw Error('กดเตรียมภาพและเสียงของช่วงนี้ก่อน');
  if(s.source_sha256!==p.source_sha256)throw Error('Source changed');
- const old=input.version_id?(await pool.query('SELECT * FROM reverse_prompt_versions WHERE id=$1 AND project_id=$2 AND selection_id=$3',[input.version_id,p.id,s.id])).rows[0]:(await pool.query('SELECT * FROM reverse_prompt_versions WHERE project_id=$1 AND selection_id=$2 ORDER BY created_at DESC LIMIT 1',[p.id,s.id])).rows[0];
- if(input.version_id&&!old)throw Error('Prompt version not found');if(old?.document.audio)throw Error('เวอร์ชันนี้มีผลตรวจเสียงแล้ว เลือกช่วงใหม่หากต้องการวิเคราะห์ใหม่');
+ let old=input.version_id?(await pool.query('SELECT * FROM reverse_prompt_versions WHERE id=$1 AND project_id=$2 AND selection_id=$3',[input.version_id,p.id,s.id])).rows[0]:(await pool.query('SELECT * FROM reverse_prompt_versions WHERE project_id=$1 AND selection_id=$2 ORDER BY created_at DESC LIMIT 1',[p.id,s.id])).rows[0];
+ if(input.version_id&&!old)throw Error('Prompt version not found');
+ if(input.refresh_model){if(!old||old.provenance?.model===promptModel())throw Error('เวอร์ชันนี้ใช้โมเดลปัจจุบันแล้ว');old=null;}
+ if(old?.document.audio)throw Error('เวอร์ชันนี้มีผลตรวจเสียงแล้ว เลือกช่วงใหม่หากต้องการวิเคราะห์ใหม่');
  const tasks:any[]=[];const disclosures:string[]=[];
  if(!old){await ctx.checkOpenAI(promptModel());const payload={model:promptModel(),system:PROMPT_SYSTEM,evidence:s.evidence,max_output_tokens:16000,reasoning:'high',schema_version:'motion.prompt-pair.v1'};tasks.push(brainTask(s,payload,w,'prompt_extract'));disclosures.push(`${s.evidence.frames.length} timestamped frames from ${s.evidence.start_s}–${s.evidence.end_s}s are sent to Sol.`);}
  if(s.audio.status==='available'){
@@ -102,5 +107,6 @@ export function registerPromptRoutes(app:any,pool:any,ctx:any){
  await pool.query('INSERT INTO reverse_prompt_versions(id,project_id,selection_id,parent_id,document,replacements,prompt_a,prompt_b,locks_hash,provenance) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT DO NOTHING',[id,p.id,old.selection_id,old.id,JSON.stringify(old.document),JSON.stringify(input.replacements),old.prompt_a,b,lock,JSON.stringify({...old.provenance,remake:'entity_slots_only',paid_requests:0})]);
  return c.json((await pool.query('SELECT * FROM reverse_prompt_versions WHERE id=$1',[id])).rows[0]);
  }catch(e){return fail(c,e);}});
+ registerRangeVideo(app,pool,{...ctx,saveQuote});
  registerSceneRoutes(app,pool,{...ctx,brainTask,saveQuote,validateReplacements});
 }

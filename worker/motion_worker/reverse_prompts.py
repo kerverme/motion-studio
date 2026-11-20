@@ -174,7 +174,7 @@ def _response_call(ctx,project,task,quote):
         if dt.datetime.now(dt.timezone.utc)>dt.datetime.fromisoformat(quote['valid_until'].replace('Z','+00:00')):raise ApprovalRequired('Approval expired')
         status=requests.get('https://api.openai.com/v1/models/'+task['model'],headers={'Authorization':'Bearer '+os.environ['OPENAI_API_KEY']},timeout=25,allow_redirects=False)
         if status.status_code!=200 or status.json().get('id')!=task['model']:raise ApprovalRequired('Configured OpenAI model is unavailable for this account')
-        if rate_config()!=task['rate'] or task['model']!=os.environ.get('MOTION_REVERSE_BRAIN_MODEL','gpt-6.1-sol'):raise ApprovalRequired('OpenAI rate/model changed')
+        if rate_config()!=task['rate'] or task['model']!=os.environ.get('MOTION_REVERSE_BRAIN_MODEL','gpt-6.2-sol'):raise ApprovalRequired('OpenAI rate/model changed')
     row=Ledger(ctx).reserve(key,'openai',task['model'],'planning',task['payload'],task['usd'])
     if row['status'] in ('complete','reconciled'):return row['result']
     headers={'Authorization':'Bearer '+os.environ['OPENAI_API_KEY'],'Content-Type':'application/json'};base='https://api.openai.com/v1/responses'

@@ -224,6 +224,32 @@ def recipe(ctx,project,spec):
     return {'recipe_id':str(row['id']) if row else None,'validation':result['validation'],'production_plan':plan['production_plan'],'paid_requests':0}
 
 
+def finish_range(ctx,project,task,quote):
+    from .reverse_progress import report
+    prior=ctx.db.one("SELECT id FROM reverse_assets WHERE project_id=%s AND role='finished_video' AND metadata->>'quote_id'=%s",(project['id'],quote['id']))
+    if prior:return {'asset_id':str(prior['id']),'cached':True}
+    report(ctx,'prompt_video','กำลังผลิตวิดีโอกับ fal')
+    paid=fal_call(ctx,project,task,quote)
+    url=(paid['response'].get('video') or {}).get('url')
+    if not url:raise ValueError('fal did not return a video file; paid result retained')
+    report(ctx,'verify_video','กำลังตรวจไฟล์ก่อนเก็บใน Finish')
+    raw=ctx.path('generated',quote['id']+'.mp4')
+    download_video(url,raw)
+    timing=frame_timing(raw)
+    fps=timing['fps_num']/timing['fps_den']
+    requested=task['payload']['duration']
+    width,height=map(int,task['payload']['aspect_ratio'].split(':'))
+    if abs(timing['width']/timing['height']-width/height)/(width/height)>.03 or not requested-1/fps-.06<=timing['end_s']<=requested+1.06:
+        raise ValueError('วิดีโอที่ fal ส่งกลับมีสัดส่วนหรือเวลาไม่ตรงกับใบราคา ผลเดิมถูกเก็บไว้แล้ว')
+    qa=technical_qa(raw,round(timing['end_s']*fps)/fps,timing['width'],timing['height'],fps)
+    if not qa['ok']:raise ValueError('ไฟล์วิดีโอไม่ผ่านการตรวจทางเทคนิค ผล fal ถูกเก็บไว้แล้ว')
+    info={'quote_id':quote['id'],'version_id':quote['range_input']['version_id'],'variant':quote['range_input']['variant'],
+          'model':task['endpoint'],'range':task['range'],'duration_s':timing['end_s'],'graph_id':quote['scene_logic']['graph_id'],
+          'provider_id':paid['provider_id'],'qa':qa,'generated':True}
+    asset=save_private(ctx,project['id'],raw,'finished_video',content_type='video/mp4',metadata=info)
+    return {'asset_id':str(asset['id']),'duration_s':timing['end_s']}
+
+
 def generate(ctx,project,task,quote):
     reverse_scene_logic.generation_preflight(ctx,project,quote)
     shot=task['shot'];measured=task['measured'];duration=task.get('delivery',{}).get('duration_s',measured['duration_s'])
@@ -339,7 +365,7 @@ def run(ctx):
                 # fallback and no source-frame substitution.
                 raise ApprovalRequired('Select the generated predecessor last frame as an explicit first-frame reference and quote again')
             from .reverse_prompt_audio import transcribe
-            fn={'vision':vision,'planner':planner,'video':generate,'audio':produce_audio,'image':image_reference,'visual_qa':visual_qa,'prompt_extract':reverse_prompts.extract,'prompt_transcribe':transcribe,'prompt_character':reverse_prompts.character,'scene_logic':reverse_scene_logic.direct,'video_inspection':reverse_scene_logic.inspect}[task['role']]
+            fn={'vision':vision,'planner':planner,'video':generate,'prompt_video':finish_range,'audio':produce_audio,'image':image_reference,'visual_qa':visual_qa,'prompt_extract':reverse_prompts.extract,'prompt_transcribe':transcribe,'prompt_character':reverse_prompts.character,'scene_logic':reverse_scene_logic.direct,'video_inspection':reverse_scene_logic.inspect}[task['role']]
             reverse_scene_logic.generation_preflight(ctx,project,quote)
             value=fn(ctx,project,task,quote)
             ctx.db.q("UPDATE reverse_steps SET status='complete',result=%s,updated_at=now() WHERE job_id=%s AND slot=%s",(Jsonb(value),ctx.job['id'],slot))
@@ -354,7 +380,7 @@ def capability_loop(stop):
     from .db import DB
     while not stop():
         try:
-            db=DB();data={'runtime':runtime_status(),'openai':bool(os.environ.get('OPENAI_API_KEY')),'prompt_action_sampling':'action_v2','scene_logic_version':'motion.scene-logic.v1','prompt_model':os.environ.get('MOTION_REVERSE_BRAIN_MODEL','gpt-6.1-sol'),'prompt_rate':json.loads(os.environ.get('MOTION_REVERSE_OPENAI_RATE_JSON','null')),'transcribe_model':os.environ.get('MOTION_REVERSE_TRANSCRIBE_MODEL','gpt-transcribe'),'transcribe_rate':json.loads(os.environ.get('MOTION_REVERSE_TRANSCRIBE_RATE_JSON','null')),'fal':bool(os.environ.get('FAL_KEY')),'eleven':bool(config.ELEVENLABS_API_KEY),
+            db=DB();data={'runtime':runtime_status(),'openai':bool(os.environ.get('OPENAI_API_KEY')),'guided_video':True,'prompt_action_sampling':'action_v2','scene_logic_version':'motion.scene-logic.v1','prompt_model':os.environ.get('MOTION_REVERSE_BRAIN_MODEL','gpt-6.2-sol'),'prompt_rate':json.loads(os.environ.get('MOTION_REVERSE_OPENAI_RATE_JSON','null')),'transcribe_model':os.environ.get('MOTION_REVERSE_TRANSCRIBE_MODEL','gpt-transcribe'),'transcribe_rate':json.loads(os.environ.get('MOTION_REVERSE_TRANSCRIBE_RATE_JSON','null')),'fal':bool(os.environ.get('FAL_KEY')),'eleven':bool(config.ELEVENLABS_API_KEY),
                 'voice_id':config.DEFAULT_VOICE_ID,'tts_model':os.environ.get('MOTION_DEFAULT_TTS_MODEL','eleven_v4'),
                 'sfx_model':os.environ.get('MOTION_DEFAULT_SFX_MODEL','eleven_text_to_sound_v3'),
                 'key_fingerprints':{'openai':fingerprint('OPENAI_API_KEY'),'fal':fingerprint('FAL_KEY'),'eleven':fingerprint('ELEVENLABS_API_KEY')},'private_storage':bool(os.environ.get('MOTION_REVERSE_STORAGE_KEY'))}

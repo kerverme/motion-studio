@@ -186,3 +186,31 @@ def test_actual_rea_videomd_renders_the_reverse_prompt_in_a_new_derived_package(
     text=(derived/'video/shots/01.md').read_text()
     assert 'VISIBLE_SCHEMA_FIXTURE_ONLY' in text and 'PROMPT_MAPPING_FIXTURE_ONLY' in text
     assert reverse_media.file_sha(original/'VIDEO.md')==original_hash
+
+def test_guided_finish_keeps_only_decodable_generated_mp4_and_reuses_saved_output(tmp_path,monkeypatch):
+    import shutil
+    monkeypatch.setenv('MOTION_REVERSE_STORAGE_KEY','7a'*32)
+    video=tmp_path/'fal-fixture.mp4'
+    subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i','testsrc2=size=320x180:rate=24:duration=1','-c:v','libx264',str(video)],check=True)
+    rows=[]
+    class DB:
+        def one(self,sql,args):
+            if sql.startswith('SELECT'):return rows[-1] if rows else None
+            keys=['id','project_id','shot_id','role','storage_key','sha256','bytes','content_type','encryption','metadata']
+            value={k:(v.obj if hasattr(v,'obj') else v) for k,v in zip(keys,args)}
+            rows.append(value);return value
+        def q(self,*args):pass
+    ctx=SimpleNamespace(db=DB(),store=LocalStorage(str(tmp_path/'bucket')),path=lambda *p:tmp_path/p[-1],job={'id':'test'})
+    task={'range':{'start_s':0,'end_s':1},'endpoint':'minimax/h3-max/text-to-video','payload':{'duration':1,'aspect_ratio':'16:9'}}
+    quote={'id':'q','range_input':{'version_id':'v','variant':'b'},'scene_logic':{'graph_id':'graph'}}
+    with patch.object(reverse,'fal_call',return_value={'provider_id':'fal-test','response':{'video':{'url':'https://media.test/file'}}}) as paid,patch.object(reverse,'download_video',side_effect=lambda url,path:shutil.copyfile(video,path)),patch('motion_worker.r2.enabled',return_value=False):
+        wrong={**task,'payload':{'duration':1,'aspect_ratio':'9:16'}}
+        with pytest.raises(ValueError,match='สัดส่วน'):reverse.finish_range(ctx,{'id':'p'},wrong,quote)
+        assert rows==[]
+        result=reverse.finish_range(ctx,{'id':'p'},task,quote)
+        assert len(rows)==1 and rows[0]['role']=='finished_video' and rows[0]['metadata']['qa']['ok']
+        assert rows[0]['metadata']['variant']=='b' and rows[0]['metadata']['duration_s']==pytest.approx(1)
+        restored=reverse_media.fetch_private(ctx,rows[0],tmp_path/'reopened.mp4')
+        assert restored.read_bytes()==video.read_bytes()
+        assert reverse.finish_range(ctx,{'id':'p'},task,quote)=={'asset_id':result['asset_id'],'cached':True}
+        assert paid.call_count==2
