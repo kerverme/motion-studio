@@ -423,10 +423,64 @@ async function load(){
 }
 
 /* ---------- clips ---------- */
-const GENERATION_MODEL_LABELS = {'gpt-6.1-sol':'GPT-6.1 Sol','gpt-6.1-terra':'GPT-6.1 Terra','gpt-6-astra':'GPT-6 Astra','gpt-6-sol':'GPT-6 Sol','gpt-6-luna':'GPT-6 Luna','claude-opus-5-5':'Claude Opus 5.5','claude-sonnet-5-5':'Claude Sonnet 5.5'};
+function generationModelLabel(model){
+  const gpt=/^gpt-(\d+(?:\.\d+)*)(?:-([a-z]+))?$/.exec(model);
+  if(gpt)return 'GPT-'+gpt[1]+(gpt[2]?' '+gpt[2][0].toUpperCase()+gpt[2].slice(1):'');
+  const claude={'claude-opus-5-5':'Claude Opus 5.5','claude-sonnet-5-5':'Claude Sonnet 5.5'};
+  return Object.hasOwn(claude,model)?claude[model]:model;
+}
+let refreshVisibleBrains;
+setInterval(()=>refreshVisibleBrains?.(),60_000);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)refreshVisibleBrains?.();});
+function brainControls(models,defaultModel,levels,defaultEffort,catalog,modelLabel,effortLabel){
+  let saved={};
+  try{saved=JSON.parse(localStorage.getItem('ms.ai')||'{}')||{};}catch{}
+  // Older clients saved both fields when either changed, including the old default.
+  const legacyDefault=saved.version!==2 && saved.model==='gpt-6.1-sol';
+  let selected=(!legacyDefault && saved.model) || defaultModel;
+  const fieldStyle='width:auto;max-width:100%;padding:8px 10px';
+  const modelSel=h('select',{class:'field','aria-label':modelLabel,required:true,style:fieldStyle});
+  const effSel=levels.length?h('select',{class:'field','aria-label':effortLabel,style:fieldStyle},levels.map(l=>h('option',{value:l},'reasoning '+l))):null;
+  if(effSel)effSel.value=levels.includes(saved.reasoning)?saved.reasoning:defaultEffort;
+  const notice=h('small',{class:'sub',role:'status',hidden:true});
+  let nextCheck;
+  function showOptions(list,metadata){
+    const available=list.some(m=>m.id===selected);
+    put(modelSel,available?null:h('option',{value:'',disabled:true},'เลือกโมเดลที่บัญชีใช้ได้'),list.map(m=>h('option',{value:m.id},m.label)));
+    modelSel.value=available?selected:'';
+    let message='';
+    if(!list.length)message='บัญชีนี้ยังไม่มีโมเดลที่รองรับการเขียนคลิป';
+    else if(!available)message='โมเดลที่เลือกยังไม่เปิดให้บัญชีนี้ กรุณาเลือกจากรายชื่อล่าสุด';
+    else if(metadata?.source==='cached')message='เชื่อมรายการโมเดลไม่ได้ชั่วคราว กำลังใช้รายชื่อล่าสุดที่ตรวจได้';
+    else if(metadata?.source==='fallback')message='เชื่อมรายการโมเดลไม่ได้ชั่วคราว กำลังใช้รายชื่อเริ่มต้น';
+    notice.textContent=message;notice.hidden=!message;
+    nextCheck=metadata?.source==='openai'?(Date.parse(metadata.checked_at)||Date.now())+15*60_000:Date.now()+60_000;
+  }
+  showOptions(models,catalog);
+  function remember(){
+    const choice={version:2};
+    selected=modelSel.value||selected;
+    if(selected!==defaultModel)choice.model=selected;
+    if(effSel && effSel.value!==defaultEffort)choice.reasoning=effSel.value;
+    try{localStorage.setItem('ms.ai',JSON.stringify(choice));}catch{}
+  }
+  modelSel.addEventListener('change',remember);
+  if(effSel)effSel.addEventListener('change',remember);
+  async function refresh(){
+    if(!catalog || !modelSel.isConnected || document.hidden || Date.now()<nextCheck)return;
+    nextCheck=Infinity;
+    try{
+      const update=await api('/app/api/studio/openai-models');
+      if(modelSel.isConnected)showOptions(update.models,update.model_catalog);
+    }catch{nextCheck=Date.now()+60_000;}
+  }
+  refreshVisibleBrains=refresh;
+  modelSel.addEventListener('focus',refresh);
+  return {modelSel,effSel,notice};
+}
 function clipDisplayTitle(ep){
   const model=typeof ep.generation_model==='string'&&ep.generation_model?ep.generation_model:null;
-  const label=model?(Object.hasOwn(GENERATION_MODEL_LABELS,model)?GENERATION_MODEL_LABELS[model]:model):'ไม่ทราบโมเดล';
+  const label=model?generationModelLabel(model):'ไม่ทราบโมเดล';
   const videoLabel=ep.video_model?({h3_max:'H3 Max',grok_15:'Grok Imagine Video 1.5'}[ep.video_model]||ep.video_model):null;
   const tag='['+label+(videoLabel?' · '+videoLabel:'')+']',title=String(ep.title||'');
   // Display only: keep canonical titles and publishing captions unchanged.
@@ -836,7 +890,7 @@ function studio(st, drafts){
   const narrationHint=h('div',{class:'hint'});
   const narrationChange=()=>{narrationCustomLabel.hidden=narrationSel.value!=='custom';narrationHint.textContent=(narrationChoices.find(x=>x.id===narrationSel.value)||{}).description||'';try{sessionStorage.setItem('ms.narration_style',narrationSel.value);sessionStorage.setItem('ms.narration_custom',narrationCustom.value);}catch{}};
   narrationSel.addEventListener('change',narrationChange);narrationCustom.addEventListener('input',narrationChange);narrationChange();
-  const inputProblem=()=>modeSel.value==='general'&&sourceText.value.length>sourceLimit?'เนื้อหาเกิน '+sourceLimit.toLocaleString('th-TH')+' ตัวอักษร กรุณาลดหรือแบ่งเป็นหลายเรื่องก่อนส่ง':narrationSel.value==='custom'&&!narrationCustom.value.trim()?'กรุณาบอกสไตล์การเล่าที่ต้องการในช่องกำหนดเอง':narrationSel.value==='custom'&&narrationCustom.value.trim().length>1000?'สไตล์ที่กำหนดเองเกิน 1,000 ตัวอักษร กรุณาย่อก่อนส่ง':'';
+  const inputProblem=()=>!modelSel.value?'เลือกสมองที่ใช้ได้ก่อน':modeSel.value==='general'&&sourceText.value.length>sourceLimit?'เนื้อหาเกิน '+sourceLimit.toLocaleString('th-TH')+' ตัวอักษร กรุณาลดหรือแบ่งเป็นหลายเรื่องก่อนส่ง':narrationSel.value==='custom'&&!narrationCustom.value.trim()?'กรุณาบอกสไตล์การเล่าที่ต้องการในช่องกำหนดเอง':narrationSel.value==='custom'&&narrationCustom.value.trim().length>1000?'สไตล์ที่กำหนดเองเกิน 1,000 ตัวอักษร กรุณาย่อก่อนส่ง':'';
   const auto = h('input',{type:'checkbox',disabled:true});
   const engineSel=h('select',{class:'field','aria-label':'Rendering engine'},h('option',{value:'classic'},'Classic Motion Studio'),h('option',{value:'lemo',disabled:!st.creative?.enabled&&!st.creative?.development},'Lemo Creative Motion'+(!st.creative?.enabled?' · ทดลองพัฒนา':'')));
   const creativeMode=h('select',{class:'field','aria-label':'การเลือกสไตล์'},h('option',{value:'auto'},'Auto — AI Director'),h('option',{value:'manual'},'Manual — เลือกเอง'));
@@ -850,14 +904,7 @@ function studio(st, drafts){
   engineSel.addEventListener('change',()=>{const lemo=engineSel.value==='lemo';lemoOptions.hidden=!lemo;lemoBudget.hidden=!lemo;productionNotice.textContent=lemo?'วางแผนเสียงให้ทุกฉาก · ตรวจราคาและอนุมัติก่อนผลิต':'Classic จัดรายการผลิตให้แล้ว ตรวจสรุปและกดยืนยันครั้งเดียวเมื่อบทพร้อม';});
   const creativePanel=h('div',{class:'chars'},h('h3',{},'เครื่องมือสร้างภาพ'),engineSel,lemoOptions,h('div',{class:'row'},h('label',{},'เสียงบรรยาย',voiceModel),lemoBudget),productionNotice);
   const creativeInput=()=>({engine:engineSel.value,tts_model:voiceModel.value,sfx_model:'eleven_text_to_sound_v3',...(engineSel.value==='lemo'?{mode:creativeMode.value,...(creativeMode.value==='manual'?{manual_style:creativeStyle.value}:{}),max_usd:Number(creativeBudget.value)}:{mode:'auto'})});
-  let saved={}; try{ saved=JSON.parse(localStorage.getItem('ms.ai')||'{}'); }catch{}
-  const modelSel = h('select',{class:'field','aria-label':'โมเดล',style:'width:auto;padding:8px 10px'}, (st.models||[]).map(m=>h('option',{value:m.id},m.label)));
-  modelSel.value = (st.models||[]).some(m=>m.id===saved.model) ? saved.model : st.model;
-  const effSel = (st.reasoning_levels||[]).length ? h('select',{class:'field','aria-label':'Reasoning',style:'width:auto;padding:8px 10px'},
-    st.reasoning_levels.map(l=>h('option',{value:l},'reasoning '+l))) : null;
-  if (effSel) effSel.value = st.reasoning_levels.includes(saved.reasoning) ? saved.reasoning : st.reasoning;
-  const remember = ()=>{ try{ localStorage.setItem('ms.ai', JSON.stringify({model:modelSel.value, reasoning:effSel?effSel.value:null})); }catch{} };
-  modelSel.addEventListener('change',remember); if (effSel) effSel.addEventListener('change',remember);
+  const {modelSel,effSel,notice:brainNotice}=brainControls(st.models||[],st.model,st.reasoning_levels||[],st.reasoning,st.model_catalog,'โมเดล','Reasoning');
   const err = h('div',{class:'err',role:'alert'});
   const go = h('button',{class:'btn primary',disabled:!ready,on:{click:async()=>{
     err.textContent=inputProblem();if(err.textContent)return; const general=modeSel.value==='general'; const t=general?(topic.value.trim()||sourceText.value.trim().slice(0,120)):openerTopic(heroName.value.trim(), topic.value.trim()); if (t.length<4){ err.textContent=general?'พิมพ์หัวข้อหรือเนื้อหาอย่างน้อย 4 ตัวอักษร':'ใส่ชื่อตัวเอก หรือพิมพ์เรื่องที่จะเล่าอย่างน้อย 4 ตัวอักษร'; topic.focus(); return; }
@@ -1024,7 +1071,7 @@ function studio(st, drafts){
     h('div',{class:'ideas'}, h('span',{class:'sub'},'ลองหัวข้อ:'), IDEAS.map(i=>h('button',{on:{click:()=>chooseIdea(i)}},i))),
     suggestPanel,
     h('details',{}, h('summary',{},'เพิ่มแนวทาง (ไม่บังคับ)'), h('div',{style:'margin-top:10px'},note)),
-    h('div',{class:'row',style:'justify-content:flex-start;gap:8px'}, h('span',{class:'sub'},'สมอง'), modelSel, effSel),
+    h('div',{class:'row',style:'justify-content:flex-start;gap:8px'}, h('span',{class:'sub'},'สมอง'), modelSel, effSel), brainNotice,
     narrationPanel,
     creativePanel,
     recurringPanel,

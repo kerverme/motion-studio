@@ -1,3 +1,4 @@
+import {FALLBACK_MODELS} from './openai-models.js';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {Hono} from 'hono';
@@ -20,7 +21,7 @@ test('general mode and source text persist with Sol and survive rewrite; old cli
   globalThis.setTimeout=((cb:any,ms?:number,...args:any[])=>nativeTimeout(ms===8000?()=>{}:cb,ms===8000?0:ms,...args)) as typeof setTimeout;
   const app=new Hono();
   try{
-    registerStudio(app,pool as any,{guard:async(_c,next)=>next(),createJob:async()=>({status:200,body:{}}),estimateCredits:()=>100,validate:()=>[],researchFreshness:()=>[]});
+    registerStudio(app,pool as any,{models:async()=>({ids:[...FALLBACK_MODELS,'gpt-7.1-nova'],source:'openai',checked_at:'2026-11-20T00:00:00Z'}),guard:async(_c,next)=>next(),createJob:async()=>({status:200,body:{}}),estimateCredits:()=>100,validate:()=>[],researchFreshness:()=>[]});
     // Configuration gate depends on runtime keys; set before the module import in this process if no key is available.
     process.env.OPENAI_API_KEY ||= 'mock-key';process.env.FIRECRAWL_API_KEY ||= 'mock-firecrawl';process.env.ANTHROPIC_API_KEY ||= 'mock-key';
     const res=await app.request('/app/api/studio/drafts',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({topic:row.topic,story_mode:'general',source_text:source,model:row.model,characters:[]})});
@@ -31,5 +32,13 @@ test('general mode and source text persist with Sol and survive rewrite; old cli
     assert.deepEqual(JSON.parse(inserts[1].args[23]),row.trend_context,'rewrite preserves selected evidence atomically with the new draft');
     await app.request('/app/api/studio/drafts',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({topic:'คนชื่อเบลในประเทศไทยมีกี่คน'})});
     assert.equal(inserts[2].args[8],'name_story');
+    assert.equal(inserts[2].args[3],'gpt-6.2-sol');assert.equal(inserts[2].args[4],'high');
+    const status=await (await app.request('/app/api/studio/status')).json();
+    assert.equal(status.model,'gpt-6.2-sol');assert.equal(status.reasoning,'high');
+    assert.ok(status.models.some((m:any)=>m.id==='gpt-7.1-nova' && m.label==='GPT-7.1 Nova'));
+    const create=(model:string)=>app.request('/app/api/studio/drafts',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({topic:row.topic,model})});
+    assert.equal((await create('gpt-7.1-nova')).status,201);assert.equal(inserts[3].args[3],'gpt-7.1-nova');
+    assert.equal((await create('gpt-image-2')).status,422);assert.equal(inserts.length,4);
+
   }finally{globalThis.setTimeout=nativeTimeout;}
 });

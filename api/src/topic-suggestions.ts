@@ -1,3 +1,4 @@
+import { readModels, type ModelSource } from './openai-models.js';
 import type {Hono,Context,Next} from 'hono';
 import type pg from 'pg';
 import {createHash} from 'node:crypto';
@@ -47,7 +48,7 @@ export function parseTopicIdeas(response:any, exclude:string[]) {
   return ideas;
 }
 
-export function registerTopicSuggestions(app:Hono,pool:pg.Pool,options:{guard:(c:Context,next:Next)=>Promise<any>;models:string[]}) {
+export function registerTopicSuggestions(app:Hono,pool:pg.Pool,options:{guard:(c:Context,next:Next)=>Promise<any>;models?:ModelSource}) {
   const env=process.env;
   registerTrendRoutes(app,pool,options.guard);
   const serialise=(row:any)=>{
@@ -115,10 +116,16 @@ Variation seed: ${row.id}. Context: ${JSON.stringify({...input,exclude})}`;
     const id=z.string().uuid().safeParse(raw?.request_id);
     const parsed=Input.safeParse(raw);
     if(!id.success || !parsed.success)return c.json({error:'รูปแบบคำขอสุ่มหัวข้อไม่ถูกต้อง'},422);
-    if(!options.models.includes(parsed.data.model))return c.json({error:'เลือกโมเดล OpenAI ในช่องสมองก่อนสุ่มหัวข้อ'},422);
+    const previous = (await pool.query('SELECT * FROM topic_suggestions WHERE id=$1',[id.data])).rows[0];
+    const input=JSON.stringify(parsed.data),hash=createHash('sha256').update(input).digest('hex');
+    if (previous) {
+      if (previous.request_hash !== hash) return c.json({error:'คำขอเดิมใช้ข้อมูลอื่นไปแล้ว'},409);
+      if (previous.status === 'queued') kick();
+      return c.json(serialise(previous), ['done','failed'].includes(previous.status) ? 200 : 202);
+    }
+    if(!(await readModels(options.models)).ids.includes(parsed.data.model))return c.json({error:'เลือกโมเดล OpenAI ในช่องสมองก่อนสุ่มหัวข้อ'},422);
     if(!env.OPENAI_API_KEY)return c.json({error:'ยังไม่ได้ตั้งค่า OpenAI สำหรับแนะนำหัวข้อ'},503);
     await start();
-    const input=JSON.stringify(parsed.data),hash=createHash('sha256').update(input).digest('hex');
     const inserted=await pool.query('INSERT INTO topic_suggestions(id,request_hash,request) VALUES($1,$2,$3) ON CONFLICT DO NOTHING RETURNING *',[id.data,hash,input]);
     const row=inserted.rows[0] || (await pool.query('SELECT * FROM topic_suggestions WHERE id=$1',[id.data])).rows[0];
     if(row.request_hash!==hash)return c.json({error:'คำขอเดิมใช้ข้อมูลอื่นไปแล้ว'},409);

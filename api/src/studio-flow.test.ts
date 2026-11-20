@@ -29,7 +29,7 @@ for (const repair of [false,true]) test(repair ? 'missing source repair delivers
   const checkpoints: any[] = [];
   let resolveDone!: () => void;
   const done = new Promise<void>(resolve => { resolveDone = resolve; });
-  const row = { id: '10000000-0000-0000-0000-000000000001', topic: 'เรื่องเบล', model: 'gpt-6-astra', reasoning: 'high', characters: [{ id: '20000000-0000-0000-0000-000000000001', name: 'เบล', look }], style: 'classic', auto_produce: false };
+  const row = { id: '10000000-0000-0000-0000-000000000001', topic: 'เรื่องเบล', model: 'gpt-6.2-sol', reasoning: 'high', characters: [{ id: '20000000-0000-0000-0000-000000000001', name: 'เบล', look }], style: 'classic', auto_produce: false };
   const requests: any[] = [];
   let fetchError: unknown;
   const sql: string[] = [];
@@ -73,7 +73,8 @@ for (const repair of [false,true]) test(repair ? 'missing source repair delivers
     assert.equal(body.parallel_tool_calls, false);
     assert.ok(body.max_tool_calls <= 3);
     assert.equal(body.max_output_tokens, calls <= 2 ? 24000 : 16000);
-    assert.equal(body.reasoning.effort, calls <= 2 ? 'high' : 'medium');
+    assert.equal(body.reasoning.effort, 'high');
+    assert.equal(body.model, row.model);
     if (calls >= 3) { assert.ok(body.tools.some((t:any)=>t.name==='read_page')); const submit = body.tools.find((t:any)=>t.name==='submit_episode'); for (const key of ['script','cast','scenes','art']) assert.equal(key in submit.parameters.properties,false); }
     let output: any[];
     if (calls === 1) output = [tool('submit_episode', submitted, 'too-early')];

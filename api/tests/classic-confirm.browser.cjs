@@ -53,6 +53,29 @@ const quote={revision:'revision-1',quote_hash:'quote-1',known_total_usd:0,unknow
   await p.evaluate(()=>{frame();STYLE_LIST=[];MUSIC_LIST=[];const old=api;api=async(path,opts)=>path.endsWith('/drafts')&&opts?.method==='POST'?(window.created=JSON.parse(opts.body),{id:'created'}):old(path,opts);const st={llm:true,web_search:true,creative:{enabled:true,styles:[{id:'rubber-hose',name:'Rubber Hose'}]},models:[{id:'gpt-6.1-sol',label:'Sol'}],model:'gpt-6.1-sol',reasoning_levels:[],formats:{},daily_limit:20,drafts_today:1,max_credits:4500};studio(st,[]);});
   assert.equal(await p.getByLabel('งบสูงสุด USD',{exact:true}).isVisible(),false);await p.getByLabel('Rendering engine').selectOption('lemo');assert.equal(await p.getByLabel('งบสูงสุด USD',{exact:true}).isVisible(),true);await p.getByLabel('งบสูงสุด USD',{exact:true}).fill('0');await p.getByLabel('การเลือกสไตล์',{exact:true}).selectOption('manual');await p.getByLabel('โมเดลเสียง',{exact:true}).selectOption('eleven_v3');await p.getByLabel('Rendering engine').selectOption('classic');assert.equal(await p.getByLabel('งบสูงสุด USD',{exact:true}).isVisible(),false);await p.getByLabel('หัวข้อเรื่อง',{exact:true}).fill('คนชื่อกร ใครจ่ายบิล');await p.getByRole('button',{name:'เริ่มค้นและเขียน',exact:true}).click();await p.waitForFunction(()=>window.created);assert.deepEqual(await p.evaluate(()=>created.creative),{engine:'classic',tts_model:'eleven_v3',sfx_model:'eleven_text_to_sound_v3',mode:'auto'});
  });
+ await test('New and returning owners see 6.2 Sol high, explicit choices persist, unavailable defaults require selection',async p=>{
+  const values=await p.evaluate(()=>{
+    const models=['gpt-6.2-sol','gpt-6.1-sol','gpt-7.1-nova'].map(id=>({id,label:generationModelLabel(id)}));
+    const controls=(ids=models)=>brainControls(ids,'gpt-6.2-sol',['low','medium','high'],'high',{source:'openai'},'Model','Effort');
+    const values=c=>[c.modelSel.value,c.effSel.value];
+    const fresh=values(controls());localStorage.setItem('ms.ai',JSON.stringify({model:'gpt-6.1-sol',reasoning:'high'}));
+    const migrated=controls(), upgraded=values(migrated);migrated.modelSel.value='gpt-7.1-nova';migrated.effSel.value='low';migrated.effSel.dispatchEvent(new Event('change'));
+    const manual=values(controls());localStorage.removeItem('ms.ai');
+    return {fresh,upgraded,manual,unavailable:values(controls(models.slice(1))),label:clipDisplayTitle({generation_model:'gpt-7.1-nova',title:'คลิป'})};
+  });
+  assert.deepEqual(values,{fresh:['gpt-6.2-sol','high'],upgraded:['gpt-6.2-sol','high'],manual:['gpt-7.1-nova','low'],unavailable:['','high'],label:'[GPT-7.1 Nova] คลิป'});
+ });
+ await test('An open model picker refreshes the account list without resetting the story or a manual selection',async p=>{
+  const result=await p.evaluate(async()=>{
+    let release;const gate=new Promise(resolve=>release=resolve);const calls=[];
+    api=async(path)=>{calls.push(path);await gate;return {models:[{id:'gpt-6.2-sol',label:'Sol'},{id:'gpt-6.1-terra',label:'Terra'},{id:'gpt-7.1-nova',label:'Nova'}],model_catalog:{source:'openai',checked_at:new Date().toISOString()}};};
+    const controls=brainControls([{id:'gpt-6.2-sol',label:'Sol'},{id:'gpt-6.1-terra',label:'Terra'}],'gpt-6.2-sol',['low','high'],'high',{source:'openai',checked_at:'2020-01-01T00:00:00Z'},'Model','Effort');
+    const topic=h('textarea',{});topic.value='เรื่องที่ยังเขียนไม่จบ';document.body.append(topic,controls.modelSel);
+    const requests=[refreshVisibleBrains(),refreshVisibleBrains()];controls.modelSel.value='gpt-6.1-terra';controls.modelSel.dispatchEvent(new Event('change'));
+    release();await Promise.all(requests);return {topic:topic.value,model:controls.modelSel.value,ids:[...controls.modelSel.options].map(o=>o.value),calls};
+  });
+  assert.deepEqual(result,{topic:'เรื่องที่ยังเขียนไม่จบ',model:'gpt-6.1-terra',ids:['gpt-6.2-sol','gpt-6.1-terra','gpt-7.1-nova'],calls:['/app/api/studio/openai-models']});
+ });
  await test('Classic confirmation fits a narrow mobile drawer without horizontal overflow',async p=>{
   await p.setViewportSize({width:390,height:844});await p.evaluate(()=>{const target=document.getElementById('test-target');target.className='drawer';target.style.padding='20px';return creativeDraftView(target,fixture,async()=>{});});
   const sizes=await p.locator('#test-target').evaluate(el=>({scroll:el.scrollWidth,width:el.clientWidth}));assert.ok(sizes.scroll<=sizes.width+1,JSON.stringify(sizes));assert.equal(await p.locator('#test-target input:visible,#test-target textarea:visible,#test-target select:visible').count(),0);
