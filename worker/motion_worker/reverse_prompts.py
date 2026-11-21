@@ -5,6 +5,7 @@ import requests
 from psycopg.types.json import Jsonb
 from .reverse_media import frame_timing,fetch_private,save_private
 from .reverse_render import ffmpeg
+from .reverse_billing import ProviderCreditError, check_billing, is_billing_error, record_credit_stop
 from .reverse_provider import fingerprint,asset_uri
 from .creative_ledger import Ledger,AmbiguousCall,digest
 from .text_video import ApprovalRequired,check_active
@@ -174,6 +175,7 @@ def _response_call(ctx,project,task,quote):
     if not old:
         if dt.datetime.now(dt.timezone.utc)>dt.datetime.fromisoformat(quote['valid_until'].replace('Z','+00:00')):raise ApprovalRequired('Approval expired')
         status=requests.get('https://api.openai.com/v1/models/'+task['model'],headers={'Authorization':'Bearer '+os.environ['OPENAI_API_KEY']},timeout=25,allow_redirects=False)
+        check_billing(status,'OpenAI',before_acceptance=True)
         if status.status_code!=200 or status.json().get('id')!=task['model']:raise ApprovalRequired('Configured OpenAI model is unavailable for this account')
         if rate_config(ctx)!=task['rate'] or task['model']!=os.environ.get('MOTION_REVERSE_BRAIN_MODEL','gpt-6.2-sol'):raise ApprovalRequired('OpenAI rate/model changed')
     row=Ledger(ctx).reserve(key,'openai',task['model'],'planning',task['payload'],task['usd'])
@@ -184,6 +186,7 @@ def _response_call(ctx,project,task,quote):
         for attempt in range(4):
             try:
                 r=requests.get(base+'/'+ident,headers=headers,timeout=45,allow_redirects=False)
+                check_billing(r,'OpenAI',before_acceptance=False)
                 if r.status_code in (429,500,502,503,504) and attempt<3:time.sleep(2**attempt);continue
                 r.raise_for_status();return r.json()
             except (requests.Timeout,requests.ConnectionError):
@@ -208,6 +211,7 @@ def _response_call(ctx,project,task,quote):
             report(ctx,'submit','กำลังส่งไอเดียตัวละครให้ Sol' if character else 'กำลังส่งภาพให้ Sol')
             payload={'model':task['model'],'service_tier':'default','background':True,'store':True,'max_output_tokens':task['payload']['max_output_tokens'],'reasoning':{'effort':task['payload']['reasoning']},'instructions':task['payload']['system'],'input':[{'role':'user','content':content}], 'text':{'format':{'type':'json_schema','name':'reverse_prompt','strict':True,'schema':expected if scene else character_schema() if character else output_schema()}}}
             r=requests.post(base,headers=headers,json=payload,timeout=60,allow_redirects=False)
+            check_billing(r,'OpenAI',before_acceptance=True)
             if not r.ok:raise ApprovalRequired('OpenAI submission HTTP '+str(r.status_code)+'; no automatic POST retry')
             data=r.json();ident=data.get('id')
             if not isinstance(ident,str) or not re.fullmatch(r'resp_[a-zA-Z0-9_-]+',ident):raise AmbiguousCall('No accepted response ID; reconcile before retry')
@@ -234,11 +238,25 @@ def _response_call(ctx,project,task,quote):
 
 
 
-def response_call(ctx,project,task,quote,invoke=None):
-    # A different quote for identical source/model/instructions must not bill twice.
+def response_cache_key(project,task,quote):
     cache_payload=task['payload']
     if task.get('role')=='prompt_transcribe':cache_payload={k:v for k,v in cache_payload.items() if k!='version_id'}
-    key='reverse-openai:'+digest({'source':project['source_sha256'],'project':str(project['id']),'payload':cache_payload,'key':quote['key_fingerprints'].get('openai')})
+    return 'reverse-openai:'+digest({'source':project['source_sha256'],'project':str(project['id']),'payload':cache_payload,'key':quote['key_fingerprints'].get('openai')})
+
+
+def saved_scene_response(ctx,project,task,quote):
+    key=response_cache_key(project,task,quote)
+    hit=ctx.db.one('SELECT result FROM creative_cache WHERE cache_key=%s',(key,))
+    value=(hit or {}).get('result') or {}
+    if value.get('complete'):return value['value']
+    call=ctx.db.one("SELECT result FROM creative_calls WHERE job_id=%s AND call_key=%s AND status IN ('complete','reconciled') AND provider='openai'",
+                    (ctx.job['id'],'reverse:'+quote['binding']+':'+task['slot']))
+    if call and (call['result'] or {}).get('response_asset_id'):return call['result']
+    raise ApprovalRequired('ไม่พบคำตอบที่บันทึกไว้สำหรับงานนี้ ระบบหยุดก่อนเรียกผู้ให้บริการ')
+
+
+def response_call(ctx,project,task,quote,invoke=None):
+    key=response_cache_key(project,task,quote)
     with ctx.db.lock,ctx.db.conn.transaction():
         c=ctx.db.conn;hit=c.execute('SELECT * FROM creative_cache WHERE cache_key=%s FOR UPDATE',(key,)).fetchone()
         if hit and hit['result'].get('complete'):return hit['result']['value']
@@ -246,7 +264,16 @@ def response_call(ctx,project,task,quote,invoke=None):
         if not hit:
             inserted=c.execute('INSERT INTO creative_cache(cache_key,category,result) VALUES(%s,%s,%s) ON CONFLICT DO NOTHING RETURNING cache_key',(key,'planning',Jsonb({'owner':str(ctx.job['id'])}))).fetchone()
             if not inserted:raise AmbiguousCall('Matching OpenAI analysis claimed; no duplicate POST')
-    value=(invoke or _response_call)(ctx,project,task,quote)
+    try:
+        value=(invoke or _response_call)(ctx,project,task,quote)
+        if value.get('credit_declined'):
+            raise ProviderCreditError(value['credit_declined'],True)
+        response=value.get('response') or {}
+        if response.get('status')=='failed' and is_billing_error(200,response):
+            raise ProviderCreditError('OpenAI',False)
+    except ProviderCreditError as error:
+        record_credit_stop(ctx,error,key,'reverse:'+quote['binding']+':'+task['slot'])
+        raise
     ctx.db.q('UPDATE creative_cache SET result=%s WHERE cache_key=%s',(Jsonb({'complete':True,'value':value}),key))
     return value
 

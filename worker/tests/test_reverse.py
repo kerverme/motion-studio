@@ -72,6 +72,7 @@ def test_paid_post_disconnect_is_single_attempt_and_accepted_resume_only_gets(tm
     accepted={**row,'provider_id':'saved-id','usage':{'status_url':'https://queue.fal.run/openrouter/requests/saved-id/status','response_url':'https://queue.fal.run/openrouter/requests/saved-id'}}
     ctx.db.one.return_value=accepted
     class Response:
+        status_code=200
         ok=True
         def __init__(self,value):self.value=value
         def json(self):return self.value

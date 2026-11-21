@@ -10,6 +10,7 @@ import requests
 from psycopg.types.json import Jsonb
 from .creative_ledger import Ledger,AmbiguousCall,digest
 from .text_video import ApprovalRequired,check_active,queue_url,download_video
+from .reverse_billing import ProviderCreditError, check_billing, is_billing_error, record_credit_stop
 from .reverse_media import fetch_private,file_sha,save_private
 
 
@@ -28,6 +29,7 @@ def headers():
 def verify_price(task):
     if task.get('pricing_valid_until') and dt.datetime.now(dt.timezone.utc)>=dt.datetime.fromisoformat(task['pricing_valid_until']):raise ApprovalRequired('Maintained model configuration price expired; refresh before dispatch')
     r=requests.get('https://api.fal.ai/v1/models/pricing',params={'endpoint_id':task['endpoint']},headers=headers(),timeout=25)
+    check_billing(r,'fal.ai',before_acceptance=True)
     r.raise_for_status()
     live=next((x for x in r.json().get('prices',[]) if x['endpoint_id']==task['endpoint']),None)
     if not live or any(live.get(k)!=task['rate'].get(k) for k in ('unit','unit_price','currency')):
@@ -61,13 +63,24 @@ def _queue_result(ctx,row):
     if not state.get('status_url') or not state.get('response_url'):
         raise AmbiguousCall('Accepted request needs its saved Fal queue URLs; no POST retry')
     deadline=time.monotonic()+2700
+    stage=None
     while time.monotonic()<deadline:
         check_active(ctx)
-        r=requests.get(queue_url(state['status_url']),headers=headers(),timeout=30);r.raise_for_status();status=r.json()
+        r=requests.get(queue_url(state['status_url']),headers=headers(),timeout=30)
+        check_billing(r,'fal.ai',before_acceptance=False)
+        r.raise_for_status();status=r.json()
+        current=status.get('status')
+        if current!=stage and current in ('IN_QUEUE','IN_PROGRESS'):
+            from .reverse_progress import report
+            report(ctx,'fal_queue' if current=='IN_QUEUE' else 'fal_render',
+                   'fal.ai รับงานแล้ว กำลังรอคิว' if current=='IN_QUEUE' else 'fal.ai กำลังผลิตวิดีโอ')
+            stage=current
         if status.get('status')=='COMPLETED':
             response=requests.get(queue_url(state['response_url']),headers=headers(),timeout=90)
+            check_billing(response,'fal.ai',before_acceptance=False)
             if not response.ok:raise ApprovalRequired('Provider request completed with an error; no paid retry')
             return response.json()
+        if status.get('status') in ('FAILED','CANCELLED') and is_billing_error(200,status):raise ProviderCreditError('fal.ai',False)
         if status.get('status') in ('FAILED','CANCELLED'):raise ApprovalRequired('Provider rejected the accepted request; inspect before any new paid attempt')
         time.sleep(5)
     raise RuntimeError('Provider request still processing; its saved ID will be polled on resume')
@@ -104,6 +117,7 @@ def _fal_call(ctx,project,task,quote):
             check_active(ctx)
             # requests has no retry adapter. Uncertain timeout remains reserved.
             response=requests.post('https://queue.fal.run/'+task['endpoint'],headers=headers(),json=payload,timeout=60,allow_redirects=False)
+            check_billing(response,'fal.ai',before_acceptance=True)
             if not response.ok:raise ApprovalRequired('Fal submission HTTP '+str(response.status_code)+'; inspect ledger before any new approval')
             accepted=response.json();ident=accepted.get('request_id')
             if not ident:raise AmbiguousCall('Fal response has no request ID; no resubmission')
@@ -147,7 +161,12 @@ def fal_call(ctx,project,task,quote):
             inserted=c.execute('INSERT INTO creative_cache(cache_key,category,result) VALUES(%s,%s,%s) ON CONFLICT DO NOTHING RETURNING cache_key',
                 (key,task['category'],Jsonb({'owner':str(ctx.job['id'])}))).fetchone()
             if not inserted:raise AmbiguousCall('Concurrent matching paid request claimed; no duplicate POST')
-    value=_fal_call(ctx,project,task,quote)
+    try:
+        value=_fal_call(ctx,project,task,quote)
+        if value.get('credit_declined'):raise ProviderCreditError(value['credit_declined'],True)
+    except ProviderCreditError as error:
+        record_credit_stop(ctx,error,key,'reverse:'+quote['binding']+':'+task['slot'])
+        raise
     ctx.db.q('UPDATE creative_cache SET result=%s WHERE cache_key=%s',(Jsonb({'complete':True,'value':value}),key))
     return value
 

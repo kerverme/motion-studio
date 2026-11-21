@@ -12,6 +12,7 @@ from pathlib import Path
 
 import requests
 from psycopg.types.json import Jsonb
+from .reverse_billing import check_billing
 from .creative_ledger import Ledger
 from .reverse_media import fetch_private, save_private, file_sha
 from .reverse_provider import fingerprint
@@ -83,6 +84,7 @@ def _transcription_call(ctx, project, task, quote):
         if transcription_rate(ctx) != task['rate'] or task['model'] != task['rate']['model']:
             raise ApprovalRequired('Transcription rate/model changed')
         status = requests.get('https://api.openai.com/v1/models/' + task['model'], headers={'Authorization': 'Bearer ' + os.environ['OPENAI_API_KEY']}, timeout=25, allow_redirects=False)
+        check_billing(status, 'OpenAI', before_acceptance=True)
         if status.status_code != 200 or status.json().get('id') != task['model']:
             raise ApprovalRequired('Transcription model unavailable for this account')
 
@@ -102,6 +104,7 @@ def _transcription_call(ctx, project, task, quote):
                 headers={'Authorization': 'Bearer ' + os.environ['OPENAI_API_KEY']},
                 files={'file': ('selected-audio.wav', stream, 'audio/wav')},
                 data={'model': task['model'], 'response_format': 'json'}, timeout=120, allow_redirects=False)
+        check_billing(response, 'OpenAI', before_acceptance=True)
         if not response.ok:
             raise ApprovalRequired('Transcription HTTP ' + str(response.status_code) + '; no automatic POST retry')
         data = response.json()

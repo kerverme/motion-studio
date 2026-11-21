@@ -1,3 +1,4 @@
+import {checkQuoteCredit} from './provider-billing.js';
 /** Focused Prompt A/B workflow. No provider request on read or remake. */
 import {z} from 'zod';
 import {configuredRate,currentReverseRate} from './reverse-rate.js';
@@ -42,6 +43,7 @@ export function transcriptionRate(r:any=configuredRate(process.env.MOTION_REVERS
 export async function verifyOpenAIModel(model=promptModel()){
  const key=process.env.OPENAI_API_KEY;if(!key)throw Error('ตั้งค่า OPENAI_API_KEY ผ่าน Railway');
  const r=await fetch('https://api.openai.com/v1/models/'+encodeURIComponent(model),{headers:{Authorization:'Bearer '+key},signal:AbortSignal.timeout(20000),redirect:'error'});
+  await checkQuoteCredit(r,'OpenAI');
  if(!r.ok||(await r.json() as any).id!==model)throw Error('บัญชี OpenAI ยังเรียกโมเดลที่ตั้งไว้ไม่ได้ ตรวจสิทธิ์บน Railway');
 }
 export function registerPromptRoutes(app:any,pool:any,ctx:any){

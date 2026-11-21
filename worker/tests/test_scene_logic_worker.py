@@ -306,7 +306,8 @@ def test_owner_override_revalidates_as_creative_intent_without_mutating_source(t
 
 
 @pytest.mark.parametrize('references',[[1],[1,0,1]])
-def test_first_director_result_persists_exact_source_actions_not_model_reinterpretation(tmp_path,references):
+@pytest.mark.parametrize('saved_only',[True,False])
+def test_first_director_result_persists_exact_source_actions_not_model_reinterpretation(tmp_path,references,saved_only):
     doc,graph,evidence=fixture();original=copy.deepcopy(doc);ctx=context(tmp_path)
     replacements={'characters':{},'locations':{}}
     version={'id':'version','selection_id':'selection','document':doc,'locks_hash':prompts.motion_lock(doc),'replacements':replacements}
@@ -316,18 +317,19 @@ def test_first_director_result_persists_exact_source_actions_not_model_reinterpr
     def read(sql,args):
         if 'reverse_prompt_versions' in sql:return version
         if 'reverse_prompt_selections' in sql:return {'evidence':evidence}
-        if 'SELECT id FROM reverse_scene_graphs' in sql:return None
+        if 'FROM reverse_scene_graphs' in sql:return None
         raise AssertionError(sql)
     ctx.db.one.side_effect=read;ctx.db.conn.execute.return_value.fetchone.return_value=None
     graph['events'][1].update(action='[C1] deliberately places the wallet on a table.',mode='deliberate',source_action_indices=references)
     paid={'response':{'status':'completed','output':[{'content':[{'type':'output_text','text':json.dumps(graph)}]}]},'response_asset_id':'response','provider_id':'resp_fixture'}
-    with patch.object(prompts,'response_call',return_value=paid) as paid_transport:
-        logic.direct(ctx,{'id':'p','source_sha256':'source'},task,{'id':'quote'})
+    with patch.object(prompts,'response_call',return_value=paid) as paid_transport,patch.object(prompts,'saved_scene_response',return_value=paid) as local:
+        logic.direct(ctx,{'id':'p','source_sha256':'source'},task,{'id':'quote'},saved_only=saved_only)
+    assert local.call_count==int(saved_only)
     saved=next(c.args[1] for c in ctx.db.conn.execute.call_args_list if c.args[0].startswith('INSERT INTO reverse_scene_graphs'))
     expected=' '.join(doc['shots'][0]['actions'][i]['text'] for i in sorted(set(references)))
     assert saved[6].obj['events'][1]['action']==expected
     assert 'deliberately' not in saved[6].obj['events'][1]['action']
-    assert doc==original and paid_transport.call_count==1
+    assert doc==original and paid_transport.call_count==int(not saved_only)
 
 
 def generation_fixture(tmp_path):
@@ -452,3 +454,26 @@ def test_guided_dispatch_rechecks_current_prompt_version_and_exact_payload(tmp_p
     with pytest.raises(ApprovalRequired,match='newer'):logic.generation_preflight(ctx,project,quote)
     selected['id']=version['id'];payload['prompt']='changed'
     with pytest.raises(ApprovalRequired,match='differs'):logic.generation_preflight(ctx,project,quote)
+
+
+
+def test_misplaced_location_visibility_is_uncertain_and_source_events_stay_locked():
+    doc,graph,evidence=fixture()
+    doc['locations']=[{'id':'L1'},{'id':'L2'},{'id':'L3'}]
+    graph['spatial'][0]['visible_objects']=['L1','O1','L2','C2','L3']
+    checked=logic.validate_graph(graph,doc,evidence)
+    spatial=checked['spatial'][0]
+    assert spatial['visible_objects']==['O1'] and spatial['basis']=='unknown'
+    assert 'L1, L2, C2, L3' in spatial['uncertainty']
+    assert checked['events'][0]['action']==graph['events'][0]['action']
+    assert logic.validate_graph(checked,doc,evidence)==checked
+    graph['spatial'][0]['visible_objects']=['unbound']
+    with pytest.raises(ValueError,match='ไม่มีในหลักฐาน'):logic.validate_graph(graph,doc,evidence)
+
+
+def test_saved_scene_cache_miss_cannot_invoke_a_provider(tmp_path):
+    ctx=context(tmp_path);ctx.db.one.return_value=None
+    with patch.object(prompts,'response_call',side_effect=AssertionError('paid call')) as transport:
+        with pytest.raises(ApprovalRequired,match='ไม่พบคำตอบ'):
+            prompts.saved_scene_response(ctx,{'id':'p','source_sha256':'source'},{'payload':{},'slot':'scene'},{'key_fingerprints':{},'binding':'b'})
+    transport.assert_not_called()

@@ -89,8 +89,16 @@ export function validateGraph(raw:any,doc:any,evidence:any){
   if(!events.has(state.event_id)||state.owner_id!==null&&!chars.has(state.owner_id))throw Error('Unknown object continuity reference');
   if(state.basis==='observed'&&events.get(state.event_id).basis!=='observed')state.basis='inferred';
  }
+ const locations=new Set((doc.locations||[]).map((loc:any)=>loc.id));
  for(const spatial of value.spatial){
-  if(!events.has(spatial.event_id)||!chars.has(spatial.character_id)||spatial.visible_objects.some((id:string)=>!objects.has(id)))throw Error('Unknown spatial reference');
+  if(!events.has(spatial.event_id)||!chars.has(spatial.character_id))throw Error('ผลตรวจตำแหน่งอ้างถึงเหตุการณ์หรือตัวละครที่ไม่มีในฉาก');
+  const misplaced=spatial.visible_objects.filter((id:string)=>!objects.has(id));
+  if(misplaced.some((id:string)=>!locations.has(id)&&!chars.has(id)))throw Error('ผลตรวจการมองเห็นอ้างถึงวัตถุที่ไม่มีในหลักฐานของฉาก');
+  if(misplaced.length){
+   spatial.visible_objects=spatial.visible_objects.filter((id:string)=>objects.has(id));
+   spatial.basis='unknown';
+   spatial.uncertainty+=' Visibility unverified for non-object references: '+[...new Set(misplaced)].join(', ')+'.';
+  }
   if(spatial.basis==='observed'&&events.get(spatial.event_id).basis!=='observed')spatial.basis='inferred';
   const limitation=' Position, field of view and knowledge are approximate, not exact visibility calculations.';
   if(!spatial.uncertainty.includes(limitation.trim()))spatial.uncertainty+=limitation;

@@ -87,8 +87,17 @@ def validate_graph(raw,document,evidence):
         for state in obj['states']:
             if state['event_id'] not in events or state['owner_id'] is not None and state['owner_id'] not in actors:raise ValueError('Unknown object continuity reference')
             if state['basis']=='observed' and events[state['event_id']]['basis']!='observed':state['basis']='inferred'
+    locations={loc['id'] for loc in document.get('locations',[])}
     for spatial in value['spatial']:
-        if spatial['event_id'] not in events or spatial['character_id'] not in actors or any(o not in objects for o in spatial['visible_objects']):raise ValueError('Unknown spatial reference')
+        if spatial['event_id'] not in events or spatial['character_id'] not in actors:
+            raise ValueError('ผลตรวจตำแหน่งอ้างถึงเหตุการณ์หรือตัวละครที่ไม่มีในฉาก')
+        misplaced=[ref for ref in spatial['visible_objects'] if ref not in objects]
+        if any(ref not in locations and ref not in actors for ref in misplaced):
+            raise ValueError('ผลตรวจการมองเห็นอ้างถึงวัตถุที่ไม่มีในหลักฐานของฉาก')
+        if misplaced:
+            spatial['visible_objects']=[ref for ref in spatial['visible_objects'] if ref in objects]
+            spatial['basis']='unknown'
+            spatial['uncertainty']+=' Visibility unverified for non-object references: '+', '.join(dict.fromkeys(misplaced))+'.'
         if spatial['basis']=='observed' and events[spatial['event_id']]['basis']!='observed':spatial['basis']='inferred'
         caveat='Position, field of view and knowledge are approximate, not exact visibility calculations.'
         if caveat not in spatial['uncertainty']:spatial['uncertainty']+=' '+caveat
@@ -184,16 +193,25 @@ def generation_preflight(ctx,project,quote):
                 raise ApprovalRequired('Generation prompt differs from reviewed scene constraints')
 
 
-def direct(ctx,project,task,quote):
+def direct(ctx,project,task,quote,*,saved_only=False):
     context=task['payload']['context'];version=_version(ctx,project,context)
     selection=ctx.db.one('SELECT * FROM reverse_prompt_selections WHERE id=%s AND project_id=%s',(version['selection_id'],project['id']))
     if not selection or selection['evidence']!=task['payload']['evidence']:raise ApprovalRequired('Source visual evidence changed')
     ident=prompts.canonical_hash({'scene_quote':quote['id'],'version':version['id']})
     if ctx.db.one('SELECT id FROM reverse_scene_graphs WHERE id=%s',(ident,)):return {'graph_id':ident,'cached':True}
-    latest=ctx.db.one('SELECT id FROM reverse_scene_graphs WHERE project_id=%s AND version_id=%s AND input_hash=%s ORDER BY created_at DESC,id DESC LIMIT 1',(project['id'],version['id'],context['input_hash']))
+    paid=prompts.saved_scene_response(ctx,project,task,quote) if saved_only else None
+    latest_sql='SELECT id,provenance FROM reverse_scene_graphs WHERE project_id=%s AND version_id=%s AND input_hash=%s ORDER BY created_at DESC,id DESC LIMIT 1'
+    latest_args=(project['id'],version['id'],context['input_hash'])
+    latest=ctx.db.one(latest_sql,latest_args)
+    def already_recovered(row):
+        return saved_only and row and row.get('provenance',{}).get('response_asset_id')==paid['response_asset_id']
+    if already_recovered(latest):return {'graph_id':latest['id'],'cached':True}
     if (latest or {}).get('id')!=context.get('base_graph_id'):raise ApprovalRequired('Scene review changed before director dispatch')
-    report(ctx,'scene_director','Sol กำลังตรวจเหตุและผลของฉาก')
-    paid=prompts.response_call(ctx,project,task,quote)
+    if saved_only:
+        report(ctx,'scene_recovery','กำลังกู้ผลตรวจฉากจากคำตอบเดิม')
+    else:
+        report(ctx,'scene_director','Sol กำลังตรวจเหตุและผลของฉาก')
+        paid=prompts.response_call(ctx,project,task,quote)
     graph=validate_graph(_parsed(paid),version['document'],selection['evidence'])
     parent_id=context.get('parent_graph_id');overrides=context.get('authorized_overrides') or []
     if parent_id:
@@ -227,7 +245,8 @@ def direct(ctx,project,task,quote):
     # must not supersede a review saved while the model was still reasoning.
     with ctx.db.lock,ctx.db.conn.transaction():
         conn=ctx.db.conn;conn.execute('SELECT id FROM reverse_projects WHERE id=%s FOR UPDATE',(project['id'],))
-        latest=conn.execute('SELECT id FROM reverse_scene_graphs WHERE project_id=%s AND version_id=%s AND input_hash=%s ORDER BY created_at DESC,id DESC LIMIT 1',(project['id'],version['id'],context['input_hash'])).fetchone()
+        latest=conn.execute(latest_sql,latest_args).fetchone()
+        if already_recovered(latest):return {'graph_id':latest['id'],'cached':True}
         if (latest or {}).get('id')!=context.get('base_graph_id'):raise ApprovalRequired('Scene review changed while director was running; paid response retained without reposting')
         conn.execute('INSERT INTO reverse_scene_graphs(id,project_id,version_id,source_sha256,locks_hash,input_hash,graph,review,parent_id,provenance) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING',
             (ident,project['id'],version['id'],project['source_sha256'],version['locks_hash'],context['input_hash'],Jsonb(graph),Jsonb(review),context.get('parent_graph_id'),Jsonb(provenance)))

@@ -13,6 +13,7 @@ import {registerPromptRoutes,promptModel,transcriptionModel,verifyOpenAIModel} f
 import {generationSceneBinding,assertSceneApproval} from './scene-routes.js';
 import {assertRangeApproval} from './prompt-video.js';
 import {registerSceneUpload} from './scene-upload.js';
+import {jobFields,approvedMatch} from './reverse-jobs.js';
 import {parseByteRange} from './byte-range.js';
 const P='/app/api/reverse',UUID=z.string().uuid();
 type Options={openaiModelCheck?:(model?:string)=>Promise<void>;guard:(c:Context,next:Next)=>Promise<any>;prices?:typeof falPrices;tokenRate?:typeof routerRate;upload?:typeof sealUpload;asset?:typeof readPrivateAsset};
@@ -39,15 +40,41 @@ export function registerReverse(app:Hono,pool:pg.Pool,options:Options){
   app.get(P+'/projects/:id/progress',guard,async c=>{try{
     const id=UUID.parse(c.req.param('id'));
     if(!(await pool.query('SELECT id FROM reverse_projects WHERE id=$1',[id])).rows[0])throw Error('Project not found');
-    const jobs=(await pool.query(`SELECT id,status,stage,progress,error,created_at,updated_at,finished_at,
-      package->'reverse'->>'action' AS action,
-      COALESCE(package->'reverse'->>'selection_id',package->'reverse'->'quote'->'tasks'->0->>'selection_id') AS selection_id,
-      stage_results->'_reverse_progress' AS live_progress,
-      (locked_by IS NOT NULL) AS claimed,
-      CASE WHEN locked_by IS NOT NULL THEN locked_until - interval '10 minutes' END AS worker_seen_at
-      FROM jobs WHERE kind='reverse' AND package->'reverse'->>'project_id'=$1 ORDER BY created_at DESC LIMIT 50`,[id])).rows;
+    const jobId=c.req.query('job_id'),version=c.req.query('version_id');
+    if(jobId)UUID.parse(jobId);
+    if(version)z.string().regex(/^[a-f0-9]{64}$/).parse(version);
+    const jobs=(await pool.query(`SELECT * FROM (SELECT ${jobFields} FROM jobs WHERE kind='reverse' AND package#>>'{reverse,project_id}'=$1) AS summary
+      WHERE ($2::uuid IS NULL OR id=$2) AND ($3::text IS NULL OR version_id=$3)
+      ORDER BY (status NOT IN ('READY_TO_POST','FAILED','CANCELLED')) DESC,created_at DESC LIMIT 50`,[id,jobId||null,version||null])).rows;
     return c.json({jobs,server_time:new Date().toISOString()});
   }catch(e){return fail(c,e);}});
+  app.post(P+'/production-jobs',guard,async c=>{try{
+    const {projects}=z.object({projects:z.array(UUID).max(200)}).strict().parse(await c.req.json());
+    const rows=await pool.query(`WITH production AS (SELECT ${jobFields} FROM jobs WHERE kind='reverse'
+      AND package#>>'{reverse,project_id}'=ANY($1::text[]) AND package#>>'{reverse,action}' IN ('scene_logic','prompt_video')),
+      active AS (SELECT * FROM production WHERE status NOT IN ('FAILED','CANCELLED','READY_TO_POST')),
+      closed AS (SELECT DISTINCT ON (p.project_id,p.version_id,p.action) p.* FROM production p
+        WHERE p.status IN ('FAILED','CANCELLED','READY_TO_POST') AND NOT EXISTS (
+          SELECT 1 FROM active a WHERE a.project_id=p.project_id AND a.version_id IS NOT DISTINCT FROM p.version_id AND a.action=p.action)
+        ORDER BY p.project_id,p.version_id,p.action,p.created_at DESC),
+      recent AS (SELECT * FROM closed ORDER BY updated_at DESC LIMIT 100)
+      SELECT * FROM (SELECT * FROM active UNION ALL SELECT * FROM recent) AS history
+      ORDER BY (status NOT IN ('FAILED','CANCELLED','READY_TO_POST')) DESC,updated_at DESC`,[projects]);
+    return c.json({jobs:rows.rows});
+  }catch(e){return fail(c,e);}});
+  app.post(P+'/projects/:id/recover-scene',guard,async c=>{const cl=await pool.connect();try{
+    const {job_id}=z.object({job_id:UUID}).strict().parse(await c.req.json());
+    await cl.query('BEGIN');const p=await project(c.req.param('id'),cl,true);
+    const j=(await cl.query("SELECT * FROM jobs WHERE id=$1 AND kind='reverse' AND package#>>'{reverse,project_id}'=$2 AND package#>>'{reverse,action}'='scene_logic' FOR UPDATE",[job_id,p.id])).rows[0];
+    if(!j)throw Error('ไม่มีงานตรวจฉากนี้ในโปรเจกต์');
+    if(j.status==='FAILED'){
+      if(!j.error?.includes('Unknown spatial reference')||j.package.reverse.quote.tasks.length!==1||j.package.reverse.quote.tasks[0].role!=='scene_logic')throw Error('งานนี้ใช้การกู้ผลตรวจตำแหน่งไม่ได้');
+      // The worker may only read stored results for this job from now on.
+      await cl.query(`UPDATE jobs SET stage_results=(COALESCE(stage_results,'{}'::jsonb)-'_reverse_progress')||'{"_saved_scene_only":true}'::jsonb,
+        status='NEW',stage='SCENE_RECOVERY',progress=0,error=NULL,attempts=0,finished_at=NULL,locked_by=NULL,locked_until=NULL,updated_at=now() WHERE id=$1`,[j.id]);
+    }else if(!j.stage_results?._saved_scene_only)throw Error('งานนี้ยังไม่ต้องกู้ผล');
+    await cl.query('COMMIT');return c.json({job_id:j.id,status:j.status==='FAILED'?'NEW':j.status,paid_requests:0},202);
+  }catch(e){await cl.query('ROLLBACK');return fail(c,e);}finally{cl.release();}});
   app.post(P+'/projects',guard,async c=>{try{const input=ProjectInput.parse(await c.req.json()),old=(await pool.query('SELECT * FROM reverse_projects WHERE origin_key=$1',[input.origin_key])).rows[0];if(old){if(old.source_sha256!==input.source.sha256)throw Error('Original source changed; create a new project');return c.json(old);}
     const p=(await pool.query('INSERT INTO reverse_projects(origin_key,title,source_sha256,source) VALUES($1,$2,$3,$4) RETURNING *',[input.origin_key,input.title,input.source.sha256,JSON.stringify(input.source)])).rows[0];return c.json(p,201);
   }catch(e){return fail(c,e);}});
@@ -86,6 +113,7 @@ export function registerReverse(app:Hono,pool:pg.Pool,options:Options){
     await cl.query("UPDATE reverse_projects SET current_revision=$2,status='planned',updated_at=now() WHERE id=$1",[p.id,rev]);await cl.query('COMMIT');return c.json({revision:rev,plan});}catch(e){await cl.query('ROLLBACK');return fail(c,e);}finally{cl.release();}});
   app.get(P+'/projects/:id/versions',guard,async c=>{try{const p=await project(c.req.param('id'));return c.json({versions:(await pool.query('SELECT * FROM reverse_versions WHERE project_id=$1 ORDER BY created_at DESC LIMIT 100',[p.id])).rows});}catch(e){return fail(c,e);}});
   app.post(P+'/jobs/:id/resume',guard,async c=>{const cl=await pool.connect();try{await cl.query('BEGIN');const id=UUID.parse(c.req.param('id')),job=(await cl.query("SELECT * FROM jobs WHERE id=$1 AND kind='reverse' FOR UPDATE",[id])).rows[0];if(!job||job.status!=='FAILED')throw Error('Only a failed reverse job can resume');
+    if(job.stage_results?._reverse_credit)throw Error('ตรวจราคาและยืนยันใหม่หลังแก้ปัญหาเครดิต');
     const calls=(await cl.query('SELECT * FROM creative_calls WHERE job_id=$1',[id])).rows;
     if(calls.some((x:any)=>['started','uncertain'].includes(x.status)&&!(['fal','openai'].includes(x.provider)&&x.provider_id)))throw Error('Unknown POST outcome requires provider reconciliation; no automatic re-send');
     if(job.package.reverse.quote&&Date.parse(job.package.reverse.quote.valid_until)<=Date.now()){
@@ -163,8 +191,11 @@ export function registerReverse(app:Hono,pool:pg.Pool,options:Options){
     if(sceneBinding)quote.scene_logic=sceneBinding;quote.binding=sha(quote);await pool.query('INSERT INTO reverse_quotes(id,project_id,purpose,revision,quote,binding,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7)',[quote.id,p.id,quote.purpose,quote.revision,JSON.stringify(quote),quote.binding,quote.expires_at]);return c.json(quote);
   }catch(e){return fail(c,e);}});
   app.post(P+'/projects/:id/approve',guard,async c=>{const cl=await pool.connect();try{const input=Approval.parse(await c.req.json());await cl.query('BEGIN');const p=await project(c.req.param('id'),cl,true),row=(await cl.query('SELECT * FROM reverse_quotes WHERE id=$1 AND project_id=$2 FOR UPDATE',[input.quote_id,p.id])).rows[0];if(!row)throw Error('Quote not found');
-    const old=(await cl.query('SELECT job_id FROM reverse_approvals WHERE quote_id=$1',[input.quote_id])).rows[0];if(old){await cl.query('COMMIT');return c.json(old);}
-    const q=row.quote;assertApproval(q,input,p);await assertSceneApproval(cl,p,q);await assertRangeApproval(cl,p,q);const w=await worker(cl);if(sha(q.key_fingerprints)!==sha(w.key_fingerprints))throw Error('Provider key identity changed; quote again');
+    const old=(await cl.query('SELECT a.job_id,j.status FROM reverse_approvals a JOIN jobs j ON j.id=a.job_id WHERE a.quote_id=$1',[input.quote_id])).rows[0];if(old){await cl.query('COMMIT');return c.json(old);}
+    const q=row.quote;assertApproval(q,input,p);
+    const matching=await approvedMatch(cl,p.id,q);
+    if(matching){await cl.query('COMMIT');return c.json({...matching,reused:true});}
+    await assertSceneApproval(cl,p,q);await assertRangeApproval(cl,p,q);const w=await worker(cl);if(sha(q.key_fingerprints)!==sha(w.key_fingerprints))throw Error('Provider key identity changed; quote again');
     const job=await queue(cl,p,q.purpose,{quote:q},'reverse:approved:'+q.id);
     await cl.query('INSERT INTO reverse_approvals(project_id,quote_id,binding,accepted_usd,source_confirmed,rights_confirmed,approval_origin,job_id) VALUES($1,$2,$3,$4,true,true,$5,$6)',[p.id,q.id,q.binding,q.total_usd,input.approval_origin,job.id]);
     if(q.total_usd>0){const draft=(await cl.query("INSERT INTO drafts(topic,status,creative) VALUES($1,'submitted',$2) RETURNING id",[p.title,JSON.stringify({reverse_project:p.id,quote_id:q.id})])).rows[0];const allocations:Record<string,number>={};for(const t of q.tasks)allocations[t.category]=(allocations[t.category]||0)+t.usd;

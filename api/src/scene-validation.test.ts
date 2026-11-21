@@ -112,3 +112,13 @@ test('causal cycles, reversed time and invalid ownership references are rejected
  graph.dependencies=[{from:'E1',to:'E2',relation:'before',basis:'inferred',explanation:''},{from:'E2',to:'E1',relation:'before',basis:'inferred',explanation:''}];
  assert.throws(()=>validateGraph(graph,document,evidence),/cycle/);
 });
+
+test('known location IDs in visibility preserve real objects and downgrade the observation',()=>{
+ const {graph,document,evidence}=fixture(),doc={...document,locations:[{id:'L1'},{id:'L2'},{id:'L3'}]};
+ graph.spatial[0].visible_objects=['L1','O1','L2','C1','L3'];
+ const normalized=validateGraph(graph,doc,evidence);
+ assert.deepEqual(normalized.spatial[0].visible_objects,['O1']);assert.equal(normalized.spatial[0].basis,'unknown');
+ assert.match(normalized.spatial[0].uncertainty,/L1, L2, C1, L3/);
+ assert.deepEqual(validateGraph(normalized,doc,evidence),normalized);
+ graph.spatial[0].visible_objects=['missing'];assert.throws(()=>validateGraph(graph,doc,evidence),/ไม่มีในหลักฐาน/);
+});

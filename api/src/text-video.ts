@@ -1,3 +1,4 @@
+import {checkQuoteCredit} from './provider-billing.js';
 import type {Hono,Context,Next} from 'hono';
 import type pg from 'pg';
 import {randomUUID} from 'node:crypto';
@@ -13,6 +14,7 @@ type Options={guard:(c:Context,next:Next)=>Promise<any>;models:string[];response
 export async function falPrices(ids:string[]):Promise<Rate[]> {
   if(!process.env.FAL_KEY)throw new Error('ยังไม่ได้ตั้ง FAL_KEY บน motion-api');
   const r=await fetch('https://api.fal.ai/v1/models/pricing?endpoint_id='+encodeURIComponent(ids.join(',')),{headers:{Authorization:'Key '+process.env.FAL_KEY},signal:AbortSignal.timeout(20000)});
+  await checkQuoteCredit(r,'fal.ai');
   if(!r.ok)throw new Error(`ตรวจราคา fal.ai ไม่สำเร็จ (HTTP ${r.status})`);const d:any=await r.json();return d.prices||[];
 }
 export function registerTextVideo(app:Hono,pool:pg.Pool,options:Options) {

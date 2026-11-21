@@ -346,11 +346,18 @@ def run(ctx):
     spec=ctx.pkg['reverse'];project=ctx.db.one('SELECT * FROM reverse_projects WHERE id=%s',(spec['project_id'],))
     if not project or project['source_sha256']!=spec['source_sha256']:raise ApprovalRequired('Source binding changed')
     check_active(ctx)
+    credit=(ctx.job.get('stage_results') or {}).get('_reverse_credit')
+    if credit:
+        from .reverse_billing import ProviderCreditError
+        raise ProviderCreditError(credit['provider'],credit['rejected_before_acceptance'])
     if spec['action'] in ('analyze','recipe','assemble','prompt_prepare','inspection_prepare'):
         result={'analyze':analyze,'recipe':recipe,'assemble':final_assembly,'prompt_prepare':reverse_prompts.prepare,'inspection_prepare':reverse_scene_logic.prepare_inspection}[spec['action']](ctx,project,spec)
     else:
         quote=spec['quote'];approval=ctx.db.one('SELECT * FROM reverse_approvals WHERE quote_id=%s AND job_id=%s',(quote['id'],ctx.job['id']))
         if not approval or approval['binding']!=quote['binding']:raise ApprovalRequired('No persisted owner approval')
+        saved_only=bool((ctx.job.get('stage_results') or {}).get('_saved_scene_only'))
+        if saved_only and (spec['action']!='scene_logic' or [t['role'] for t in quote['tasks']]!=['scene_logic']):
+            raise ApprovalRequired('การกู้คำตอบเดิมใช้ได้เฉพาะผลตรวจฉากที่บันทึกไว้')
         reverse_scene_logic.generation_preflight(ctx,project,quote)
         result={'steps':[]}
         tasks=sorted(quote['tasks'],key=lambda t:0 if t['role']=='audio' else 1)
@@ -367,7 +374,7 @@ def run(ctx):
             from .reverse_prompt_audio import transcribe
             fn={'vision':vision,'planner':planner,'video':generate,'prompt_video':finish_range,'audio':produce_audio,'image':image_reference,'visual_qa':visual_qa,'prompt_extract':reverse_prompts.extract,'prompt_transcribe':transcribe,'prompt_character':reverse_prompts.character,'scene_logic':reverse_scene_logic.direct,'video_inspection':reverse_scene_logic.inspect}[task['role']]
             reverse_scene_logic.generation_preflight(ctx,project,quote)
-            value=fn(ctx,project,task,quote)
+            value=fn(ctx,project,task,quote,saved_only=True) if saved_only else fn(ctx,project,task,quote)
             ctx.db.q("UPDATE reverse_steps SET status='complete',result=%s,updated_at=now() WHERE job_id=%s AND slot=%s",(Jsonb(value),ctx.job['id'],slot))
             result['steps'].append(value)
         if spec['action']=='vision':result['videomd']=refresh_videomd(ctx,project)

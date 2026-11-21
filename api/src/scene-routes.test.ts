@@ -37,6 +37,28 @@ test('range price, exact export, consent and Finish retrieval are independently 
  const ok=await request(path+'/approve',consent);assert.equal(ok.status,202,await ok.clone().text());
  const first=await ok.json();assert.equal((await(await request(path+'/approve',consent)).json()).job_id,first.job_id);
  assert.equal((await query("SELECT count(*)::int n FROM jobs WHERE package->'reverse'->>'action'='prompt_video'")).rows[0].n,1);
+ // A second tab can have a different valid quote for identical work.
+ const other=await (await request(path+'/prompt-video-quote',body)).json();
+ assert.notEqual(other.id,q.id);
+ const approveOther=()=>request(path+'/approve',{...consent,quote_id:other.id,binding:other.binding});
+ const duplicate=await approveOther();
+ assert.equal(duplicate.status,200,await duplicate.clone().text());
+ assert.deepEqual(await duplicate.json(),{job_id:first.job_id,status:'NEW',reused:true});
+ const state=await(await request(path+'/progress?job_id='+first.job_id)).json();
+ assert.equal(state.jobs.length,1);assert.equal(state.jobs[0].version_id,v.id);assert.equal(state.jobs[0].variant,'b');
+ assert.equal((await(await request('/production-jobs',{projects:[p.id]})).json()).jobs[0].id,first.job_id);
+ assert.equal((await(await request('/production-jobs',{projects:[randomUUID()]})).json()).jobs.length,0);
+ await query("UPDATE jobs SET status='FAILED',error='unknown request outcome' WHERE id=$1",[first.job_id]);
+ assert.equal((await(await approveOther()).json()).job_id,first.job_id);
+ assert.equal((await query("SELECT count(*)::int n FROM creative_approvals WHERE job_id=$1",[first.job_id])).rows[0].n,1);
+ const credit={provider:'fal.ai',rejected_before_acceptance:true};
+ await query("UPDATE jobs SET updated_at=now(),finished_at=now(),stage_results=jsonb_build_object('_reverse_credit',$2::jsonb) WHERE id=$1",[first.job_id,JSON.stringify(credit)]);
+ assert.equal((await(await request(path+'/approve',consent)).json()).job_id,first.job_id);
+ assert.equal((await(await approveOther()).json()).job_id,first.job_id);
+ const fresh=await(await request(path+'/prompt-video-quote',body)).json();
+ const replacement=await request(path+'/approve',{...consent,quote_id:fresh.id,binding:fresh.binding}),replacementJob=await replacement.json();
+ assert.equal(replacement.status,202);assert.notEqual(replacementJob.job_id,first.job_id);
+ for(const table of ['creative_approvals','reverse_approvals'])await query('DELETE FROM '+table+' WHERE job_id=$1',[replacementJob.job_id]);
  const asset=randomUUID();
  for(const [id,role] of [[asset,'finished_video'],[randomUUID(),'generated_raw']])await query("INSERT INTO reverse_assets(id,project_id,role,storage_key,sha256,bytes,content_type,encryption,metadata) VALUES($1,$2,$3,$4,$5,9,'video/mp4','{}',$6)",[id,p.id,role,id,'e'.repeat(64),JSON.stringify({variant:'b',version_id:v.id})]);
  assert.equal((await request('/projects/'+randomUUID()+'/assets/'+asset)).status,404);
@@ -83,4 +105,18 @@ test('inspection prepares generated-only frames without charging and quotes bind
  await query('UPDATE reverse_inspection_evidence SET evidence=$2 WHERE id=$1',[ready.evidence_id,JSON.stringify({duration_s:2,inspected_shot_id:'shot_001',frames:[{frame:0,at_s:0,asset_id:randomUUID(),sha256:'1'.repeat(64)},{frame:59,at_s:1.966667,asset_id:randomUUID(),sha256:'2'.repeat(64)}]})]);
  const quoted=await request('/projects/'+p.id+'/inspection-quote',params);assert.equal(quoted.status,200,await quoted.clone().text());const q=await quoted.json();assert.equal(q.purpose,'video_inspection');assert.equal(q.tasks[0].payload.context.asset_sha256,'e'.repeat(64));assert.equal(q.tasks[0].payload.context.graph_id,fresh.id);assert.equal(q.tasks[0].payload.context.graph_hash,sha(graph));assert.equal((await query('SELECT count(*)::int n FROM reverse_approvals')).rows[0].n,0);
  await query('UPDATE reverse_assets SET sha256=$2 WHERE id=$1',[asset,'3'.repeat(64)]);assert.equal((await request('/projects/'+p.id+'/approve',{quote_id:q.id,binding:q.binding,accepted_usd:q.total_usd,source_confirmed:true,rights_confirmed:true})).status,409);assert.equal((await query('SELECT count(*)::int n FROM creative_calls')).rows[0].n,0);
+});
+
+test('saved-only spatial recovery keeps the job and approval, is idempotent and project scoped',async()=>{
+ const j=randomUUID(),pkg={reverse:{project_id:p.id,action:'scene_logic',quote:{tasks:[{role:'scene_logic'}]}}};
+ await query("INSERT INTO jobs(id,kind,status,package,package_sha256,idempotency_key,error) VALUES($1::uuid,'reverse','FAILED',$2,'hash',$1::uuid::text,'ValueError: Unknown spatial reference')",[j,JSON.stringify(pkg)]);
+ const path='/projects/'+p.id+'/recover-scene';
+ assert.equal((await request('/projects/'+randomUUID()+'/recover-scene',{job_id:j})).status,409);
+ for(let i=0;i<2;i++){
+   const res=await request(path,{job_id:j});assert.equal(res.status,202,await res.clone().text());
+   assert.deepEqual(await res.json(),{job_id:j,status:'NEW',paid_requests:0});
+ }
+ const row=(await query('SELECT package,stage_results FROM jobs WHERE id=$1',[j])).rows[0];
+ assert.deepEqual(row.package,pkg);assert.equal(row.stage_results._saved_scene_only,true);
+ assert.equal((await query('SELECT count(*)::int n FROM creative_approvals WHERE job_id=$1',[j])).rows[0].n,0);
 });
