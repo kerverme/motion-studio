@@ -9,7 +9,7 @@ const fixture={id:'classic-test',status:'ready',model:'gpt-6.1-sol',reasoning:'h
 const quote={revision:'revision-1',quote_hash:'quote-1',known_total_usd:0,unknown:['narration','sfx','compute'],planning_usage:{input_tokens:20,output_tokens:10},items:[{category:'planning',quantity:0,estimated_usd:0},{category:'narration',quantity:670,estimated_usd:null},{category:'sfx',quantity:4.5,estimated_usd:null},{category:'compute',quantity:1,estimated_usd:null}],classic_approval:{available:true,max_usd:3,allocations:{narration:1,sfx:1,compute:1},unknown_ack_required:true,style_ack_required:false}};
 (async()=>{
  const browser=await firefox.launch({headless:true,env:{...process.env,MOZ_DISABLE_CONTENT_SANDBOX:'1'}}),results=[];
- async function test(name,fn){const context=await browser.newContext({viewport:{width:1200,height:900}});await context.route('**/*',r=>r.request().isNavigationRequest()?r.fulfill({contentType:'text/html',body:'<!doctype html><html><body></body></html>'}):r.abort());const page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));try{await page.goto('https://studio.test/');await page.setContent('<!doctype html><html><head><style>'+html.match(/<style>([\s\S]*?)<\/style>/)[1]+'</style></head><body><div id="root"></div><div id="test-target"></div></body></html>');await page.addScriptTag({content:code});await page.evaluate(({fixture,quote})=>{window.fixture=fixture;window.quote=quote;window.calls=[];window.opened=[];window.estimateCount=0;window.approvalCount=0;api=async(path,opts={})=>{calls.push({path,method:opts.method||'GET',body:opts.body?JSON.parse(opts.body):undefined});if(path.endsWith('/estimate')){estimateCount++;return structuredClone(quote);}if(path.endsWith('/approve')){approvalCount++;return {id:'one-job'};}if(path.endsWith('/capabilities'))return {styles:[]};return {};};openDraft=id=>opened.push(id);load=async()=>{};}, {fixture,quote});await fn(page);assert.deepEqual(errors,[]);results.push(name);console.log('PASS '+name);}finally{await context.close();}}
+ async function test(name,fn){const context=await browser.newContext({viewport:{width:1200,height:900}});await context.route('**/*',r=>r.request().isNavigationRequest()?r.fulfill({contentType:'text/html',body:'<!doctype html><html><body></body></html>'}):r.abort());const page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));try{await page.goto('https://studio.test/');await page.setContent('<!doctype html><html><head><style>'+html.match(/<style>([\s\S]*?)<\/style>/)[1]+'</style></head><body><div id="root"></div><div id="test-target"></div></body></html>');await page.addScriptTag({content:code});await page.evaluate(({fixture,quote})=>{window.fixture=fixture;window.quote=quote;window.calls=[];window.opened=[];window.estimateCount=0;window.approvalCount=0;api=async(path,opts={})=>{calls.push({path,method:opts.method||'GET',body:opts.body?JSON.parse(opts.body):undefined});if(path.endsWith('/estimate')){estimateCount++;return structuredClone(quote);}if(path.endsWith('/approve')){approvalCount++;return {id:'one-job'};}if(path.endsWith('/capabilities'))return {styles:[]};return {};};window.openStudioDraft=openDraft;openDraft=id=>opened.push(id);load=async()=>{};}, {fixture,quote});await fn(page);assert.deepEqual(errors,[]);results.push(name);console.log('PASS '+name);}finally{await context.close();}}
  try{
  await test('Classic opens directly with a summary, no visible fields, and one duplicate-safe confirmation',async p=>{
   await p.evaluate(()=>creativeDraftView(document.getElementById('test-target'),fixture,async()=>{}));const target=p.locator('#test-target');
@@ -49,9 +49,56 @@ const quote={revision:'revision-1',quote_hash:'quote-1',known_total_usd:0,unknow
    const text=await p.locator('#test-target').textContent();assert.ok(text.includes(message),text);assert.ok(!text.includes('กำลังประกอบวิดีโอ'),text);assert.equal(await p.getByRole('button',{name:'ยืนยันผลิตคลิป',exact:true}).count(),0);
   }
  });
+ await test('Recent drafts and polling distinguish a real production job from missing or terminal jobs',async p=>{
+  await p.clock.install();
+  await p.evaluate(()=>{
+   frame();STYLE_LIST=[];MUSIC_LIST=[];
+   const st={llm:true,web_search:true,models:[],reasoning_levels:[],formats:{},daily_limit:20,drafts_today:0,max_credits:4500};
+   const make=(id,job_status,job_id)=>({id,topic:id,status:'submitted',job_id,job_status,created_at:new Date().toISOString()});
+   const missing=make('ร่างเก่า',null,null),cancel=make('งานที่ยกเลิก','CANCELLED','job-1');
+   studio(st,[missing,cancel,make('สร้างคลิปเสร็จ','READY_TO_POST','job-2'),make('งานล้มเหลว','FAILED','job-3')]);
+   window.busyWithoutJobs=S.studioBusy;
+   window.activeJob=inProgress(make('เรนเดอร์','RENDERING','job-4'));
+   window.statusReads=0;
+   const previous=api;api=async(path,...args)=>{if(path.endsWith('/drafts/'+missing.id)){statusReads++;return missing;}return previous(path,...args);};
+   openDraft=window.openStudioDraft;
+  });
+  const list=p.locator('.drafts');
+  assert.equal(await list.locator('.pulse').count(),0);
+  assert.equal(await p.evaluate(()=>busyWithoutJobs),false);assert.equal(await p.evaluate(()=>activeJob),true);
+  assert.match(await list.textContent(),/ยกเลิกการผลิตแล้ว/);
+  await list.getByRole('button',{name:/ร่างเก่า/}).click();
+  await p.locator('.drawer').getByRole('heading',{name:'ไม่พบงานผลิตที่เชื่อมกับร่าง',exact:true}).last().waitFor();
+  await p.clock.runFor(10000);
+  assert.equal(await p.evaluate(()=>statusReads),1);
+  assert.equal(await p.locator('.drawer').getByRole('button',{name:'ดูความคืบหน้า'}).count(),0);
+ });
  await test('Composer keeps voice and engine choices but does not carry Lemo budget/style into Classic',async p=>{
   await p.evaluate(()=>{frame();STYLE_LIST=[];MUSIC_LIST=[];const old=api;api=async(path,opts)=>path.endsWith('/drafts')&&opts?.method==='POST'?(window.created=JSON.parse(opts.body),{id:'created'}):old(path,opts);const st={llm:true,web_search:true,creative:{enabled:true,styles:[{id:'rubber-hose',name:'Rubber Hose'}]},models:[{id:'gpt-6.1-sol',label:'Sol'}],model:'gpt-6.1-sol',reasoning_levels:[],formats:{},daily_limit:20,drafts_today:1,max_credits:4500};studio(st,[]);});
   assert.equal(await p.getByLabel('งบสูงสุด USD',{exact:true}).isVisible(),false);await p.getByLabel('Rendering engine').selectOption('lemo');assert.equal(await p.getByLabel('งบสูงสุด USD',{exact:true}).isVisible(),true);await p.getByLabel('งบสูงสุด USD',{exact:true}).fill('0');await p.getByLabel('การเลือกสไตล์',{exact:true}).selectOption('manual');await p.getByLabel('โมเดลเสียง',{exact:true}).selectOption('eleven_v3');await p.getByLabel('Rendering engine').selectOption('classic');assert.equal(await p.getByLabel('งบสูงสุด USD',{exact:true}).isVisible(),false);await p.getByLabel('หัวข้อเรื่อง',{exact:true}).fill('คนชื่อกร ใครจ่ายบิล');await p.getByRole('button',{name:'เริ่มค้นและเขียน',exact:true}).click();await p.waitForFunction(()=>window.created);assert.deepEqual(await p.evaluate(()=>created.creative),{engine:'classic',tts_model:'eleven_v3',sfx_model:'eleven_text_to_sound_v3',mode:'auto'});
+ });
+ await test('New and returning owners see 6.2 Sol high, explicit choices persist, unavailable defaults require selection',async p=>{
+  const values=await p.evaluate(()=>{
+    const models=['gpt-6.2-sol','gpt-6.1-sol','gpt-7.1-nova'].map(id=>({id,label:generationModelLabel(id)}));
+    const controls=(ids=models)=>brainControls(ids,'gpt-6.2-sol',['low','medium','high'],'high',{source:'openai'},'Model','Effort');
+    const values=c=>[c.modelSel.value,c.effSel.value];
+    const fresh=values(controls());localStorage.setItem('ms.ai',JSON.stringify({model:'gpt-6.1-sol',reasoning:'high'}));
+    const migrated=controls(), upgraded=values(migrated);migrated.modelSel.value='gpt-7.1-nova';migrated.effSel.value='low';migrated.effSel.dispatchEvent(new Event('change'));
+    const manual=values(controls());localStorage.removeItem('ms.ai');
+    return {fresh,upgraded,manual,unavailable:values(controls(models.slice(1))),label:clipDisplayTitle({generation_model:'gpt-7.1-nova',title:'คลิป'})};
+  });
+  assert.deepEqual(values,{fresh:['gpt-6.2-sol','high'],upgraded:['gpt-6.2-sol','high'],manual:['gpt-7.1-nova','low'],unavailable:['','high'],label:'[GPT-7.1 Nova] คลิป'});
+ });
+ await test('An open model picker refreshes the account list without resetting the story or a manual selection',async p=>{
+  const result=await p.evaluate(async()=>{
+    let release;const gate=new Promise(resolve=>release=resolve);const calls=[];
+    api=async(path)=>{calls.push(path);await gate;return {models:[{id:'gpt-6.2-sol',label:'Sol'},{id:'gpt-6.1-terra',label:'Terra'},{id:'gpt-7.1-nova',label:'Nova'}],model_catalog:{source:'openai',checked_at:new Date().toISOString()}};};
+    const controls=brainControls([{id:'gpt-6.2-sol',label:'Sol'},{id:'gpt-6.1-terra',label:'Terra'}],'gpt-6.2-sol',['low','high'],'high',{source:'openai',checked_at:'2020-01-01T00:00:00Z'},'Model','Effort');
+    const topic=h('textarea',{});topic.value='เรื่องที่ยังเขียนไม่จบ';document.body.append(topic,controls.modelSel);
+    const requests=[refreshVisibleBrains(),refreshVisibleBrains()];controls.modelSel.value='gpt-6.1-terra';controls.modelSel.dispatchEvent(new Event('change'));
+    release();await Promise.all(requests);return {topic:topic.value,model:controls.modelSel.value,ids:[...controls.modelSel.options].map(o=>o.value),calls};
+  });
+  assert.deepEqual(result,{topic:'เรื่องที่ยังเขียนไม่จบ',model:'gpt-6.1-terra',ids:['gpt-6.2-sol','gpt-6.1-terra','gpt-7.1-nova'],calls:['/app/api/studio/openai-models']});
  });
  await test('Classic confirmation fits a narrow mobile drawer without horizontal overflow',async p=>{
   await p.setViewportSize({width:390,height:844});await p.evaluate(()=>{const target=document.getElementById('test-target');target.className='drawer';target.style.padding='20px';return creativeDraftView(target,fixture,async()=>{});});

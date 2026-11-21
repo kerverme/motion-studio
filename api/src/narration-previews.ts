@@ -1,3 +1,4 @@
+import { DEFAULT_OPENAI_MODEL, DEFAULT_REASONING, readModels, type ModelSource } from './openai-models.js';
 import type {Hono,Context,Next} from 'hono';
 import type pg from 'pg';
 import {createHash} from 'node:crypto';
@@ -6,8 +7,8 @@ import {openaiResponse} from './openai-response.js';
 import {SOURCE_TEXT_LIMIT,parseNarration,narrationPrompt} from './narration.js';
 
 const Input=z.object({
-  model:z.string().default('gpt-6.1-sol'),
-  reasoning:z.enum(['low','medium','high']).default('low'),
+  model:z.string().default(DEFAULT_OPENAI_MODEL),
+  reasoning:z.enum(['low','medium','high']).default(DEFAULT_REASONING),
   story_mode:z.enum(['general','name_story']).default('general'),
   topic:z.string().max(400).default(''),
   source_text:z.string().max(SOURCE_TEXT_LIMIT).default(''),
@@ -35,7 +36,7 @@ export function canResumePreview(message:string,responseId:string|null):boolean 
   return !!responseId && /OpenAI ตรวจสถานะไม่สำเร็จ|OpenAI HTTP (?:429|5\d\d)|ยังยืนยันการยกเลิกไม่ได้/.test(message);
 }
 
-export function registerNarrationPreviews(app:Hono,pool:pg.Pool,options:{guard:(c:Context,next:Next)=>Promise<any>;models:string[]}) {
+export function registerNarrationPreviews(app:Hono,pool:pg.Pool,options:{guard:(c:Context,next:Next)=>Promise<any>;models?:ModelSource}) {
   const env=process.env;
   const serialise=(row:any)=>({id:row.id,status:row.status,model:row.request.model,story_mode:row.request.story_mode,narration_style:row.request.narration_style,narration_custom:row.request.narration_custom,source_characters:row.request.source_text.length,example:row.example || null,error:row.error});
   async function generate(row:any) {
@@ -79,10 +80,21 @@ export function registerNarrationPreviews(app:Hono,pool:pg.Pool,options:{guard:(
     let settings:ReturnType<typeof parseNarration>;
     try{settings=parseNarration(parsed.data);}catch(error){return c.json({error:error instanceof Error?error.message:'สไตล์การเล่าไม่ถูกต้อง'},422);}
     if(!parsed.data.topic.trim() && !parsed.data.source_text.trim())return c.json({error:'ใส่หัวข้อหรือเนื้อหาก่อนดูตัวอย่าง'},422);
-    if(!options.models.includes(parsed.data.model))return c.json({error:'เลือกโมเดล OpenAI ในช่องสมองก่อนดูตัวอย่าง'},422);
+    const previous = (await pool.query('SELECT * FROM narration_previews WHERE id=$1',[id.data])).rows[0];
+    if (previous) {
+      // A replay with omitted defaults refers to the original provider request.
+      if (raw.model === undefined) parsed.data.model = previous.request.model;
+      if (raw.reasoning === undefined) parsed.data.reasoning = previous.request.reasoning;
+    }
+    const input=JSON.stringify({...parsed.data,...settings}),hash=createHash('sha256').update(input).digest('hex');
+    if (previous) {
+      if (previous.request_hash !== hash) return c.json({error:'คำขอเดิมใช้ข้อมูลอื่นไปแล้ว'},409);
+      if (previous.status === 'queued') kick();
+      return c.json(serialise(previous), ['done','failed'].includes(previous.status) ? 200 : 202);
+    }
+    if(!(await readModels(options.models)).ids.includes(parsed.data.model))return c.json({error:'เลือกโมเดล OpenAI ในช่องสมองก่อนดูตัวอย่าง'},422);
     if(!env.OPENAI_API_KEY)return c.json({error:'ยังไม่ได้ตั้งค่า OpenAI สำหรับตัวอย่างการเล่า'},503);
     await start();
-    const input=JSON.stringify({...parsed.data,...settings}),hash=createHash('sha256').update(input).digest('hex');
     const inserted=await pool.query('INSERT INTO narration_previews(id,request_hash,request) VALUES($1,$2,$3) ON CONFLICT DO NOTHING RETURNING *',[id.data,hash,input]);
     const row=inserted.rows[0] || (await pool.query('SELECT * FROM narration_previews WHERE id=$1',[id.data])).rows[0];
     if(row.request_hash!==hash)return c.json({error:'คำขอเดิมใช้ข้อมูลอื่นไปแล้ว'},409);

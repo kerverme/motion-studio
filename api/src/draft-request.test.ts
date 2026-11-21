@@ -1,3 +1,4 @@
+import {FALLBACK_MODELS} from './openai-models.js';
 import {test,after} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync,readdirSync} from 'node:fs';
@@ -25,7 +26,7 @@ test('Postgres prevents concurrent duplicate drafts and rewrites, and replays su
     if(sql.startsWith("SELECT id FROM drafts WHERE status='queued'"))return {rows:[]};
     return db.query(sql,args);
   }};
-  function server(){const app=new Hono();registerStudio(app,pool as any,{guard:async(_c,next)=>next(),createJob:async()=>{throw new Error('must not produce')},estimateCredits:()=>100,validate:()=>[],researchFreshness:()=>[]});return app;}
+  function server(){const app=new Hono();registerStudio(app,pool as any,{models:FALLBACK_MODELS,guard:async(_c,next)=>next(),createJob:async()=>{throw new Error('must not produce')},estimateCredits:()=>100,validate:()=>[],researchFreshness:()=>[]});return app;}
   const originalTimeout=globalThis.setTimeout;
   globalThis.setTimeout=((fn:any,ms?:number,...args:any[])=>ms===8000?originalTimeout(()=>{},0):originalTimeout(fn,ms,...args)) as typeof setTimeout;
   try{

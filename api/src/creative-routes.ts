@@ -4,10 +4,11 @@ import {z} from 'zod';
 import {randomUUID} from 'node:crypto';
 import {CreativeSettings,CreativePlan,chooseStyle,estimateCreative,releaseGates,LEMO_STYLES,publicStyles,CATEGORIES,hash} from './creative.js';
 import {retryCreativeJob} from './creative-retry.js';
+import {STUDIO_DRAFT_BY_ID} from './studio-draft-queries.js';
 
 export function registerCreative(app:Hono,pool:pg.Pool,deps:{guard:(c:Context,n:Next)=>Promise<any>,prepare:(row:any)=>any,signAsset?:(key:string)=>Promise<string|null>}){
   const g=deps.guard;
-  const rowFor=async(id:string)=>(await pool.query('SELECT * FROM drafts WHERE id=$1',[id])).rows[0];
+  const rowFor=async(id:string)=>(await pool.query(STUDIO_DRAFT_BY_ID,[id])).rows[0];
   const rates=()=>{try{return JSON.parse(process.env.MOTION_CREATIVE_RATES_JSON||'{}');}catch{return {};}};
   const quote=(r:any)=>estimateCreative(r,deps.prepare(r),rates());
   app.get('/app/api/creative/capabilities',g,c=>c.json({...releaseGates(),styles:publicStyles(),defaults:{mode:process.env.LEMO_DEFAULT_STYLE_MODE||'auto',tts_model:process.env.MOTION_DEFAULT_TTS_MODEL||'eleven_v4',sfx_model:process.env.MOTION_DEFAULT_SFX_MODEL||'eleven_text_to_sound_v3'}}));
@@ -18,7 +19,7 @@ export function registerCreative(app:Hono,pool:pg.Pool,deps:{guard:(c:Context,n:
   app.patch('/app/api/creative/:id',g,async c=>{
     const b=await c.req.json(),cl=await pool.connect();
     try{
-      await cl.query('BEGIN');const r=(await cl.query('SELECT * FROM drafts WHERE id=$1 FOR UPDATE',[c.req.param('id')])).rows[0];
+      await cl.query('BEGIN');const r=(await cl.query(STUDIO_DRAFT_BY_ID + ' FOR UPDATE',[c.req.param('id')])).rows[0];
       if(!r?.creative||r.status!=='ready')throw Error('Only ready drafts can be edited');
       const settings=CreativeSettings.parse({...r.creative.settings,...b.settings});
       if(settings.locked){settings.mode='manual';settings.manual_style=b.settings?.manual_style||r.creative.selection.selected.id;}
@@ -45,7 +46,7 @@ export function registerCreative(app:Hono,pool:pg.Pool,deps:{guard:(c:Context,n:
     if(!parsed.success)return c.json({error:'Invalid approval'},422);
     const input=parsed.data,cl=await pool.connect();
     try{
-      await cl.query('BEGIN');const r=(await cl.query('SELECT * FROM drafts WHERE id=$1 FOR UPDATE',[c.req.param('id')])).rows[0];
+      await cl.query('BEGIN');const r=(await cl.query(STUDIO_DRAFT_BY_ID + ' FOR UPDATE',[c.req.param('id')])).rows[0];
       if(!r?.creative)throw Error('No creative project');
       if('confirm' in input&&r.creative.engine!=='classic')throw Error('Simple confirmation is available only for Classic');
       const old=(await cl.query('SELECT job_id,quote FROM creative_approvals WHERE draft_id=$1 AND revision=$2',[r.id,input.revision])).rows[0];

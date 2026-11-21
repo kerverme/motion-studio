@@ -423,10 +423,64 @@ async function load(){
 }
 
 /* ---------- clips ---------- */
-const GENERATION_MODEL_LABELS = {'gpt-6.1-sol':'GPT-6.1 Sol','gpt-6.1-terra':'GPT-6.1 Terra','gpt-6-astra':'GPT-6 Astra','gpt-6-sol':'GPT-6 Sol','gpt-6-luna':'GPT-6 Luna','claude-opus-5-5':'Claude Opus 5.5','claude-sonnet-5-5':'Claude Sonnet 5.5'};
+function generationModelLabel(model){
+  const gpt=/^gpt-(\d+(?:\.\d+)*)(?:-([a-z]+))?$/.exec(model);
+  if(gpt)return 'GPT-'+gpt[1]+(gpt[2]?' '+gpt[2][0].toUpperCase()+gpt[2].slice(1):'');
+  const claude={'claude-opus-5-5':'Claude Opus 5.5','claude-sonnet-5-5':'Claude Sonnet 5.5'};
+  return Object.hasOwn(claude,model)?claude[model]:model;
+}
+let refreshVisibleBrains;
+setInterval(()=>refreshVisibleBrains?.(),60_000);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)refreshVisibleBrains?.();});
+function brainControls(models,defaultModel,levels,defaultEffort,catalog,modelLabel,effortLabel){
+  let saved={};
+  try{saved=JSON.parse(localStorage.getItem('ms.ai')||'{}')||{};}catch{}
+  // Older clients saved both fields when either changed, including the old default.
+  const legacyDefault=saved.version!==2 && saved.model==='gpt-6.1-sol';
+  let selected=(!legacyDefault && saved.model) || defaultModel;
+  const fieldStyle='width:auto;max-width:100%;padding:8px 10px';
+  const modelSel=h('select',{class:'field','aria-label':modelLabel,required:true,style:fieldStyle});
+  const effSel=levels.length?h('select',{class:'field','aria-label':effortLabel,style:fieldStyle},levels.map(l=>h('option',{value:l},'reasoning '+l))):null;
+  if(effSel)effSel.value=levels.includes(saved.reasoning)?saved.reasoning:defaultEffort;
+  const notice=h('small',{class:'sub',role:'status',hidden:true});
+  let nextCheck;
+  function showOptions(list,metadata){
+    const available=list.some(m=>m.id===selected);
+    put(modelSel,available?null:h('option',{value:'',disabled:true},'เลือกโมเดลที่บัญชีใช้ได้'),list.map(m=>h('option',{value:m.id},m.label)));
+    modelSel.value=available?selected:'';
+    let message='';
+    if(!list.length)message='บัญชีนี้ยังไม่มีโมเดลที่รองรับการเขียนคลิป';
+    else if(!available)message='โมเดลที่เลือกยังไม่เปิดให้บัญชีนี้ กรุณาเลือกจากรายชื่อล่าสุด';
+    else if(metadata?.source==='cached')message='เชื่อมรายการโมเดลไม่ได้ชั่วคราว กำลังใช้รายชื่อล่าสุดที่ตรวจได้';
+    else if(metadata?.source==='fallback')message='เชื่อมรายการโมเดลไม่ได้ชั่วคราว กำลังใช้รายชื่อเริ่มต้น';
+    notice.textContent=message;notice.hidden=!message;
+    nextCheck=metadata?.source==='openai'?(Date.parse(metadata.checked_at)||Date.now())+15*60_000:Date.now()+60_000;
+  }
+  showOptions(models,catalog);
+  function remember(){
+    const choice={version:2};
+    selected=modelSel.value||selected;
+    if(selected!==defaultModel)choice.model=selected;
+    if(effSel && effSel.value!==defaultEffort)choice.reasoning=effSel.value;
+    try{localStorage.setItem('ms.ai',JSON.stringify(choice));}catch{}
+  }
+  modelSel.addEventListener('change',remember);
+  if(effSel)effSel.addEventListener('change',remember);
+  async function refresh(){
+    if(!catalog || !modelSel.isConnected || document.hidden || Date.now()<nextCheck)return;
+    nextCheck=Infinity;
+    try{
+      const update=await api('/app/api/studio/openai-models');
+      if(modelSel.isConnected)showOptions(update.models,update.model_catalog);
+    }catch{nextCheck=Date.now()+60_000;}
+  }
+  refreshVisibleBrains=refresh;
+  modelSel.addEventListener('focus',refresh);
+  return {modelSel,effSel,notice};
+}
 function clipDisplayTitle(ep){
   const model=typeof ep.generation_model==='string'&&ep.generation_model?ep.generation_model:null;
-  const label=model?(Object.hasOwn(GENERATION_MODEL_LABELS,model)?GENERATION_MODEL_LABELS[model]:model):'ไม่ทราบโมเดล';
+  const label=model?generationModelLabel(model):'ไม่ทราบโมเดล';
   const videoLabel=ep.video_model?({h3_max:'H3 Max',grok_15:'Grok Imagine Video 1.5'}[ep.video_model]||ep.video_model):null;
   const tag='['+label+(videoLabel?' · '+videoLabel:'')+']',title=String(ep.title||'');
   // Display only: keep canonical titles and publishing captions unchanged.
@@ -586,7 +640,7 @@ async function publish(ep, body, close){
 
 
 /* ---------- studio: topic -> research -> draft -> produce ---------- */
-const DSTATE = {queued:['wait','รอคิว'], researching:['wait','กำลังค้นข้อมูล'], writing:['wait','กำลังเขียน'], ready:['go','รอตรวจ'], failed:['bad','ไม่สำเร็จ'], submitted:['ok','ส่งผลิตแล้ว'], discarded:['','ทิ้งแล้ว']};
+const DSTATE = {queued:['wait','รอคิว',true], researching:['wait','กำลังค้นข้อมูล',true], writing:['wait','กำลังเขียน',true], ready:['go','รอตรวจ'], failed:['bad','ไม่สำเร็จ'], discarded:['','ทิ้งแล้ว']};
 const TPL = {custom:'ภาพที่โค้ดวาดเฉพาะเรื่อง', chat:'แชทมือถือ', versus:'ปะทะ VS', scale:'เทียบขนาด', hook:'เปิดเรื่อง', number:'ตัวเลขนับขึ้น', compare:'เทียบแท่ง', bars:'จัดอันดับ', list:'รายการ', quiz:'ทายก่อน', reveal:'เฉลย', dots:'x ใน N', timeline:'ไทม์ไลน์', truth:'จริงหรือไม่', scenario:'ฉากสมมติ', icons:'ไอคอน', outro:'ปิดท้าย'};
 const IDEAS = ['ถ้าคนไทยทุกคนเลิกดื่มชานมไข่มุก 1 ปี จะเกิดอะไรขึ้น?','ถ้ากรุงเทพฯ ไม่มีรถติดเลย 1 วัน เราจะได้เวลาคืนกี่ชั่วโมง?','ถ้าคนไทยนอนครบ 8 ชั่วโมงทุกคน จะเกิดอะไรขึ้น?'];
 // every clip opens with "คนชื่อ X ในประเทศไทย มีกี่คน" and then follows the story (owner's default)
@@ -594,13 +648,15 @@ const openerTopic = (name, story) => name ? ('คนชื่อ '+name+' ใน
 const hhmm = d => new Date(d).toLocaleTimeString('th-TH',{hour:'2-digit',minute:'2-digit'});
 function draftState(d){
   if (d.status==='submitted'){
+    if (!d.job_id || !d.job_status) return ['','ไม่พบงานผลิตที่เชื่อมกับร่าง'];
     if (d.job_status==='READY_TO_POST') return ['ok', d.episode_number? 'เสร็จ · EP'+String(d.episode_number).padStart(3,'0') : 'เสร็จแล้ว'];
     if (d.job_status==='FAILED') return ['bad','ผลิตไม่สำเร็จ'];
-    return ['wait','กำลังผลิต · '+(STAGE[d.job_status]||d.job_status||'')];
+    if (d.job_status==='CANCELLED') return ['','ยกเลิกการผลิตแล้ว'];
+    return ['wait','กำลังผลิต · '+(STAGE[d.job_status]||d.job_status),true];
   }
   return DSTATE[d.status]||['',d.status];
 }
-const inProgress = d => ['queued','researching','writing'].includes(d.status) || (d.status==='submitted' && !['READY_TO_POST','FAILED','CANCELLED'].includes(d.job_status));
+const inProgress = d => draftState(d)[2] === true;
 
 
 /* ---------- characters made from an uploaded photo ---------- */
@@ -836,7 +892,7 @@ function studio(st, drafts){
   const narrationHint=h('div',{class:'hint'});
   const narrationChange=()=>{narrationCustomLabel.hidden=narrationSel.value!=='custom';narrationHint.textContent=(narrationChoices.find(x=>x.id===narrationSel.value)||{}).description||'';try{sessionStorage.setItem('ms.narration_style',narrationSel.value);sessionStorage.setItem('ms.narration_custom',narrationCustom.value);}catch{}};
   narrationSel.addEventListener('change',narrationChange);narrationCustom.addEventListener('input',narrationChange);narrationChange();
-  const inputProblem=()=>modeSel.value==='general'&&sourceText.value.length>sourceLimit?'เนื้อหาเกิน '+sourceLimit.toLocaleString('th-TH')+' ตัวอักษร กรุณาลดหรือแบ่งเป็นหลายเรื่องก่อนส่ง':narrationSel.value==='custom'&&!narrationCustom.value.trim()?'กรุณาบอกสไตล์การเล่าที่ต้องการในช่องกำหนดเอง':narrationSel.value==='custom'&&narrationCustom.value.trim().length>1000?'สไตล์ที่กำหนดเองเกิน 1,000 ตัวอักษร กรุณาย่อก่อนส่ง':'';
+  const inputProblem=()=>!modelSel.value?'เลือกสมองที่ใช้ได้ก่อน':modeSel.value==='general'&&sourceText.value.length>sourceLimit?'เนื้อหาเกิน '+sourceLimit.toLocaleString('th-TH')+' ตัวอักษร กรุณาลดหรือแบ่งเป็นหลายเรื่องก่อนส่ง':narrationSel.value==='custom'&&!narrationCustom.value.trim()?'กรุณาบอกสไตล์การเล่าที่ต้องการในช่องกำหนดเอง':narrationSel.value==='custom'&&narrationCustom.value.trim().length>1000?'สไตล์ที่กำหนดเองเกิน 1,000 ตัวอักษร กรุณาย่อก่อนส่ง':'';
   const auto = h('input',{type:'checkbox',disabled:true});
   const engineSel=h('select',{class:'field','aria-label':'Rendering engine'},h('option',{value:'classic'},'Classic Motion Studio'),h('option',{value:'lemo',disabled:!st.creative?.enabled&&!st.creative?.development},'Lemo Creative Motion'+(!st.creative?.enabled?' · ทดลองพัฒนา':'')));
   const creativeMode=h('select',{class:'field','aria-label':'การเลือกสไตล์'},h('option',{value:'auto'},'Auto — AI Director'),h('option',{value:'manual'},'Manual — เลือกเอง'));
@@ -850,14 +906,7 @@ function studio(st, drafts){
   engineSel.addEventListener('change',()=>{const lemo=engineSel.value==='lemo';lemoOptions.hidden=!lemo;lemoBudget.hidden=!lemo;productionNotice.textContent=lemo?'วางแผนเสียงให้ทุกฉาก · ตรวจราคาและอนุมัติก่อนผลิต':'Classic จัดรายการผลิตให้แล้ว ตรวจสรุปและกดยืนยันครั้งเดียวเมื่อบทพร้อม';});
   const creativePanel=h('div',{class:'chars'},h('h3',{},'เครื่องมือสร้างภาพ'),engineSel,lemoOptions,h('div',{class:'row'},h('label',{},'เสียงบรรยาย',voiceModel),lemoBudget),productionNotice);
   const creativeInput=()=>({engine:engineSel.value,tts_model:voiceModel.value,sfx_model:'eleven_text_to_sound_v3',...(engineSel.value==='lemo'?{mode:creativeMode.value,...(creativeMode.value==='manual'?{manual_style:creativeStyle.value}:{}),max_usd:Number(creativeBudget.value)}:{mode:'auto'})});
-  let saved={}; try{ saved=JSON.parse(localStorage.getItem('ms.ai')||'{}'); }catch{}
-  const modelSel = h('select',{class:'field','aria-label':'โมเดล',style:'width:auto;padding:8px 10px'}, (st.models||[]).map(m=>h('option',{value:m.id},m.label)));
-  modelSel.value = (st.models||[]).some(m=>m.id===saved.model) ? saved.model : st.model;
-  const effSel = (st.reasoning_levels||[]).length ? h('select',{class:'field','aria-label':'Reasoning',style:'width:auto;padding:8px 10px'},
-    st.reasoning_levels.map(l=>h('option',{value:l},'reasoning '+l))) : null;
-  if (effSel) effSel.value = st.reasoning_levels.includes(saved.reasoning) ? saved.reasoning : st.reasoning;
-  const remember = ()=>{ try{ localStorage.setItem('ms.ai', JSON.stringify({model:modelSel.value, reasoning:effSel?effSel.value:null})); }catch{} };
-  modelSel.addEventListener('change',remember); if (effSel) effSel.addEventListener('change',remember);
+  const {modelSel,effSel,notice:brainNotice}=brainControls(st.models||[],st.model,st.reasoning_levels||[],st.reasoning,st.model_catalog,'โมเดล','Reasoning');
   const err = h('div',{class:'err',role:'alert'});
   const go = h('button',{class:'btn primary',disabled:!ready,on:{click:async()=>{
     err.textContent=inputProblem();if(err.textContent)return; const general=modeSel.value==='general'; const t=general?(topic.value.trim()||sourceText.value.trim().slice(0,120)):openerTopic(heroName.value.trim(), topic.value.trim()); if (t.length<4){ err.textContent=general?'พิมพ์หัวข้อหรือเนื้อหาอย่างน้อย 4 ตัวอักษร':'ใส่ชื่อตัวเอก หรือพิมพ์เรื่องที่จะเล่าอย่างน้อย 4 ตัวอักษร'; topic.focus(); return; }
@@ -1024,7 +1073,7 @@ function studio(st, drafts){
     h('div',{class:'ideas'}, h('span',{class:'sub'},'ลองหัวข้อ:'), IDEAS.map(i=>h('button',{on:{click:()=>chooseIdea(i)}},i))),
     suggestPanel,
     h('details',{}, h('summary',{},'เพิ่มแนวทาง (ไม่บังคับ)'), h('div',{style:'margin-top:10px'},note)),
-    h('div',{class:'row',style:'justify-content:flex-start;gap:8px'}, h('span',{class:'sub'},'สมอง'), modelSel, effSel),
+    h('div',{class:'row',style:'justify-content:flex-start;gap:8px'}, h('span',{class:'sub'},'สมอง'), modelSel, effSel), brainNotice,
     narrationPanel,
     creativePanel,
     recurringPanel,
@@ -1141,9 +1190,12 @@ function openDraft(id){
       if (!body.isConnected) return;
       titleEl.textContent = draftState(d)[1];
       if (dirty) return;
-      if(d.creative&&d.draft&&!['failed','queued','researching','writing'].includes(d.status)){const scroll=body.scrollTop;await creativeDraftView(body,d,refresh);body.scrollTop=scroll;if(d.status==='submitted'&&!['READY_TO_POST','FAILED','CANCELLED'].includes(d.job_status))timer=setTimeout(refresh,4000);return;}
-      render(d);
-      if (inProgress(d)) timer=setTimeout(refresh, 4000);
+      if(d.creative&&d.draft&&!['failed','queued','researching','writing'].includes(d.status)){
+        const scroll=body.scrollTop;
+        await creativeDraftView(body,d,refresh);
+        body.scrollTop=scroll;
+      }else render(d);
+      if (body.isConnected && inProgress(d)) timer=setTimeout(refresh, 4000);
     }
     function logList(d){ return h('ol',{class:'logl'}, (d.log||[]).slice(-14).map(l=>h('li',{}, h('time',{},hhmm(l.at)), h('span',{},l.msg)))); }
     function usage(d){
@@ -1169,7 +1221,7 @@ function openDraft(id){
       const presenterLabel=d.has_character_reference?'ตัวละครจากรูปที่เลือก':d.presenter_kind==='context'?'ตัวละครตามเนื้อเรื่อง':d.presenter_kind==='cat'?'แมวการ์ตูน':'ตัวละครตามร่างเดิม';
       const head = [h('p',{class:'sub',style:'margin:0'},'หัวข้อ: '+d.topic+(d.note?' · แนวทาง: '+d.note:'')),h('p',{class:'sub',style:'margin:0'},'สไตล์การเล่า: '+narrationLabel(d.narration_style||'standard')+(d.narration_style==='custom'&&d.narration_custom?' · '+d.narration_custom:'')),d.story_mode==='general'?h('p',{class:'sub',style:'margin:0'},d.recurring_character?'ตัวละครหลักเดียวกันทุกฉาก: เปิด · '+presenterLabel:'ตัวละคร: '+(d.has_character_reference?'ใช้รูปที่เลือกเป็นอ้างอิงตามบท':'ตามเนื้อเรื่อง · วาดตัวอย่างตาม storyboard')):'',d.source_text?h('details',{},h('summary',{},'เนื้อหาต้นทางที่เก็บไว้ ('+d.source_text.length.toLocaleString('th-TH')+' ตัวอักษร)'),h('pre',{style:'white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto;font:inherit;font-size:13px'},d.source_text)):'' ];
       if (!dr || ['failed','queued','researching','writing'].includes(d.status)){
-        put(body, head, h('h2',{class:'d-title'}, d.status==='failed'?'เขียนไม่สำเร็จ':'กำลังทำงาน…'),
+        put(body, head, h('h2',{class:'d-title'}, d.status==='failed'?'เขียนไม่สำเร็จ':draftState(d)[1]),
           d.error?h('div',{class:'err'},d.error):'', d.problems&&d.problems.length&&d.status==='failed'?h('ul',{class:'probl'},d.problems.map(p=>h('li',{},p))):'',
           logList(d), usage(d),
           d.status==='failed'||d.status==='queued' ? h('div',{class:'actions'},
@@ -1249,7 +1301,7 @@ function openDraft(id){
           h('dt',{},'สไตล์ภาพ'), h('dd',{}, styleSel),
           h('dt',{},'เพลง'), h('dd',{}, musicSel, h('div',{class:'sub',style:'margin-top:4px'}, (dr.music_mode==='ai'?'AI จะแต่ง: ':'ถ้าหาเพลงเริ่มต้นไม่เจอ AI จะแต่ง: ')+[dr.music||'playful', dr.music_brief&&dr.music_brief.tempo_bpm?' · ~'+dr.music_brief.tempo_bpm+' BPM':'', dr.music_brief&&dr.music_brief.instruments?' · '+dr.music_brief.instruments:''].join(''))),
           dr.cast&&dr.cast.length ? [h('dt',{},'ตัวละคร'), h('dd',{}, dr.cast.map(c=>c.name).join(', '))] : '', h('dt',{},'ข้อมูลอ้างอิง'), h('dd',{}, (dr.sources||[]).length+' แหล่งที่ตรวจสอบแล้ว')),
-        d.status==='submitted' ? h('div',{class:'note'}, 'ส่งผลิตแล้ว: ', draftState(d)[1], d.job_error?h('div',{class:'err'},d.job_error):'', ' ', h('button',{class:'btn quiet',on:{click:()=>{ close(); go(d.job_status==='READY_TO_POST'?'ready':'working'); }}}, d.job_status==='READY_TO_POST'?'ดูคลิป':'ดูความคืบหน้า')) : '',
+        d.status==='submitted' ? h('div',{class:'note'}, draftState(d)[1], d.job_error?h('div',{class:'err'},d.job_error):'', ' ', d.job_id && d.job_status && d.job_status!=='CANCELLED' ? h('button',{class:'btn quiet',on:{click:()=>{ close(); go(d.job_status==='READY_TO_POST'?'ready':'working'); }}}, d.job_status==='READY_TO_POST'?'ดูคลิป':'ดูความคืบหน้า') : '') : '',
         dr.warnings&&dr.warnings.length ? h('details',{}, h('summary',{},'ข้อสังเกต '+dr.warnings.length+' ข้อ'), h('ul',{class:'warnl'}, dr.warnings.map(w=>h('li',{},w)))) : '',
         h('h4',{},'บทพูดและฉาก'), editable?h('p',{class:'sub',style:'margin:-10px 0 0'},'แก้บทได้ เขียนตัวเลขเป็นคำอ่าน (เช่น หกสิบห้าล้าน) เว้นวรรคทุกช่วงหายใจ'):'', segs,
         h('h4',{},'แหล่งข้อมูล'), srcs,

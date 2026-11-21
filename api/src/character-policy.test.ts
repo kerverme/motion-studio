@@ -1,3 +1,4 @@
+import {FALLBACK_MODELS} from './openai-models.js';
 import {test,after} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync,readdirSync} from 'node:fs';
@@ -65,7 +66,7 @@ test('routes persist opt-in with no name/photo, preserve first reference order a
   const nativeTimeout=globalThis.setTimeout;
   globalThis.setTimeout=((fn:any,ms?:number,...args:any[])=>nativeTimeout(ms===8000?()=>{}:fn,ms===8000?0:ms,...args)) as typeof setTimeout;
   try{
-    const app=new Hono();registerStudio(app,pool as any,{guard:async(_c,next)=>next(),createJob:async()=>{jobs++;await db.query("INSERT INTO jobs(id) VALUES('10000000-0000-0000-0000-000000000099')");return{status:201,body:{id:'10000000-0000-0000-0000-000000000099'}}},estimateCredits:()=>100,validate:()=>[],researchFreshness:()=>[]});
+    const app=new Hono();registerStudio(app,pool as any,{models:FALLBACK_MODELS,guard:async(_c,next)=>next(),createJob:async()=>{jobs++;await db.query("INSERT INTO jobs(id) VALUES('10000000-0000-0000-0000-000000000099')");return{status:201,body:{id:'10000000-0000-0000-0000-000000000099'}}},estimateCredits:()=>100,validate:()=>[],researchFreshness:()=>[]});
     const path='/app/api/studio/drafts';
     const send=(url:string,body:any,key:string,method='POST')=>app.request(url,{method,headers:{'content-type':'application/json','idempotency-key':key},body:JSON.stringify(body)});
     const body={topic:'นาฬิกาชีวิตกับแสง',story_mode:'general',source_text:'บทความยาวต้นฉบับยังต้องตรวจ',recurring_character:true,presenter_kind:'legacy',narration_style:'child_10',model:'gpt-6.1-sol',auto_produce:false,characters:[]};
@@ -127,7 +128,7 @@ test('context default applies to new work while omitted retries preserve legacy 
     await oldDb.exec(readFileSync(new URL('022_presenter_kind.sql',dir),'utf8'));
     const migrated:any=(await oldDb.query('SELECT * FROM drafts WHERE id=$1',[oldId])).rows[0];assert.equal(migrated.presenter_kind,'legacy');assert.deepEqual(migrated.storyboard,oldDraft.storyboard);assert.deepEqual(migrated.artwork,oldArt);
     const pool={query:async(sql:string,args:any[]=[])=>sql.startsWith("SELECT id FROM drafts WHERE status='queued'")?{rows:[]}:oldDb.query(sql,args)};
-    const app=new Hono();registerStudio(app,pool as any,{guard:async(_c,next)=>next(),createJob:async()=>{throw new Error('no production allowed')},estimateCredits:()=>100,validate:()=>[],researchFreshness:()=>[]});
+    const app=new Hono();registerStudio(app,pool as any,{models:FALLBACK_MODELS,guard:async(_c,next)=>next(),createJob:async()=>{throw new Error('no production allowed')},estimateCredits:()=>100,validate:()=>[],researchFreshness:()=>[]});
     const path='/app/api/studio/drafts';
     const send=(url:string,body:any,key:string,method='POST')=>app.request(url,{method,headers:{'content-type':'application/json','idempotency-key':key},body:JSON.stringify(body)});
     const retry=await send(path+'/'+oldId+'/rewrite',{},'legacy-min-retry');assert.equal(retry.status,201);const retryId=(await retry.json()).id;
