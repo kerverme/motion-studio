@@ -6,10 +6,38 @@ import {SCENE_SCHEMAS,SCENE_SYSTEM,INSPECT_SYSTEM,sceneInput,sceneInputHash,scen
 const hash=z.string().regex(/^[a-f0-9]{64}$/),main=z.string().regex(/^C[1-9][0-9]?$/).optional();
 export async function sceneGraph(db:any,p:any,id:string){const g=(await db.query('SELECT * FROM reverse_scene_graphs WHERE id=$1 AND project_id=$2',[id,p.id])).rows[0];if(!g||g.source_sha256!==p.source_sha256)throw Error('Scene graph not found or source changed');const v=(await db.query('SELECT * FROM reverse_prompt_versions WHERE id=$1 AND project_id=$2',[g.version_id,p.id])).rows[0];if(!v||motionLock(v.document)!==g.locks_hash||sceneInputHash(v,g.provenance.main_character_id||undefined)!==g.input_hash)throw Error('Scene graph no longer matches saved prompt');return {g,v};}
 export async function latestScene(db:any,v:any,mainId?:string){return (await db.query('SELECT * FROM reverse_scene_graphs WHERE project_id=$1 AND version_id=$2 AND input_hash=$3 ORDER BY created_at DESC,id DESC LIMIT 1',[v.project_id,v.id,sceneInputHash(v,mainId)])).rows[0]||null;}
-export function applySceneExport(result:any,v:any,g:any,source:any,shotId?:string,mainId?:string){const gate=sceneGate(g);result.scene_logic={graph_id:g?.id||null,...gate};if(!g){result.warnings.push('ยังไม่ได้ตรวจเหตุและผลของเรื่องด้วย Scene Logic Director');return result;}if(g.input_hash!==sceneInputHash(v,mainId))throw Error('Scene graph does not match these replacements'); const overrides=g.review?.overrides||[]; const offset=shotId?v.document.shots.find((s:any)=>s.id===shotId).start_s:0;const a=sceneConstraints(g,v.document,shotId,offset),b=overrides.length?sceneConstraints(g,v.document,shotId,offset,true):a;const insert=(prompt:string,extra:string)=>prompt.includes('\noverall_soundscape:')?prompt.replace('\noverall_soundscape:','\n\n'+extra+'\noverall_soundscape:'):prompt+'\n\n'+extra;
- if(!overrides.length)result.prompt_a=insert(result.prompt_a,a);
- if(overrides.length){const changed=compileExport(overrideDocument(v.document,g),v.replacements,result.endpoint_id,source,shotId,mainId);result.prompt_b=insert(changed.prompt_b,'USER-APPROVED CREATIVE OVERRIDES: '+overrides.map((o:any)=>o.event_id+': '+o.text).join('; ')+'\n'+b);result.warnings.push('B มีการเปลี่ยนเหตุการณ์ตามที่คุณอนุมัติ ไม่ใช่การจำลองต้นฉบับทุกเหตุการณ์');}else result.prompt_b=insert(result.prompt_b,b);
- result.blockers.push(...gate.blockers);result.warnings.push(...gate.warnings);const schema=JSON.parse(readSchema(result.endpoint_id));const max=schema?.properties?.prompt?.maxLength||schema?.properties?.prompt?.anyOf?.find((p:any)=>p.type==='string')?.maxLength;if(max&&(Array.from(result.prompt_a).length>max||Array.from(result.prompt_b).length>max))result.blockers.push('ข้อความพร้อมเงื่อนไขเหตุการณ์เกินขีดจำกัดโมเดล เลือกฉากย่อยหรือโมเดลอื่น');result.copy_allowed=result.blockers.length===0;result.scene_logic.constraints_hash=sha({a,b,review:g.review});return result;
+export function applySceneExport(result:any,v:any,g:any,source:any,shotId?:string,mainId?:string){
+ const gate=sceneGate(g);
+ result.scene_logic={graph_id:g?.id||null,...gate};
+ if(!g){result.warnings.push('ยังไม่ได้ตรวจเหตุและผลของเรื่องด้วย Scene Logic Director');return result;}
+ if(g.input_hash!==sceneInputHash(v,mainId))throw Error('Scene graph does not match these replacements');
+ const overrides=g.review?.overrides||[];
+ const offset=shotId?v.document.shots.find((s:any)=>s.id===shotId).start_s:0;
+ const insert=(prompt:string,extra:string)=>prompt.includes('\noverall_soundscape:')
+  ?prompt.replace('\noverall_soundscape:',()=> '\n\n'+extra+'\noverall_soundscape:')
+  :prompt+'\n\n'+extra;
+ const baseA=result.prompt_a,baseB=result.prompt_b;
+ let a=sceneConstraints(g,v.document,shotId,offset);
+ let b=overrides.length?sceneConstraints(g,v.document,shotId,offset,true):a;
+ if(!overrides.length){
+  result.prompt_a=insert(baseA,a);result.prompt_b=insert(baseB,b);
+ }else{
+  const changed=compileExport(overrideDocument(v.document,g),v.replacements,result.endpoint_id,source,shotId,mainId);
+  result.prompt_b=insert(changed.prompt_b,'USER-APPROVED CREATIVE OVERRIDES: '+overrides.map((o:any)=>o.event_id+': '+o.text).join('; ')+'\n'+b);
+  result.warnings.push('B มีการเปลี่ยนเหตุการณ์ตามที่คุณอนุมัติ ไม่ใช่การจำลองต้นฉบับทุกเหตุการณ์');
+ }
+ result.blockers.push(...gate.blockers);result.warnings.push(...gate.warnings);
+ const schema=JSON.parse(readSchema(result.endpoint_id));
+ const max=schema?.properties?.prompt?.maxLength||schema?.properties?.prompt?.anyOf?.find((p:any)=>p.type==='string')?.maxLength;
+ const exceedsLimit=()=>max&&(Array.from(result.prompt_a).length>max||Array.from(result.prompt_b).length>max);
+ if(exceedsLimit()&&!overrides.length&&result.locked_directions&&baseA.includes(result.locked_directions)&&baseB.includes(result.locked_directions)){
+  a=sceneConstraints(g,v.document,shotId,offset,false,true);b=a;
+  result.prompt_a=insert(baseA,a);result.prompt_b=insert(baseB,b);
+  result.scene_logic.indexed_source_actions=true;
+ }
+ if(exceedsLimit())result.blockers.push('ข้อความพร้อมเงื่อนไขเหตุการณ์เกินขีดจำกัดโมเดล เลือกฉากย่อยหรือโมเดลอื่น');
+ result.copy_allowed=result.blockers.length===0;result.scene_logic.constraints_hash=sha({a,b,review:g.review});
+ return result;
 }
 import {readFileSync} from 'node:fs';
 const exportCatalog=JSON.parse(readFileSync(new URL('../config/prompt-export-catalog.json',import.meta.url),'utf8'));

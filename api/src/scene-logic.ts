@@ -114,7 +114,7 @@ export function validateGraph(raw:any,doc:any,evidence:any){
  }
  return value;
 }
-export function sceneConstraints(row:any,document:any,shotId?:string,offset=0,allowOverrides=false){
+export function sceneConstraints(row:any,document:any,shotId?:string,offset=0,allowOverrides=false,indexed=false){
  const overrides=new Map<string,string>(allowOverrides?(row.review?.overrides||[]).map((o:any)=>[o.event_id,o.text]):[]);
  const canonicalAction=(event:any)=>{
   if(overrides.has(event.id))return overrides.get(event.id)!;
@@ -123,9 +123,18 @@ export function sceneConstraints(row:any,document:any,shotId?:string,offset=0,al
   return indices.map(i=>shot.actions[i].text).join(' ');
  };
  const events=row.graph.events.filter((e:any)=>!shotId||e.shot_id===shotId),ids=new Set(events.map((e:any)=>e.id));
- const lines=['NARRATIVE CONSTRAINTS (source action text is authoritative; causal/spatial analysis cannot replace it; uncertainty is not permission to invent events)'];
+ const lines=[indexed?'Scene continuity. Each event refers to the numbered shot and its timed actions above. Follow those actions verbatim. Treat inferred relations as uncertain.':'NARRATIVE CONSTRAINTS (source action text is authoritative; causal/spatial analysis cannot replace it; uncertainty is not permission to invent events)'];
  // Model mode and free action paraphrases are useful in the report, but cannot overwrite the generation instructions.
- for(const event of events)lines.push(`${event.id} [${event.shot_id}] ${Number((event.start_s-offset).toFixed(6))}–${Number((event.end_s-offset).toFixed(6))}s, ${overrides.has(event.id)?'owner-approved creative action':'locked source action'}: ${canonicalAction(event)}${event.uncertainty?' Model uncertainty: '+event.uncertainty:''}`);
+ // When the full report exceeds a model limit, refer to the directions already
+ // present verbatim in both prompts. Preserve each event and its exact timing.
+ const sourceShots=shotId?document.shots.filter((shot:any)=>shot.id===shotId):document.shots;
+ const shotNumbers=new Map(sourceShots.map((shot:any,index:number)=>[shot.id,index+1]));
+ for(const event of events){
+  if(indexed){
+   const actions=[...new Set<number>(event.source_action_indices)].sort((a,b)=>a-b).map(i=>i+1);
+   lines.push(`${event.id} = shot ${shotNumbers.get(event.shot_id)}, action ${actions.join('+')}, ${Number((event.start_s-offset).toFixed(6))}–${Number((event.end_s-offset).toFixed(6))}s (${event.basis}).`);
+  }else lines.push(`${event.id} [${event.shot_id}] ${Number((event.start_s-offset).toFixed(6))}–${Number((event.end_s-offset).toFixed(6))}s, ${overrides.has(event.id)?'owner-approved creative action':'locked source action'}: ${canonicalAction(event)}${event.uncertainty?' Model uncertainty: '+event.uncertainty:''}`);
+ }
  for(const d of row.graph.dependencies){
   if(ids.has(d.from)&&ids.has(d.to))lines.push(`${d.from} ${d.relation} ${d.to} (${d.basis}): ${d.explanation}`);
   else if(ids.has(d.from)||ids.has(d.to)){
@@ -133,7 +142,14 @@ export function sceneConstraints(row:any,document:any,shotId?:string,offset=0,al
    lines.push(`Context outside this shot, not an extra action to render: ${outside.id}: ${canonicalAction(outside)}. ${d.from} ${d.relation} ${d.to} (${d.basis}): ${d.explanation}`);
   }
  }
- for(const s of row.graph.spatial)if(ids.has(s.event_id))lines.push(`${s.character_id} at ${s.event_id}: position ${s.position}; orientation ${s.orientation}; gaze ${s.gaze}; approximate field of view ${s.field_of_view}; distance ${s.distance}; visible ${s.visible_objects.join(', ')}; occlusions ${s.occlusions.join(', ')}; knowledge ${s.knowledge}; ${s.basis}. ${s.uncertainty}`);
+ const unknownViews=new Set<string>();
+ for(const s of row.graph.spatial){
+  if(!ids.has(s.event_id))continue;
+  if(indexed&&s.basis==='unknown'){unknownViews.add(s.character_id+'@'+s.event_id);continue;}
+  lines.push(`${s.character_id} at ${s.event_id}: position ${s.position}; orientation ${s.orientation}; gaze ${s.gaze}; approximate field of view ${s.field_of_view}; distance ${s.distance}; visible ${s.visible_objects.join(', ')}; occlusions ${s.occlusions.join(', ')}; knowledge ${s.knowledge}; ${s.basis}. ${s.uncertainty}`);
+ }
+ if(unknownViews.size)lines.push('Unverified viewpoints: '+[...unknownViews].join(', ')+'. Follow the source blocking. Do not add a sighting or reaction based on these viewpoints.');
+
  for(const o of row.graph.objects)for(const s of o.states)if(ids.has(s.event_id))lines.push(`${o.id} at ${s.event_id}: owner ${s.owner_id||'unknown'}; ${s.placement}; visibility ${s.visibility}; ${s.basis}. ${s.uncertainty}`);
  return lines.join('\n');
 }

@@ -120,3 +120,23 @@ test('saved-only spatial recovery keeps the job and approval, is idempotent and 
  assert.deepEqual(row.package,pkg);assert.equal(row.stage_results._saved_scene_only,true);
  assert.equal((await query('SELECT count(*)::int n FROM creative_approvals WHERE job_id=$1',[j])).rows[0].n,0);
 });
+
+test('a verbose inspection fits the fal limit by indexing the complete immutable directions',()=>{
+ const v1={...v,document:doc,replacements:{characters:{C1:'a new lead in a green coat'},locations:{L1:'a new station'}}};
+ const raw=compileExport(doc,v1.replacements,'minimax/h3-max/text-to-video',p.analysis.source,undefined,'C1');
+ const source=raw.locked_directions;
+ const spatial={event_id:'E1',character_id:'C1',basis:'unknown',position:'near the doorway',orientation:'forward',
+  gaze:'unclear',field_of_view:'unknown',distance:'near',visible_objects:[],occlusions:[],knowledge:'unverified',
+  uncertainty:'unverified viewpoint '.repeat(240)};
+ const noisy={...graph,spatial:Array.from({length:15},()=>spatial)};
+ const reviewed={...g,review:{},input_hash:sceneInputHash(v1,'C1'),graph:noisy};
+ const out=applySceneExport(raw,v1,reviewed,p.analysis.source,undefined,'C1');
+ assert.equal(out.copy_allowed,true);assert.equal(out.scene_logic.indexed_source_actions,true);
+ for(const prompt of [out.prompt_a,out.prompt_b]){
+   assert(Array.from(prompt).length<=50000);assert(prompt.includes(source));
+   assert(prompt.includes('E1 causes E2'));assert(prompt.includes('E2 = shot 1, action 2, 1–2s'));
+   assert(prompt.includes('Unverified viewpoints: C1@E1'));assert(!prompt.includes(spatial.uncertainty));
+ }
+ assert(out.prompt_b.includes('a new lead in a green coat'));assert(!out.prompt_a.includes('a new lead in a green coat'));
+ assert(out.prompt_b.includes('a new station'));
+});
