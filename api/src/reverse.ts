@@ -197,9 +197,14 @@ export function registerReverse(app:Hono,pool:pg.Pool,options:Options){
     if(matching){await cl.query('COMMIT');return c.json({...matching,reused:true});}
     await assertSceneApproval(cl,p,q);await assertRangeApproval(cl,p,q);const w=await worker(cl);if(sha(q.key_fingerprints)!==sha(w.key_fingerprints))throw Error('Provider key identity changed; quote again');
     const job=await queue(cl,p,q.purpose,{quote:q},'reverse:approved:'+q.id);
-    await cl.query('INSERT INTO reverse_approvals(project_id,quote_id,binding,accepted_usd,source_confirmed,rights_confirmed,approval_origin,job_id) VALUES($1,$2,$3,$4,true,true,$5,$6)',[p.id,q.id,q.binding,q.total_usd,input.approval_origin,job.id]);
-    if(q.total_usd>0){const draft=(await cl.query("INSERT INTO drafts(topic,status,creative) VALUES($1,'submitted',$2) RETURNING id",[p.title,JSON.stringify({reverse_project:p.id,quote_id:q.id})])).rows[0];const allocations:Record<string,number>={};for(const t of q.tasks)allocations[t.category]=(allocations[t.category]||0)+t.usd;
-      await cl.query('INSERT INTO creative_approvals(draft_id,revision,quote,allocations,max_usd,job_id) VALUES($1,$2,$3,$4,$5,$6)',[draft.id,q.binding,JSON.stringify(q),JSON.stringify(allocations),q.total_usd,job.id]);}
+    const approval=(await cl.query(`INSERT INTO reverse_approvals(project_id,quote_id,binding,accepted_usd,source_confirmed,rights_confirmed,approval_origin,job_id)
+      VALUES($1,$2,$3,$4,true,true,$5,$6) RETURNING id`,[p.id,q.id,q.binding,q.total_usd,input.approval_origin,job.id])).rows[0];
+    if(q.total_usd>0){
+      const allocations:Record<string,number>={};
+      for(const task of q.tasks) allocations[task.category]=(allocations[task.category]||0)+task.usd;
+      await cl.query(`INSERT INTO creative_approvals(reverse_approval_id,revision,quote,allocations,max_usd,job_id)
+        VALUES($1,$2,$3,$4,$5,$6)`,[approval.id,q.binding,JSON.stringify(q),JSON.stringify(allocations),q.total_usd,job.id]);
+    }
     await cl.query("INSERT INTO job_events(job_id,status,message,data) VALUES($1,'NEW','Owner approved exact reverse-production quote',$2)",[job.id,JSON.stringify({quote_id:q.id,total_usd:q.total_usd,binding:q.binding})]);await cl.query('COMMIT');return c.json({job_id:job.id,status:job.status},202);
   }catch(e){await cl.query('ROLLBACK');return fail(c,e);}finally{cl.release();}});
   app.post(P+'/projects/:id/recipe',guard,async c=>{try{const p=await project(c.req.param('id')),input=z.object({name:z.string().regex(/^[a-z0-9_-]{1,80}$/),display_name:z.string().max(120).optional(),recipe:z.record(z.unknown()),reviewed:z.literal(true)}).strict().parse(await c.req.json());if(JSON.stringify(input).length>100000)throw Error('Recipe too large');const job=await queue(pool,p,'recipe',{recipe:input},'reverse:recipe:'+p.id+':'+sha(input));return c.json({job_id:job.id,paid_requests:0},202);}catch(e){return fail(c,e);}});

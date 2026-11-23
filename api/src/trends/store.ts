@@ -15,8 +15,10 @@ export async function saveEvidence(db:Queryable,runId:string,e:Evidence,assessme
   await db.query('INSERT INTO trend_evidence_snapshots(source_id,research_run_id,observed_at,evidence) VALUES($1,$2,$3,$4) ON CONFLICT(source_id,research_run_id) DO NOTHING',[row.id,runId,e.observedAt,JSON.stringify(e)]);
   return row;
 }
-export async function eligibleTrends(db:Queryable,platform='both',limit=20) {
-  return (await db.query(`SELECT * FROM trend_sources WHERE status='Active' AND last_trend_evidence_at >= now()-interval '7 days' AND ($1='both' OR platform=$1) ORDER BY trend_score DESC,last_trend_evidence_at DESC LIMIT $2`,[platform,limit])).rows.filter(r=>isEligible(r));
+export async function eligibleTrends(db:Queryable,platform='both',limit=20,runId:string|null=null) {
+  return (await db.query(`SELECT * FROM trend_sources WHERE status='Active' AND last_trend_evidence_at >= now()-interval '7 days'
+    AND ($1='both' OR platform=$1) AND ($3::uuid IS NULL OR research_run_id=$3)
+    ORDER BY trend_score DESC,last_trend_evidence_at DESC LIMIT $2`,[platform,limit,runId])).rows.filter(r=>isEligible(r));
 }
 export const publicTrend=(r:any)=>({id:r.id,title:r.title,platform:r.platform,url:r.source_url,published_at:r.published_at,last_verified:r.last_checked,last_trend_evidence_at:r.last_trend_evidence_at,score:Number(r.trend_score),score_details:r.score_details,status:r.status,summary:r.research_summary,views:r.views==null?null:Number(r.views),likes:r.likes==null?null:Number(r.likes),comments:r.comments==null?null:Number(r.comments),provider:r.provider_name||null,research_model:r.research_model||null,confidence:r.confidence??null,verification:r.verification_status||'legacy_unverified',supporting_sources:r.supporting_sources||[],estimated_credits:r.estimated_credits??null,actual_credits:r.actual_credits??null,research_job_id:r.research_job_id||null,metric_origin:'provider_reported'});
 export async function selectedContext(db:Queryable,selection:any,topic:string,nameStory=false) {

@@ -1,3 +1,4 @@
+import { DEFAULT_OPENAI_MODEL, DEFAULT_REASONING } from './openai-models.js';
 import {createHash,randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {SOURCE_TEXT_LIMIT,parseNarration} from './narration.js';
@@ -16,7 +17,7 @@ export const VIDEO_MODELS = [
 export const videoModel=(id:string)=>{const m=VIDEO_MODELS.find(x=>x.id===id);if(!m)throw new Error('โมเดลวิดีโอไม่รองรับ');return m;};
 export const VideoInput=z.object({
   topic:z.string().trim().min(3).max(400),source_text:z.string().max(SOURCE_TEXT_LIMIT).default(''),note:z.string().max(2000).default(''),
-  model:z.string().default('gpt-6.1-sol'),reasoning:z.enum(['low','medium','high']).default('medium'),
+  model:z.string().default(DEFAULT_OPENAI_MODEL),reasoning:z.enum(['low','medium','high']).default(DEFAULT_REASONING),
   video_model:z.enum(['h3_max','grok_15']).default('h3_max'),resolution:z.string().default('768P'),
   duration:z.union([z.literal(60),z.literal(90),z.literal(120)]).default(60),
   narration_style:z.string().default('standard'),narration_custom:z.string().max(1000).default(''),

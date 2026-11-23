@@ -12,7 +12,9 @@ function renderTextVideo(cfg,plans){
   const topic=h('textarea',{rows:3,maxlength:400,'aria-label':'หัวข้อ Text to Video',placeholder:'อยากเล่าเรื่องอะไร?'});
   const source=h('textarea',{rows:5,maxlength:100000,'aria-label':'เนื้อหาอ้างอิง Text to Video',placeholder:'วางบทความ ข้อมูลจาก NotebookLM หรือลิงก์ต้นฉบับ (ไม่บังคับ)'});
   const note=h('textarea',{rows:2,maxlength:2000,'aria-label':'แนวภาพและรายละเอียดเพิ่มเติม',placeholder:'เช่น การ์ตูนอบอุ่น เล่าผ่านเหตุการณ์เดียว ตัวละครตามเนื้อเรื่อง'});
-  const brain=h('select',{'aria-label':'สมอง Text to Video'},cfg.brains.map(id=>h('option',{value:id,selected:id==='gpt-6.1-sol'},GENERATION_MODEL_LABELS[id]||id)));
+  const {modelSel:brain,effSel,notice:brainNotice,refreshBtn:refreshModels}=brainControls(
+    cfg.brains.map(id=>({id,label:generationModelLabel(id)})),cfg.default_brain,cfg.reasoning_levels,cfg.default_reasoning,
+    cfg.model_catalog,'สมอง Text to Video','Reasoning Text to Video');
   const model=tvModelSelect('h3_max');let resolution=tvResolutionSelect(model.value,'768P');const resolutionBox=h('div',{},tvField('ความละเอียดต้นทาง',resolution,'ส่งออกแนวตั้ง 1080×1920; ภาพต้นทางความละเอียดต่ำจะถูกขยาย'));
   model.addEventListener('change',()=>{resolution=tvResolutionSelect(model.value,model.value==='h3_max'?'768P':'720p');put(resolutionBox,tvField('ความละเอียดต้นทาง',resolution,'ราคาขึ้นกับโมเดลและความละเอียด'));});
   const duration=h('select',{'aria-label':'ความยาวคลิป Text to Video'},cfg.durations.map(n=>h('option',{value:n},n===60?'1 นาที':n===90?'1 นาที 30 วินาที':'2 นาที')));
@@ -22,10 +24,11 @@ function renderTextVideo(cfg,plans){
   const err=h('div',{class:'err',role:'alert'});
   const create=h('button',{class:'btn primary',disabled:!cfg.openai_configured,type:'submit'},'ให้สมองวางบทและแบ่งช็อต');
   const form=h('form',{class:'tv-panel tv-form',on:{submit:async e=>{e.preventDefault();create.disabled=true;err.textContent='';try{
-    const r=await draftPost(TV_PATH+'/plans',{topic:topic.value,source_text:source.value,note:note.value,model:brain.value,reasoning:'medium',video_model:model.value,resolution:resolution.value,duration:Number(duration.value),narration_style:style.value,narration_custom:style.value==='custom'?custom.value:''});openTextVideo(r.id);
+    const r=await draftPost(TV_PATH+'/plans',{topic:topic.value,source_text:source.value,note:note.value,model:brain.value,reasoning:effSel.value,video_model:model.value,resolution:resolution.value,duration:Number(duration.value),narration_style:style.value,narration_custom:style.value==='custom'?custom.value:''});openTextVideo(r.id);
   }catch(x){err.textContent=x.message;}finally{create.disabled=!cfg.openai_configured;}}}},
     tvField('หัวข้อหรือเรื่องที่จะเล่า',topic),tvField('เนื้อหาหรือลิงก์อ้างอิง (ไม่บังคับ)',source,'รองรับข้อความยาว 100,000 ตัวอักษร สมองเลือกประเด็นให้เหมาะกับความยาวคลิป'),
-    h('div',{class:'tv-grid'},tvField('สมอง OpenAI',brain),tvField('โมเดลวิดีโอ fal.ai',model)),resolutionBox,
+    h('div',{class:'tv-grid'},tvField('สมอง OpenAI',brain),tvField('ระดับการคิด',effSel)),h('div',{class:'catalog-line'},brainNotice,refreshModels),
+    h('div',{class:'tv-grid'},tvField('โมเดลวิดีโอ fal.ai',model),resolutionBox),
     tvField('ความยาวรวมสูงสุด',duration),segments,tvField('สไตล์การเล่า',style),custom,tvField('แนวภาพและรายละเอียดเพิ่มเติม',note),
     h('p',{class:'sub'},'ช็อตแรกสร้างจากข้อความ ช็อตถัดไปใช้เฟรมท้ายของช็อตก่อนเพื่อช่วยคงตัวละครและเหตุการณ์ต่อเนื่อง ความเหมือนไม่รับประกัน 100%'),
     h('p',{class:'sub'},'ขั้นนี้ใช้ OpenAI วางบทเท่านั้น คุณจะเห็นบท รายช็อต และราคาก่อนยืนยันการผลิตด้วย fal.ai และ ElevenLabs'),err,create);
@@ -34,7 +37,7 @@ function renderTextVideo(cfg,plans){
   renderTextVideoList(plans);
 }
 function renderTextVideoList(plans){const el=document.getElementById('tv-plans');if(!el)return;put(el,h('h2',{},'บทและคลิป Text to Video'),plans.length?plans.map(p=>h('button',{class:'btn',style:'display:block;width:100%;text-align:left;margin:10px 0',on:{click:()=>openTextVideo(p.id)}},
-  h('b',{},p.plan?.title||p.request.topic),h('div',{class:'sub'},tvState(p)+' · '+tvTime(p.request.duration)+' · '+(GENERATION_MODEL_LABELS[p.request.model]||p.request.model)+' · '+(TV_CONFIG.models.find(m=>m.id===p.request.video_model)?.label||p.request.video_model)))):h('p',{class:'sub'},'ยังไม่มีบท เริ่มจากหัวข้อด้านบน'));}
+  h('b',{},p.plan?.title||p.request.topic),h('div',{class:'sub'},tvState(p)+' · '+tvTime(p.request.duration)+' · '+generationModelLabel(p.request.model)+' · '+(TV_CONFIG.models.find(m=>m.id===p.request.video_model)?.label||p.request.video_model)))):h('p',{class:'sub'},'ยังไม่มีบท เริ่มจากหัวข้อด้านบน'));}
 function openTextVideo(id){
   drawer(({body,titleEl,close})=>{
     body.classList.add('tv-review');
@@ -86,7 +89,7 @@ function openTextVideo(id){
               h('label',{style:'display:block;margin:16px 0'},confirm,' ฉันตรวจบทและยืนยันค่าใช้จ่ายตามรายการนี้แล้ว'),send));
           }
           const canQuote=editable||p.job_status==='FAILED';
-          put(body,tvField('ชื่อคลิป',title),h('p',{},p.plan.synopsis),h('p',{class:'sub'},`${tvTime(p.request.duration)} · สมอง ${GENERATION_MODEL_LABELS[p.request.model]||p.request.model}`),
+          put(body,tvField('ชื่อคลิป',title),h('p',{},p.plan.synopsis),h('p',{class:'sub'},`${tvTime(p.request.duration)} · สมอง ${generationModelLabel(p.request.model)}`),
             h('div',{class:'tv-grid'},tvField('โมเดล fal.ai',videoModel),tvField('ความละเอียด',resBox)),tvField('ลักษณะภาพและตัวละครที่ใช้ต่อเนื่อง',bible),
             h('details',{},h('summary',{},'แหล่งข้อมูล '+p.plan.sources.length+' แห่ง'),p.plan.sources.map(s=>h('p',{},h('a',{href:s.url,target:'_blank',rel:'noopener'},s.title),h('small',{class:'sub'},' · '+s.publisher+' · '+s.published)))),
             shots.map(s=>s.node),editable?h('button',{class:'btn',on:{click:async()=>{try{await save();toast('บันทึกบทแล้ว ต้องตรวจราคาใหม่');refresh();}catch(x){error.textContent=x.message;}}}},'บันทึกการแก้บท'):null,

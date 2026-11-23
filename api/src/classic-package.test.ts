@@ -17,7 +17,7 @@ function fixture(){
   return {id:'a5000000-0000-0000-0000-000000000001',topic:draft.title_th,status:'ready',draft,storyboard,characters:[],note:'',creative:{engine:'classic',settings,selection:chooseStyle(plan,settings,script)}};
 }
 function appFor(row:any,validate:(p:any)=>string[]=()=>[],estimate:(p:any)=>number=()=>100){
-  const pool={query:async(sql:string)=>({rows:sql==='SELECT * FROM drafts WHERE id=$1'?[row]:[],rowCount:0})};
+  const pool={query:async(sql:string)=>({rows:sql.startsWith('SELECT * FROM drafts WHERE id=$1')?[row]:[],rowCount:0})};
   const nativeTimeout=globalThis.setTimeout;
   globalThis.setTimeout=((fn:any,ms?:number,...args:any[])=>nativeTimeout(ms===8000?()=>{}:fn,ms===8000?0:ms,...args)) as typeof setTimeout;
   const app=new Hono();

@@ -1,4 +1,5 @@
 import {checkQuoteCredit} from './provider-billing.js';
+import { DEFAULT_OPENAI_MODEL, DEFAULT_REASONING, REASONING_LEVELS, readModels, type ModelSource } from './openai-models.js';
 import type {Hono,Context,Next} from 'hono';
 import type pg from 'pg';
 import {randomUUID} from 'node:crypto';
@@ -10,7 +11,7 @@ import {VIDEO_MODELS,ELEVEN_API_PRICING,parseVideoInput,validateVideoPlan,digest
 
 const PREFIX='/app/api/text-video';
 const UUID=z.string().uuid();
-type Options={guard:(c:Context,next:Next)=>Promise<any>;models:string[];response?:typeof openaiResponse;prices?:(ids:string[])=>Promise<Rate[]>;autoStart?:boolean};
+type Options={guard:(c:Context,next:Next)=>Promise<any>;models?:ModelSource;response?:typeof openaiResponse;prices?:(ids:string[])=>Promise<Rate[]>;autoStart?:boolean};
 export async function falPrices(ids:string[]):Promise<Rate[]> {
   if(!process.env.FAL_KEY)throw new Error('ยังไม่ได้ตั้ง FAL_KEY บน motion-api');
   const r=await fetch('https://api.fal.ai/v1/models/pricing?endpoint_id='+encodeURIComponent(ids.join(',')),{headers:{Authorization:'Key '+process.env.FAL_KEY},signal:AbortSignal.timeout(20000)});
@@ -50,11 +51,18 @@ JSON shape: {title,synopsis,kind:"educational"|"fiction",visual_bible,sources:[{
   async function pump(){if(busy)return;busy=true;try{for(;;){const r=(await pool.query("UPDATE text_video_plans SET status='planning',updated_at=now() WHERE id=(SELECT id FROM text_video_plans WHERE status='queued' ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED) AND status='queued' RETURNING *")).rows[0];if(!r)break;await generate(r);}}finally{busy=false;}}
   const kick=()=>{if(options.autoStart!==false)void pump().catch(()=>{});};
   async function start(){await pool.query("UPDATE text_video_plans SET status='failed',error='ระบบรีสตาร์ทระหว่างส่ง OpenAI ไม่ส่งซ้ำอัตโนมัติ',updated_at=now() WHERE status='planning' AND response_id IS NULL");await pool.query("UPDATE text_video_plans SET status='queued' WHERE status='planning' AND response_id IS NOT NULL");kick();}
-  app.get(PREFIX+'/config',options.guard,async c=>{const w=await worker();return c.json({models:VIDEO_MODELS,brains:options.models,narration_styles:NARRATION_STYLES.map(({id,label})=>({id,label})),durations:[60,90,120],shot_seconds:15,openai_configured:!!env.OPENAI_API_KEY,fal_configured:!!env.FAL_KEY,worker_ready:!!(w?.fal&&w?.eleven),voice_id:w?.voice_id||null,eleven_pricing:ELEVEN_API_PRICING});});
+  app.get(PREFIX+'/config',options.guard,async c=>{const [w, catalog] = await Promise.all([worker(), readModels(options.models)]);
+    return c.json({models:VIDEO_MODELS, brains:catalog.ids, default_brain:DEFAULT_OPENAI_MODEL, default_reasoning:DEFAULT_REASONING, reasoning_levels:REASONING_LEVELS, model_catalog:{source:catalog.source,checked_at:catalog.checked_at},narration_styles:NARRATION_STYLES.map(({id,label})=>({id,label})),durations:[60,90,120],shot_seconds:15,openai_configured:!!env.OPENAI_API_KEY,fal_configured:!!env.FAL_KEY,worker_ready:!!(w?.fal&&w?.eleven),voice_id:w?.voice_id||null,eleven_pricing:ELEVEN_API_PRICING});});
   app.get(PREFIX+'/plans',options.guard,async c=>{const r=await pool.query('SELECT p.*,j.status AS job_status,e.number AS episode_number FROM text_video_plans p LEFT JOIN jobs j ON j.id=p.job_id LEFT JOIN episodes e ON e.id=j.episode_id ORDER BY p.created_at DESC LIMIT 30');return c.json({plans:r.rows.map(shape)});});
   app.post(PREFIX+'/plans',options.guard,async c=>{
-    try{const raw=await c.req.json(),id=UUID.parse(c.req.header('idempotency-key')),input=parseVideoInput(raw);if(!options.models.includes(input.model))return c.json({error:'เลือกสมอง OpenAI ที่รองรับ'},422);if(!env.OPENAI_API_KEY)return c.json({error:'ยังไม่ได้ตั้งค่า OpenAI'},503);
-      const hash=digest(input),old=await get(id);if(old)return old.request_hash===hash?c.json(shape(old)):c.json({error:'คำขอเดิมมีข้อมูลต่างกัน'},409);
+    try{
+      const raw=await c.req.json(), id=UUID.parse(c.req.header('idempotency-key'));
+      const old=await get(id);
+      const input=parseVideoInput(old ? {model:old.request.model,reasoning:old.request.reasoning,...raw} : raw);
+      const hash=digest(input);
+      if(old)return old.request_hash===hash?c.json(shape(old)):c.json({error:'คำขอเดิมมีข้อมูลต่างกัน'},409);
+      if(!env.OPENAI_API_KEY)return c.json({error:'ยังไม่ได้ตั้งค่า OpenAI'},503);
+      if (!(await readModels(options.models)).ids.includes(input.model)) return c.json({error:'เลือกสมอง OpenAI ที่รองรับ'},422);
       const count=(await pool.query("SELECT count(*)::int AS n FROM text_video_plans WHERE created_at>now()-interval '24 hours'")).rows[0].n;if(count>=Number(env.MOTION_TEXT_VIDEO_DAILY_LIMIT||20))return c.json({error:'ครบโควตาวางบท Text to Video วันนี้แล้ว'},429);
       await pool.query('INSERT INTO text_video_plans(id,request_hash,request) VALUES($1,$2,$3) ON CONFLICT DO NOTHING',[id,hash,JSON.stringify(input)]);const row=await get(id);if(row.request_hash!==hash)return c.json({error:'คำขอเดิมมีข้อมูลต่างกัน'},409);kick();return c.json(shape(row),202);
     }catch(e){return c.json({error:e instanceof Error?e.message:'ข้อมูลไม่ถูกต้อง'},422);}

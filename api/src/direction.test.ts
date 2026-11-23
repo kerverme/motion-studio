@@ -1,3 +1,4 @@
+import {FALLBACK_MODELS} from './openai-models.js';
 import {test,after} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync,readdirSync} from 'node:fs';
@@ -69,7 +70,7 @@ test('persisted director version protects legacy checkpoints, upgrades new work 
   const pool={query:async(sql:string,args:any[]=[])=>sql.startsWith("SELECT id FROM drafts WHERE status='queued'")?{rows:[]}:db.query(sql,args)};
   const nativeTimeout=globalThis.setTimeout;globalThis.setTimeout=((fn:any,ms?:number,...args:any[])=>nativeTimeout(ms===8000?()=>{}:fn,ms===8000?0:ms,...args)) as typeof setTimeout;
   try{
-    let jobs=0;const app=new Hono();registerStudio(app,pool as any,{guard:async(_c,next)=>next(),createJob:async()=>{jobs++;return{status:201,body:{}}},estimateCredits:()=>100,validate:()=>[],researchFreshness:()=>[]});
+    let jobs=0;const app=new Hono();registerStudio(app,pool as any,{models:FALLBACK_MODELS,guard:async(_c,next)=>next(),createJob:async()=>{jobs++;return{status:201,body:{}}},estimateCredits:()=>100,validate:()=>[],researchFreshness:()=>[]});
     const path='/app/api/studio/drafts',send=(url:string,body:any,key:string,method='POST')=>app.request(url,{method,headers:{'content-type':'application/json','idempotency-key':key},body:JSON.stringify(body)});
     const retry=await send(path+'/'+oldId+'/rewrite',{},'old-direction-retry');assert.equal(retry.status,201);const retryId=(await retry.json()).id;
     const resumed:any=(await db.query('SELECT * FROM drafts WHERE id=$1',[retryId])).rows[0];assert.equal(resumed.director_version,0);assert.equal(resumed.presentation_version,0);assert.deepEqual(resumed.storyboard,JSON.parse(JSON.stringify(legacyPlan)));assert.deepEqual(resumed.artwork,oldArt);

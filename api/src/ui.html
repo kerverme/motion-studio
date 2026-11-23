@@ -244,6 +244,14 @@ details summary{cursor:pointer;color:var(--ink-2);font-size:14px;margin-top:10px
 .composer{background:var(--surface);border:1px solid var(--line-2);border-radius:var(--r-lg);padding:20px 22px;display:flex;flex-direction:column;gap:12px}
 .composer textarea,.field{width:100%;padding:12px 14px;border-radius:var(--r-md);border:1px solid var(--line);background:var(--raised);line-height:1.55;resize:vertical}
 .composer textarea.topic{font-family:var(--serif);font-size:19px;min-height:84px}
+.brain-panel,.research-panel{border:1px solid var(--line-2);border-radius:var(--r-md);padding:14px;display:grid;gap:10px}
+.brain-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 14px}
+.control-label{display:grid;gap:4px;font-size:13px;font-weight:600;color:var(--ink-2)}
+.catalog-line,.research-actions{display:flex;align-items:center;justify-content:space-between;gap:6px 14px;flex-wrap:wrap}
+.catalog-line:empty{display:none}
+.catalog-line .btn.quiet{font-size:13px;padding:4px 8px}
+.research-panel h3{margin:0}
+@media(max-width:600px){.brain-grid{grid-template-columns:minmax(0,1fr)}}
 .composer .row{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
 .check{display:flex;gap:10px;align-items:flex-start;cursor:pointer;font-size:14px;color:var(--ink-2)}
 .check input{margin-top:3px}
@@ -423,10 +431,76 @@ async function load(){
 }
 
 /* ---------- clips ---------- */
-const GENERATION_MODEL_LABELS = {'gpt-6.1-sol':'GPT-6.1 Sol','gpt-6.1-terra':'GPT-6.1 Terra','gpt-6-astra':'GPT-6 Astra','gpt-6-sol':'GPT-6 Sol','gpt-6-luna':'GPT-6 Luna','claude-opus-5-5':'Claude Opus 5.5','claude-sonnet-5-5':'Claude Sonnet 5.5'};
+function generationModelLabel(model){
+  const gpt=/^gpt-(\d+(?:\.\d+)*)(?:-([a-z]+))?$/.exec(model);
+  if(gpt)return 'GPT-'+gpt[1]+(gpt[2]?' '+gpt[2][0].toUpperCase()+gpt[2].slice(1):'');
+  const claude={'claude-opus-5-5':'Claude Opus 5.5','claude-sonnet-5-5':'Claude Sonnet 5.5'};
+  return Object.hasOwn(claude,model)?claude[model]:model;
+}
+const brainPickers=new Set();
+let catalogRequest;
+function refreshVisibleBrains(force=false){
+  if(document.hidden)return;
+  for(const picker of brainPickers)if(!picker.modelSel.isConnected)brainPickers.delete(picker);
+  if(!brainPickers.size || (!force && ![...brainPickers].some(p=>p.due())))return catalogRequest;
+  if(!catalogRequest){
+    for(const p of brainPickers)p.refreshBtn.disabled=true;
+    catalogRequest=api('/app/api/studio/openai-models'+(force?'?refresh=1':''))
+      .then(data=>{for(const p of brainPickers)if(p.modelSel.isConnected)p.showOptions(data.models,data.model_catalog);})
+      .catch(()=>{for(const p of brainPickers)p.onError();})
+      .finally(()=>{catalogRequest=null;for(const p of brainPickers)p.refreshBtn.disabled=false;});
+  }
+  return catalogRequest;
+}
+setInterval(()=>refreshVisibleBrains(),60_000);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)refreshVisibleBrains();});
+function brainControls(models,defaultModel,levels,defaultEffort,catalog,modelLabel,effortLabel,preference='ms.ai'){
+  let saved={};
+  try{saved=JSON.parse(localStorage.getItem(preference)||'{}')||{};}catch{}
+  // Older writing controls saved both fields even when only the effort changed.
+  const legacyDefault=preference==='ms.ai' && saved.version!==2 && saved.model==='gpt-6.1-sol';
+  let selected=(!legacyDefault && saved.model) || defaultModel;
+  const modelSel=h('select',{class:'field','aria-label':modelLabel,required:true});
+  const effSel=levels.length?h('select',{class:'field','aria-label':effortLabel},levels.map(l=>h('option',{value:l},l))):null;
+  if(effSel)effSel.value=levels.includes(saved.reasoning)?saved.reasoning:defaultEffort;
+  const notice=h('small',{class:'sub',role:'status',hidden:true});
+  const refreshBtn=catalog?h('button',{type:'button',class:'btn quiet',on:{click:()=>refreshVisibleBrains(true)}},'อัปเดตรายชื่อโมเดล'):null;
+  let nextCheck=0;
+  function showOptions(list,metadata){
+    const available=list.some(m=>m.id===selected);
+    put(modelSel,available?null:h('option',{value:'',disabled:true},'เลือกโมเดลที่บัญชีใช้ได้'),list.map(m=>h('option',{value:m.id},m.label)));
+    modelSel.value=available?selected:'';
+    let message='';
+    if(!list.length)message='บัญชีนี้ยังไม่มีโมเดลที่รองรับ';
+    else if(!available)message='โมเดลที่เลือกยังไม่เปิดให้บัญชีนี้ กรุณาเลือกจากรายชื่อล่าสุด';
+    else if(metadata?.source==='cached')message='ติดต่อ OpenAI ไม่สำเร็จ กำลังใช้รายชื่อที่ตรวจไว้ล่าสุด';
+    else if(metadata?.source==='fallback')message='ติดต่อ OpenAI ไม่สำเร็จ กำลังใช้รายชื่อสำรอง';
+    else if(metadata?.source==='openai' && metadata.checked_at)message='รายชื่อจาก OpenAI · อัปเดต '+fmtD(metadata.checked_at);
+    notice.textContent=message;notice.hidden=!message;
+    nextCheck=metadata?.source==='openai'?(Date.parse(metadata.checked_at)||Date.now())+15*60_000:Date.now()+60_000;
+    modelSel.dispatchEvent(new Event('catalogchange'));
+  }
+  showOptions(models,catalog);
+  function remember(){
+    selected=modelSel.value||selected;
+    const choice={version:2};
+    if(selected!==defaultModel)choice.model=selected;
+    if(effSel && effSel.value!==defaultEffort)choice.reasoning=effSel.value;
+    try{localStorage.setItem(preference,JSON.stringify(choice));}catch{}
+  }
+  modelSel.addEventListener('change',remember);
+  if(effSel)effSel.addEventListener('change',remember);
+  if(refreshBtn){
+    brainPickers.add({modelSel,refreshBtn,showOptions,due:()=>Date.now()>=nextCheck,onError:()=>{
+      nextCheck=Date.now()+60_000;notice.hidden=false;notice.textContent='อัปเดตรายชื่อไม่สำเร็จ ลองกดอัปเดตอีกครั้ง';
+    }});
+    modelSel.addEventListener('focus',()=>refreshVisibleBrains());
+  }
+  return {modelSel,effSel,notice,refreshBtn};
+}
 function clipDisplayTitle(ep){
   const model=typeof ep.generation_model==='string'&&ep.generation_model?ep.generation_model:null;
-  const label=model?(Object.hasOwn(GENERATION_MODEL_LABELS,model)?GENERATION_MODEL_LABELS[model]:model):'ไม่ทราบโมเดล';
+  const label=model?generationModelLabel(model):'ไม่ทราบโมเดล';
   const videoLabel=ep.video_model?({h3_max:'H3 Max',grok_15:'Grok Imagine Video 1.5'}[ep.video_model]||ep.video_model):null;
   const tag='['+label+(videoLabel?' · '+videoLabel:'')+']',title=String(ep.title||'');
   // Display only: keep canonical titles and publishing captions unchanged.
@@ -586,7 +660,7 @@ async function publish(ep, body, close){
 
 
 /* ---------- studio: topic -> research -> draft -> produce ---------- */
-const DSTATE = {queued:['wait','รอคิว'], researching:['wait','กำลังค้นข้อมูล'], writing:['wait','กำลังเขียน'], ready:['go','รอตรวจ'], failed:['bad','ไม่สำเร็จ'], submitted:['ok','ส่งผลิตแล้ว'], discarded:['','ทิ้งแล้ว']};
+const DSTATE = {queued:['wait','รอคิว',true], researching:['wait','กำลังค้นข้อมูล',true], writing:['wait','กำลังเขียน',true], ready:['go','รอตรวจ'], failed:['bad','ไม่สำเร็จ'], discarded:['','ทิ้งแล้ว']};
 const TPL = {custom:'ภาพที่โค้ดวาดเฉพาะเรื่อง', chat:'แชทมือถือ', versus:'ปะทะ VS', scale:'เทียบขนาด', hook:'เปิดเรื่อง', number:'ตัวเลขนับขึ้น', compare:'เทียบแท่ง', bars:'จัดอันดับ', list:'รายการ', quiz:'ทายก่อน', reveal:'เฉลย', dots:'x ใน N', timeline:'ไทม์ไลน์', truth:'จริงหรือไม่', scenario:'ฉากสมมติ', icons:'ไอคอน', outro:'ปิดท้าย'};
 const IDEAS = ['ถ้าคนไทยทุกคนเลิกดื่มชานมไข่มุก 1 ปี จะเกิดอะไรขึ้น?','ถ้ากรุงเทพฯ ไม่มีรถติดเลย 1 วัน เราจะได้เวลาคืนกี่ชั่วโมง?','ถ้าคนไทยนอนครบ 8 ชั่วโมงทุกคน จะเกิดอะไรขึ้น?'];
 // every clip opens with "คนชื่อ X ในประเทศไทย มีกี่คน" and then follows the story (owner's default)
@@ -594,13 +668,15 @@ const openerTopic = (name, story) => name ? ('คนชื่อ '+name+' ใน
 const hhmm = d => new Date(d).toLocaleTimeString('th-TH',{hour:'2-digit',minute:'2-digit'});
 function draftState(d){
   if (d.status==='submitted'){
+    if (!d.job_id || !d.job_status) return ['','ไม่พบงานผลิตที่เชื่อมกับร่าง'];
     if (d.job_status==='READY_TO_POST') return ['ok', d.episode_number? 'เสร็จ · EP'+String(d.episode_number).padStart(3,'0') : 'เสร็จแล้ว'];
     if (d.job_status==='FAILED') return ['bad','ผลิตไม่สำเร็จ'];
-    return ['wait','กำลังผลิต · '+(STAGE[d.job_status]||d.job_status||'')];
+    if (d.job_status==='CANCELLED') return ['','ยกเลิกการผลิตแล้ว'];
+    return ['wait','กำลังผลิต · '+(STAGE[d.job_status]||d.job_status),true];
   }
   return DSTATE[d.status]||['',d.status];
 }
-const inProgress = d => ['queued','researching','writing'].includes(d.status) || (d.status==='submitted' && !['READY_TO_POST','FAILED','CANCELLED'].includes(d.job_status));
+const inProgress = d => draftState(d)[2] === true;
 
 
 /* ---------- characters made from an uploaded photo ---------- */
@@ -836,7 +912,7 @@ function studio(st, drafts){
   const narrationHint=h('div',{class:'hint'});
   const narrationChange=()=>{narrationCustomLabel.hidden=narrationSel.value!=='custom';narrationHint.textContent=(narrationChoices.find(x=>x.id===narrationSel.value)||{}).description||'';try{sessionStorage.setItem('ms.narration_style',narrationSel.value);sessionStorage.setItem('ms.narration_custom',narrationCustom.value);}catch{}};
   narrationSel.addEventListener('change',narrationChange);narrationCustom.addEventListener('input',narrationChange);narrationChange();
-  const inputProblem=()=>modeSel.value==='general'&&sourceText.value.length>sourceLimit?'เนื้อหาเกิน '+sourceLimit.toLocaleString('th-TH')+' ตัวอักษร กรุณาลดหรือแบ่งเป็นหลายเรื่องก่อนส่ง':narrationSel.value==='custom'&&!narrationCustom.value.trim()?'กรุณาบอกสไตล์การเล่าที่ต้องการในช่องกำหนดเอง':narrationSel.value==='custom'&&narrationCustom.value.trim().length>1000?'สไตล์ที่กำหนดเองเกิน 1,000 ตัวอักษร กรุณาย่อก่อนส่ง':'';
+  const inputProblem=()=>!modelSel.value?'เลือกสมองที่ใช้ได้ก่อน':modeSel.value==='general'&&sourceText.value.length>sourceLimit?'เนื้อหาเกิน '+sourceLimit.toLocaleString('th-TH')+' ตัวอักษร กรุณาลดหรือแบ่งเป็นหลายเรื่องก่อนส่ง':narrationSel.value==='custom'&&!narrationCustom.value.trim()?'กรุณาบอกสไตล์การเล่าที่ต้องการในช่องกำหนดเอง':narrationSel.value==='custom'&&narrationCustom.value.trim().length>1000?'สไตล์ที่กำหนดเองเกิน 1,000 ตัวอักษร กรุณาย่อก่อนส่ง':'';
   const auto = h('input',{type:'checkbox',disabled:true});
   const engineSel=h('select',{class:'field','aria-label':'Rendering engine'},h('option',{value:'classic'},'Classic Motion Studio'),h('option',{value:'lemo',disabled:!st.creative?.enabled&&!st.creative?.development},'Lemo Creative Motion'+(!st.creative?.enabled?' · ทดลองพัฒนา':'')));
   const creativeMode=h('select',{class:'field','aria-label':'การเลือกสไตล์'},h('option',{value:'auto'},'Auto — AI Director'),h('option',{value:'manual'},'Manual — เลือกเอง'));
@@ -850,14 +926,7 @@ function studio(st, drafts){
   engineSel.addEventListener('change',()=>{const lemo=engineSel.value==='lemo';lemoOptions.hidden=!lemo;lemoBudget.hidden=!lemo;productionNotice.textContent=lemo?'วางแผนเสียงให้ทุกฉาก · ตรวจราคาและอนุมัติก่อนผลิต':'Classic จัดรายการผลิตให้แล้ว ตรวจสรุปและกดยืนยันครั้งเดียวเมื่อบทพร้อม';});
   const creativePanel=h('div',{class:'chars'},h('h3',{},'เครื่องมือสร้างภาพ'),engineSel,lemoOptions,h('div',{class:'row'},h('label',{},'เสียงบรรยาย',voiceModel),lemoBudget),productionNotice);
   const creativeInput=()=>({engine:engineSel.value,tts_model:voiceModel.value,sfx_model:'eleven_text_to_sound_v3',...(engineSel.value==='lemo'?{mode:creativeMode.value,...(creativeMode.value==='manual'?{manual_style:creativeStyle.value}:{}),max_usd:Number(creativeBudget.value)}:{mode:'auto'})});
-  let saved={}; try{ saved=JSON.parse(localStorage.getItem('ms.ai')||'{}'); }catch{}
-  const modelSel = h('select',{class:'field','aria-label':'โมเดล',style:'width:auto;padding:8px 10px'}, (st.models||[]).map(m=>h('option',{value:m.id},m.label)));
-  modelSel.value = (st.models||[]).some(m=>m.id===saved.model) ? saved.model : st.model;
-  const effSel = (st.reasoning_levels||[]).length ? h('select',{class:'field','aria-label':'Reasoning',style:'width:auto;padding:8px 10px'},
-    st.reasoning_levels.map(l=>h('option',{value:l},'reasoning '+l))) : null;
-  if (effSel) effSel.value = st.reasoning_levels.includes(saved.reasoning) ? saved.reasoning : st.reasoning;
-  const remember = ()=>{ try{ localStorage.setItem('ms.ai', JSON.stringify({model:modelSel.value, reasoning:effSel?effSel.value:null})); }catch{} };
-  modelSel.addEventListener('change',remember); if (effSel) effSel.addEventListener('change',remember);
+  const {modelSel,effSel,notice:brainNotice,refreshBtn:refreshStoryModels}=brainControls(st.models||[],st.model,st.reasoning_levels||[],st.reasoning,st.model_catalog,'โมเดล','Reasoning');
   const err = h('div',{class:'err',role:'alert'});
   const go = h('button',{class:'btn primary',disabled:!ready,on:{click:async()=>{
     err.textContent=inputProblem();if(err.textContent)return; const general=modeSel.value==='general'; const t=general?(topic.value.trim()||sourceText.value.trim().slice(0,120)):openerTopic(heroName.value.trim(), topic.value.trim()); if (t.length<4){ err.textContent=general?'พิมพ์หัวข้อหรือเนื้อหาอย่างน้อย 4 ตัวอักษร':'ใส่ชื่อตัวเอก หรือพิมพ์เรื่องที่จะเล่าอย่างน้อย 4 ตัวอักษร'; topic.focus(); return; }
@@ -889,42 +958,71 @@ function studio(st, drafts){
   const researchStatus=h('div',{class:'sub',role:'status','aria-live':'polite'}),researchResults=h('div',{'aria-label':'ผลค้นหาเทรนด์'});
   const researchQuery=h('input',{class:'field','aria-label':'หัวข้อค้นหาเทรนด์',placeholder:'อยากค้นหาเรื่องอะไร เช่น วิทยาศาสตร์ใกล้ตัว กระแสอาหารไทย',maxlength:400});
   const researchAudience=h('input',{class:'field','aria-label':'กลุ่มผู้ชม',placeholder:'กลุ่มผู้ชม',value:'คนไทยทั่วไป',maxlength:200});
+  const researchSettings=st.trend_research||{};
+  const {modelSel:trendModel,notice:trendNotice,refreshBtn:refreshTrendModels}=brainControls(
+    researchSettings.models||[],researchSettings.research_model,[],null,researchSettings.model_catalog,'สมองค้นหาเทรนด์',null,'ms.trend_brain');
+  const researchCount=h('select',{class:'field','aria-label':'จำนวนเทรนด์ที่ต้องการ'},[1,5,10].map(n=>h('option',{value:n},n+' เรื่อง')));
+  researchCount.value=readIdeaStore('ms.trend_count','10');
+  researchCount.addEventListener('change',()=>saveIdeaStore('ms.trend_count',researchCount.value));
+  for(const [field,key] of [[researchQuery,'ms.trend_query'],[researchAudience,'ms.trend_audience']]){
+    field.value=readIdeaStore(key,field.value);field.addEventListener('input',()=>saveIdeaStore(key,field.value));
+  }
   const trendDate=v=>v?new Intl.DateTimeFormat('th-TH',{dateStyle:'medium',timeStyle:'short',timeZone:'Asia/Bangkok'}).format(new Date(v)):'ยังไม่มีข้อมูล';
   const socialLabel=p=>({tiktok:'TikTok',instagram:'Instagram',youtube:'YouTube',web:'เว็บ'}[p]||p);
   const sourceCard=s=>h('div',{class:'sub',style:'padding:8px 0'},h('a',{href:s.url,target:'_blank',rel:'noopener noreferrer'},s.title||s.url),h('div',{},socialLabel(s.platform)+' · ผู้ให้บริการ '+(s.provider||'ยังไม่ระบุ')),
     h('div',{},'เผยแพร่ '+trendDate(s.published_at)),h('div',{},'สถิติจากผู้ให้บริการ: '+[['views','ยอดดู'],['likes','ไลก์'],['comments','ความเห็น']].map(([k,label])=>label+' '+(s[k]==null?'ไม่มีข้อมูล':Number(s[k]).toLocaleString('th-TH'))).join(' · ')));
-  let researching=false;
-  const refreshTrends=h('button',{class:'btn',type:'button',disabled:!st.trend_research?.enabled,on:{click:()=>{
-    const previous=readIdeaStore('ms.trend_research_pending',null);
-    const pending=previous||{request_id:crypto.randomUUID(),platform:trendPlatform.value,query:researchQuery.value.trim()||topic.value.trim()||'เรื่องใกล้ตัว วิทยาศาสตร์ เทคโนโลยี และกระแสสังคมไทย',audience:researchAudience.value.trim()||'คนไทยทั่วไป',count:Math.min(10,Number(topicCount.value))};
-    saveIdeaStore('ms.trend_research_pending',pending);void discoverTrends(pending);
-  }}},'Discover Trends · ค้นหาเทรนด์');
+  let researching=false,viewedRun=null;
+  const trendSlot='ms.trend_research_pending';
+  const refreshTrends=h('button',{class:'btn primary',type:'button',on:{click:()=>{
+    if(researching)return;
+    const previous=readIdeaStore(trendSlot,null);
+    if(!previous && !trendModel.value)return;
+    const pending=previous||{request_id:crypto.randomUUID(),model:trendModel.value,platform:trendPlatform.value,query:researchQuery.value.trim()||topic.value.trim()||'เรื่องใกล้ตัว วิทยาศาสตร์ เทคโนโลยี และกระแสสังคมไทย',audience:researchAudience.value.trim()||'คนไทยทั่วไป',count:Number(researchCount.value)};
+    saveIdeaStore(trendSlot,pending);void discoverTrends(pending);
+  }}},'ค้นหาเทรนด์');
+  function updateResearchButton(){
+    refreshTrends.disabled=researching || !researchSettings.enabled || (!trendModel.value && !readIdeaStore(trendSlot,null));
+    refreshTrends.textContent=researching?'กำลังค้นหา…':'ค้นหาเทรนด์';
+    trendModel.disabled=researching;
+  }
+  trendModel.addEventListener('change',updateResearchButton);
+  trendModel.addEventListener('catalogchange',updateResearchButton);
+  updateResearchButton();
   const renderResearch=data=>{
-    const latest=data.runs?.find(r=>r.firecrawl),b=latest?.firecrawl;
-    researchStatus.textContent=latest?'งานล่าสุด '+({queued:'รอคิว',running:'กำลังค้นคว้า',done:'เสร็จแล้ว',partial:'หลักฐานยังไม่ครบ',blocked:'ติดข้อจำกัด',failed:'ไม่สำเร็จ'}[latest.status]||latest.status)+' · พบหลักฐานผ่านเกณฑ์ '+latest.eligible_count+' เรื่อง · '+trendDate(latest.created_at)+' (กรุงเทพฯ)'+(b?' · Firecrawl สำรองสูงสุด '+b.estimated+'/25 เครดิต · ใช้จริง '+(b.actual==null?'ยังยืนยันไม่ได้':b.actual)+' เครดิต':''):'ยังไม่มีงานค้นคว้าใหม่ · สูงสุด 25 เครดิต Firecrawl ต่องาน';
+    const latest=viewedRun?(data.runs?.find(r=>r.id===viewedRun.id)||viewedRun):data.runs?.find(r=>r.firecrawl),b=latest?.firecrawl;
+    const runModel=latest?.request?.model||latest?.details?.model||latest?.model;
+    const shownTrends=(viewedRun?viewedRun.trends:data.trends)||[];
+    researchStatus.textContent=latest?'ผลการค้นหา'+(runModel?'ด้วย '+generationModelLabel(runModel):'')+' · '+({queued:'รอคิว',running:'กำลังค้นคว้า',done:'เสร็จแล้ว',partial:'หลักฐานยังไม่ครบ',blocked:'ติดข้อจำกัด',failed:'ไม่สำเร็จ'}[latest.status]||latest.status)+' · ผ่านเกณฑ์ '+(latest.eligible_count??0)+' เรื่อง'+(latest.created_at?' · '+trendDate(latest.created_at)+' (กรุงเทพฯ)':'')+(b?' · Firecrawl ใช้จริง '+(b.actual==null?'ยังยืนยันไม่ได้':b.actual+' เครดิต'):''):'ยังไม่มีผลค้นหาเทรนด์';
+    const knownUSD=Number(latest?.known_estimated_usd)||0;
+    const openAICost=latest?.known_estimated_usd==null || (!knownUSD&&latest.unpriced_calls) ? 'ค่า OpenAI ยังไม่มีราคาประเมิน'
+      : 'ค่า OpenAI ที่ประเมินได้ $'+knownUSD.toFixed(4)+(latest.unpriced_calls?' · ยังมีรายการรอราคา':'');
     put(researchResults,[
+      latest?.request?.query?h('div',{class:'sub'},'เรื่องที่ค้นหา · '+latest.request.query):'',
       latest?.error?h('div',{class:'err'},latest.error):'',
       latest?.details?.limitation?h('div',{class:'sub'},latest.details.limitation):'',
       ...[...new Map((latest?.details?.warnings||[]).map(w=>[w.code,w])).values()].map(w=>h('div',{class:'sub'},({insufficient_credits:'เครดิต Firecrawl ไม่พอ กรุณาตรวจยอดในบัญชี แล้วค้นคว้าใหม่ · ยังใช้ไอเดียจากเว็บได้',THIRD_PARTY_DATA_TERMS_REQUIRED:'เจ้าของบัญชีต้องตรวจและยอมรับข้อกำหนดผู้ให้บริการก่อน',budget_stopped:'หยุดเรียกข้อมูลเพื่อรักษางบ 25 เครดิต',capability_unavailable:'ผู้ให้บริการยังไม่มีเครื่องมือที่ต้องใช้',uncertain_charge:'การตอบกลับขาดหาย จึงหยุดไว้เพื่อป้องกันการคิดเงินซ้ำ',notion_sync_pending:'กำลังรอบันทึกลง Notion'}[w.code]||'ข้อจำกัด: '+w.code),w.action_url?h('a',{href:w.action_url,target:'_blank',rel:'noopener noreferrer'},' เปิดข้อกำหนดผู้ให้บริการ'):'')),
       latest?.details?.web_summary?h('details',{},h('summary',{},'ข้อมูลจากเว็บ · ยังไม่ใช่หลักฐานยืนยันเทรนด์โซเชียล'),h('p',{class:'sub'},latest.details.web_summary),...(latest.details.web_sources||[]).map(s=>h('div',{},h('a',{href:s.url,target:'_blank',rel:'noopener noreferrer'},s.title||s.url)))):'',
-      ...(data.trends||[]).map(t=>h('details',{style:'padding:10px 0;border-bottom:1px solid var(--line)'},h('summary',{},t.title+' · '+t.score+'/100'),h('p',{class:'sub'},'ความมั่นใจ '+t.confidence+'% · '+t.research_model+' · ตรวจ '+trendDate(t.last_verified)),h('p',{class:'sub'},'AI วิเคราะห์: '+t.summary),h('div',{class:'sub'},t.score_details?.reason||''),h('div',{class:'sub'},(t.score_details?.missing||[]).join(' · ')),...(t.supporting_sources||[]).map(sourceCard))),
-      latest?h('details',{},h('summary',{},'ค่าใช้จ่ายและการเรียกข้อมูล'),h('p',{class:'sub'},'เพดานทั้งงาน 25 เครดิต · เครดิตที่สำรองค้างยังใช้ซ้ำไม่ได้ · ค่าประมวลผล OpenAI แยกต่างหาก'),...(latest.details?.calls||[]).map(c=>h('div',{class:'sub'},c.provider+' / '+c.capability+' · สูงสุด '+c.max_credits+' · จริง '+(c.actual_credits==null?'ยังไม่ทราบ':c.actual_credits)+(c.cache_hit?' · ใช้แคช':'')+(c.error?' · '+c.error:''))),h('div',{class:'sub'},'OpenAI ประเมิน $'+Number(latest.known_estimated_usd||0).toFixed(4)+(latest.unpriced_calls?' · ยังมีรายการที่ประเมินราคาไม่ได้':''))):''
+      shownTrends.length?h('h4',{},viewedRun?'เทรนด์ที่พบในงานนี้':'เทรนด์ที่ผ่านเกณฑ์ในช่วง 7 วัน'):'',
+      ...shownTrends.map(t=>h('details',{style:'padding:10px 0;border-bottom:1px solid var(--line)'},h('summary',{},t.title+' · '+t.score+'/100'),h('p',{class:'sub'},'ความมั่นใจ '+t.confidence+'% · '+t.research_model+' · ตรวจ '+trendDate(t.last_verified)),h('p',{class:'sub'},'AI วิเคราะห์: '+t.summary),h('div',{class:'sub'},t.score_details?.reason||''),h('div',{class:'sub'},(t.score_details?.missing||[]).join(' · ')),...(t.supporting_sources||[]).map(sourceCard))),
+      latest?h('details',{},h('summary',{},'ค่าใช้จ่ายและการเรียกข้อมูล'),h('p',{class:'sub'},'เพดานทั้งงาน 25 เครดิต · เครดิตที่สำรองค้างยังใช้ซ้ำไม่ได้ · ค่าประมวลผล OpenAI แยกต่างหาก'),...(latest.details?.calls||[]).map(c=>h('div',{class:'sub'},c.provider+' / '+c.capability+' · สูงสุด '+c.max_credits+' · จริง '+(c.actual_credits==null?'ยังไม่ทราบ':c.actual_credits)+(c.cache_hit?' · ใช้แคช':'')+(c.error?' · '+c.error:''))),h('div',{class:'sub'},openAICost)):''
     ]);
   };
   async function loadResearch(){const data=await api('/app/api/studio/trends?platform='+trendPlatform.value);if(researchResults.isConnected)renderResearch(data);return data;}
   async function discoverTrends(pending){
-    if(researching)return;researching=true;refreshTrends.disabled=true;researchStatus.textContent='กำลังค้นเว็บและตรวจข้อมูลโซเชียล รอคำขอเดิมได้แม้โหลดหน้าใหม่…';
+    if(researching)return;
+    researching=true;viewedRun={id:pending.request_id,status:'queued',model:pending.model||researchSettings.research_model};updateResearchButton();
+    researchStatus.textContent='กำลังค้นหาด้วย '+generationModelLabel(pending.model||researchSettings.research_model||'OpenAI')+'…';
     try{
       let job;try{job=await api('/app/api/studio/trends/runs/'+pending.request_id);}catch(e){if(e.status!==404)throw e;job=await api('/app/api/studio/trends/refresh',{method:'POST',body:JSON.stringify(pending)});}
+      viewedRun=job;
       while(['queued','running'].includes(job.status)){
         await new Promise(resolve=>setTimeout(resolve,2500));if(!researchResults.isConnected)return;
-        job=await api('/app/api/studio/trends/runs/'+job.id);await loadResearch();
+        job=await api('/app/api/studio/trends/runs/'+job.id);viewedRun=job;await loadResearch();
       }
-      saveIdeaStore('ms.trend_research_pending',null);await loadResearch();
-    }catch(e){researchStatus.textContent=e.message;if(e.status>=400&&e.status<500&&e.status!==408)saveIdeaStore('ms.trend_research_pending',null);}
-    finally{researching=false;refreshTrends.disabled=!st.trend_research?.enabled;}
+      saveIdeaStore(trendSlot,null);await loadResearch();
+    }catch(e){researchStatus.textContent=e.message;if(e.status>=400&&e.status<500&&e.status!==408&&e.status!==429)saveIdeaStore(trendSlot,null);}
+    finally{researching=false;updateResearchButton();}
   }
-  if(!st.trend_research?.enabled)researchStatus.textContent='กำลังตรวจระบบค้นหา · Creative ใช้งานได้ตามปกติ';
   const drawIdeas=()=>{
     const visible=ideaSet&&ideaSet.story_mode===modeSel.value;
     put(ideaList,visible?ideaSet.ideas.map((title,index)=>{const detail=ideaSet.details?.[index];return h('div',{style:'width:100%;padding:12px 0;border-bottom:1px solid var(--line)'},
@@ -945,8 +1043,23 @@ function studio(st, drafts){
     const pending=previous||{request_id:crypto.randomUUID(),model:'gpt-6.1-terra',topic_mode:topicMode.value,platform:trendPlatform.value,count:Number(topicCount.value),reasoning:effSel?effSel.value:'low',story_mode:modeSel.value,topic:topic.value.trim(),source_text:modeSel.value==='general'?sourceText.value:'',note:note.value,hero:modeSel.value==='name_story'?heroName.value:'',exclude:[...new Set([...IDEAS,...readIdeaStore('ms.idea_history',[])])].slice(-60)};
     saveIdeaStore(suggestionSlot,pending);void getIdeas(pending);
   }}},'AI สุ่มหัวข้อ');
-  const suggestPanel=h('div',{'aria-label':'AI แนะนำเรื่อง',style:'display:flex;flex-direction:column;gap:8px'},topicMode,h('div',{class:'row'},trendPlatform,topicCount),h('div',{class:'sub'},'Last 7 Days · ย้อนหลัง 7 วัน · เวลากรุงเทพฯ · ค้นเมื่อกดปุ่ม'),researchQuery,researchAudience,h('div',{class:'sub'},'ค้นเว็บก่อน แล้วตรวจโซเชียลด้วย Alexandria · สูงสุด 25 เครดิต Firecrawl / งาน'),h('div',{class:'row'},refreshTrends,suggestBtn),researchStatus,researchResults,ideaStatus,selectionNote,ideaList,ideaError);
-  setTimeout(()=>{if(suggestPanel.isConnected){void loadResearch().catch(()=>{});const pending=readIdeaStore('ms.trend_research_pending',null);if(pending)void discoverTrends(pending);}},0);
+  const researchPanel=h('section',{class:'research-panel','aria-label':'ค้นหาเทรนด์'},
+    h('h3',{},'ค้นหาเทรนด์'),
+    h('label',{class:'control-label'},'เรื่องที่อยากค้นหา',researchQuery),
+    h('div',{class:'brain-grid'},h('label',{class:'control-label'},'สมองค้นหาเทรนด์',trendModel),h('label',{class:'control-label'},'แพลตฟอร์ม',trendPlatform)),
+    h('div',{class:'catalog-line'},trendNotice,refreshTrendModels),
+    h('details',{},h('summary',{},'ตัวเลือกการค้นหา'),h('div',{class:'brain-grid'},h('label',{class:'control-label'},'กลุ่มผู้ชม',researchAudience),h('label',{class:'control-label'},'จำนวนเทรนด์ที่ต้องการ',researchCount))),
+    h('div',{class:'research-actions'},h('span',{class:'sub'},'ย้อนหลัง 7 วัน · สูงสุด 25 เครดิต Firecrawl ต่องาน คิดค่า OpenAI ตามการใช้งาน'),refreshTrends),
+    researchStatus,researchResults);
+  const suggestPanel=h('div',{'aria-label':'AI แนะนำเรื่อง',style:'display:grid;gap:10px'},researchPanel,
+    h('div',{class:'brain-grid'},h('label',{class:'control-label'},'วิธีแนะนำหัวข้อ',topicMode),h('label',{class:'control-label'},'จำนวนหัวข้อที่สุ่ม',topicCount)),
+    h('div',{class:'research-actions'},ideaStatus,suggestBtn),selectionNote,ideaList,ideaError);
+  setTimeout(()=>{if(suggestPanel.isConnected){
+    const pending=readIdeaStore(trendSlot,null);
+    if(pending)void discoverTrends(pending);
+    else if(researchSettings.enabled)void loadResearch().catch(e=>{researchStatus.textContent=e.message;});
+    else researchStatus.textContent='ระบบค้นหาเทรนด์ยังไม่เปิดใช้งาน';
+  }},0);
   async function getIdeas(pending){
     if(suggesting)return;suggesting=true;suggestBtn.disabled=true;suggestBtn.textContent='กำลังคิดหัวข้อ…';ideaError.textContent='';ideaStatus.textContent='กำลังใช้ '+pending.model+' แนะนำเรื่อง รอผลคำขอเดิมได้แม้โหลดหน้าใหม่';
     try{
@@ -1021,10 +1134,12 @@ function studio(st, drafts){
   const composer = h('div',{class:'composer'},
     !ready ? h('div',{class:'note'},'ยังเขียนอัตโนมัติไม่ได้: ตั้งค่า ', [!st.llm&&('ANTHROPIC_API_KEY หรือ OPENAI_API_KEY'), !st.web_search&&'OPENAI_API_KEY (Web Search)'].filter(Boolean).join(' และ '), ' ใน Railway → motion-api → Variables แล้วกด Deploy') : '',
     h('label',{class:'sub'},'โหมดการเล่าเรื่อง',modeSel), modeHint, heroGroup, topic, sourcePanel,
+    h('section',{class:'brain-panel','aria-label':'สมองเขียนบท'},
+      h('div',{class:'brain-grid'},h('label',{class:'control-label'},'สมองเขียนบท',modelSel),effSel?h('label',{class:'control-label'},'ระดับการคิด',effSel):null),
+      h('div',{class:'catalog-line'},brainNotice,refreshStoryModels)),
     h('div',{class:'ideas'}, h('span',{class:'sub'},'ลองหัวข้อ:'), IDEAS.map(i=>h('button',{on:{click:()=>chooseIdea(i)}},i))),
     suggestPanel,
     h('details',{}, h('summary',{},'เพิ่มแนวทาง (ไม่บังคับ)'), h('div',{style:'margin-top:10px'},note)),
-    h('div',{class:'row',style:'justify-content:flex-start;gap:8px'}, h('span',{class:'sub'},'สมอง'), modelSel, effSel),
     narrationPanel,
     creativePanel,
     recurringPanel,
@@ -1141,9 +1256,12 @@ function openDraft(id){
       if (!body.isConnected) return;
       titleEl.textContent = draftState(d)[1];
       if (dirty) return;
-      if(d.creative&&d.draft&&!['failed','queued','researching','writing'].includes(d.status)){const scroll=body.scrollTop;await creativeDraftView(body,d,refresh);body.scrollTop=scroll;if(d.status==='submitted'&&!['READY_TO_POST','FAILED','CANCELLED'].includes(d.job_status))timer=setTimeout(refresh,4000);return;}
-      render(d);
-      if (inProgress(d)) timer=setTimeout(refresh, 4000);
+      if(d.creative&&d.draft&&!['failed','queued','researching','writing'].includes(d.status)){
+        const scroll=body.scrollTop;
+        await creativeDraftView(body,d,refresh);
+        body.scrollTop=scroll;
+      }else render(d);
+      if (body.isConnected && inProgress(d)) timer=setTimeout(refresh, 4000);
     }
     function logList(d){ return h('ol',{class:'logl'}, (d.log||[]).slice(-14).map(l=>h('li',{}, h('time',{},hhmm(l.at)), h('span',{},l.msg)))); }
     function usage(d){
@@ -1169,7 +1287,7 @@ function openDraft(id){
       const presenterLabel=d.has_character_reference?'ตัวละครจากรูปที่เลือก':d.presenter_kind==='context'?'ตัวละครตามเนื้อเรื่อง':d.presenter_kind==='cat'?'แมวการ์ตูน':'ตัวละครตามร่างเดิม';
       const head = [h('p',{class:'sub',style:'margin:0'},'หัวข้อ: '+d.topic+(d.note?' · แนวทาง: '+d.note:'')),h('p',{class:'sub',style:'margin:0'},'สไตล์การเล่า: '+narrationLabel(d.narration_style||'standard')+(d.narration_style==='custom'&&d.narration_custom?' · '+d.narration_custom:'')),d.story_mode==='general'?h('p',{class:'sub',style:'margin:0'},d.recurring_character?'ตัวละครหลักเดียวกันทุกฉาก: เปิด · '+presenterLabel:'ตัวละคร: '+(d.has_character_reference?'ใช้รูปที่เลือกเป็นอ้างอิงตามบท':'ตามเนื้อเรื่อง · วาดตัวอย่างตาม storyboard')):'',d.source_text?h('details',{},h('summary',{},'เนื้อหาต้นทางที่เก็บไว้ ('+d.source_text.length.toLocaleString('th-TH')+' ตัวอักษร)'),h('pre',{style:'white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto;font:inherit;font-size:13px'},d.source_text)):'' ];
       if (!dr || ['failed','queued','researching','writing'].includes(d.status)){
-        put(body, head, h('h2',{class:'d-title'}, d.status==='failed'?'เขียนไม่สำเร็จ':'กำลังทำงาน…'),
+        put(body, head, h('h2',{class:'d-title'}, d.status==='failed'?'เขียนไม่สำเร็จ':draftState(d)[1]),
           d.error?h('div',{class:'err'},d.error):'', d.problems&&d.problems.length&&d.status==='failed'?h('ul',{class:'probl'},d.problems.map(p=>h('li',{},p))):'',
           logList(d), usage(d),
           d.status==='failed'||d.status==='queued' ? h('div',{class:'actions'},
@@ -1249,7 +1367,7 @@ function openDraft(id){
           h('dt',{},'สไตล์ภาพ'), h('dd',{}, styleSel),
           h('dt',{},'เพลง'), h('dd',{}, musicSel, h('div',{class:'sub',style:'margin-top:4px'}, (dr.music_mode==='ai'?'AI จะแต่ง: ':'ถ้าหาเพลงเริ่มต้นไม่เจอ AI จะแต่ง: ')+[dr.music||'playful', dr.music_brief&&dr.music_brief.tempo_bpm?' · ~'+dr.music_brief.tempo_bpm+' BPM':'', dr.music_brief&&dr.music_brief.instruments?' · '+dr.music_brief.instruments:''].join(''))),
           dr.cast&&dr.cast.length ? [h('dt',{},'ตัวละคร'), h('dd',{}, dr.cast.map(c=>c.name).join(', '))] : '', h('dt',{},'ข้อมูลอ้างอิง'), h('dd',{}, (dr.sources||[]).length+' แหล่งที่ตรวจสอบแล้ว')),
-        d.status==='submitted' ? h('div',{class:'note'}, 'ส่งผลิตแล้ว: ', draftState(d)[1], d.job_error?h('div',{class:'err'},d.job_error):'', ' ', h('button',{class:'btn quiet',on:{click:()=>{ close(); go(d.job_status==='READY_TO_POST'?'ready':'working'); }}}, d.job_status==='READY_TO_POST'?'ดูคลิป':'ดูความคืบหน้า')) : '',
+        d.status==='submitted' ? h('div',{class:'note'}, draftState(d)[1], d.job_error?h('div',{class:'err'},d.job_error):'', ' ', d.job_id && d.job_status && d.job_status!=='CANCELLED' ? h('button',{class:'btn quiet',on:{click:()=>{ close(); go(d.job_status==='READY_TO_POST'?'ready':'working'); }}}, d.job_status==='READY_TO_POST'?'ดูคลิป':'ดูความคืบหน้า') : '') : '',
         dr.warnings&&dr.warnings.length ? h('details',{}, h('summary',{},'ข้อสังเกต '+dr.warnings.length+' ข้อ'), h('ul',{class:'warnl'}, dr.warnings.map(w=>h('li',{},w)))) : '',
         h('h4',{},'บทพูดและฉาก'), editable?h('p',{class:'sub',style:'margin:-10px 0 0'},'แก้บทได้ เขียนตัวเลขเป็นคำอ่าน (เช่น หกสิบห้าล้าน) เว้นวรรคทุกช่วงหายใจ'):'', segs,
         h('h4',{},'แหล่งข้อมูล'), srcs,

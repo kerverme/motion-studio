@@ -11,7 +11,7 @@ The browser-free adapter, migrations, UI and mocked integration are deployed. Au
 
 - Railway `alexandria-trend-research`: service `1e357e16-5f6d-427c-813c-811d8739ddf6`, repository root `/api`, `Dockerfile.research`, Node 24, no browser, Socai or Jev imports.
 - `DATABASE_URL`, `OPENAI_API_KEY`, `FIRECRAWL_API_KEY`, `NOTION_TOKEN` are backend references to the existing API service. Never expose values to the browser or logs.
-- `TREND_RESEARCH_MODEL` is required and verified through the account's OpenAI models endpoint before research. The initial live-verified configuration is `gpt-6.1-terra`.
+- `TREND_RESEARCH_MODEL` sets the research picker's default and the worker's startup model check. Owners can select another model from the account's OpenAI catalog before a search. The run records that model for planning, evidence analysis and retries. The writing and research pickers save independent preferences.
 - `NOTION_TREND_DATABASE_ID=41875d42-f42b-8193-bfc0-f9458b2f69fc`. Existing records and fields remain. New metadata fields were added in place.
 - `MOTION_TREND_RESEARCH_ENABLED=1` enables the manual UI. Automatic schedules are not enabled. `TREND_VERIFIED_PLATFORMS` must not be populated until live social retrieval succeeds.
 - HTTP `/health` and the `alexandria_worker` integration heartbeat report model, catalogue/account/Notion checks. A running container alone does not establish data readiness.

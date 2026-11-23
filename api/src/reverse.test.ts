@@ -42,7 +42,11 @@ test('Vision quote is read-only; approval is source/analysis/amount/key bound, d
   const a={quote_id:q.id,binding:q.binding,accepted_usd:q.total_usd,source_confirmed:true,rights_confirmed:true,approval_origin:'revideo_owner_ui'};
   assert.equal((await send(app,url+'/approve',{...a,accepted_usd:0})).status,409);assert.equal((await send(app,url+'/approve',{...a,source_confirmed:false})).status,409);
   const results=await Promise.all([send(app,url+'/approve',a),send(app,url+'/approve',a)]);assert.deepEqual(results.map(r=>r.status),[202,200]);const jobs=await Promise.all(results.map(r=>r.json()));assert.equal(jobs[0].job_id,jobs[1].job_id);
-  assert.equal((await query('SELECT count(*)::int AS n FROM creative_approvals WHERE job_id=$1',[jobs[0].job_id])).rows[0].n,1);assert.equal((await query('SELECT count(*)::int AS n FROM creative_calls')).rows[0].n,0,'API cannot dispatch paid calls');
+  const owners=await query(`SELECT c.draft_id, r.quote_id FROM creative_approvals c
+    JOIN reverse_approvals r ON r.id=c.reverse_approval_id AND r.job_id=c.job_id WHERE c.job_id=$1`,[jobs[0].job_id]);
+  assert.deepEqual(owners.rows,[{draft_id:null,quote_id:q.id}]);
+  assert.equal((await query('SELECT count(*)::int AS n FROM drafts')).rows[0].n,0,'approving twice creates no Studio draft');
+  assert.equal((await query('SELECT count(*)::int AS n FROM creative_calls')).rows[0].n,0,'API cannot dispatch paid calls');
   res=await send(app,url+'/quote',body);const stale=await res.json();await query("UPDATE reverse_projects SET analysis=jsonb_set(analysis,'{semantic_status}','\"changed\"') WHERE id=$1",[p.id]);assert.equal((await send(app,url+'/approve',{...a,quote_id:stale.id,binding:stale.binding,accepted_usd:stale.total_usd})).status,409);
 });
 test('changed billing units and unverified capabilities block paid quotes; generated references cannot be implicit source pixels',async()=>{

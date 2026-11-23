@@ -1,3 +1,4 @@
+import { DEFAULT_OPENAI_MODEL, DEFAULT_REASONING as REASONING, REASONING_LEVELS, openAIModelLabel, readModels, type ModelSource } from './openai-models.js';
 import {CreativeSettings,CreativePlanToolSchema,creativeSourceEvidence,chooseStyle,creativePrompt,releaseGates,LEMO_STYLES} from './creative.js';
 import {registerCreative} from './creative-routes.js';
 import {selectedContext,trendPrompt} from './trends/store.js';
@@ -19,6 +20,7 @@ import { BudgetedFirecrawl, PgResearchBudget, ResearchBudgetError } from './fire
 import { extractWebEvidence, verifySources, searchWeb, sourceKey } from './source-evidence.js';
 import { Storyboard, reviseStoryboard, validateStoryboardDraft, personCalls, withDepictionPolicy, type StoryboardT } from './storyboard.js';
 import { draftRequest } from './draft-request.js';
+import { IS_STUDIO_DRAFT, STUDIO_DRAFT_BY_ID, DAILY_STUDIO_DRAFT_COUNT } from './studio-draft-queries.js';
 import { NARRATION_STYLES, SOURCE_TEXT_LIMIT, SOURCE_READ_LIMIT, parseNarration, parseSourceText, narrationPrompt, sourceMaterialBlock, readSourceMaterial } from './narration.js';
 import { parseRecurringCharacter, parsePresenterKind, withCharacterPolicy, referencePresenterProblem, characterPolicyPrompt, type PresenterKind } from './character-policy.js';
 import { directorVersion, withDirectionPolicy, directionProblems, directionPrompt, exportedDirection, soundPolicy } from './direction.js';
@@ -30,25 +32,12 @@ const FIRECRAWL_URL = (env.FIRECRAWL_API_URL || 'https://api.firecrawl.dev').rep
 // AI provider: Anthropic (default) or OpenAI. With only OPENAI_API_KEY set, OpenAI is used automatically.
 const PROVIDER = (env.MOTION_LLM_PROVIDER || (env.ANTHROPIC_API_KEY ? 'anthropic' : env.OPENAI_API_KEY ? 'openai' : 'anthropic')).toLowerCase() === 'openai' ? 'openai' : 'anthropic';
 const OPENAI_URL = (env.OPENAI_BASE_URL || 'https://api.openai.com').replace(/\/$/, '');
-const MODEL = env.MOTION_LLM_MODEL || (PROVIDER === 'openai' ? 'gpt-6.1-sol' : 'claude-opus-5-5');
-// Models offered in the UI (the env default is always included). Reasoning effort applies to OpenAI reasoning models.
-const MODEL_CHOICES: Record<string, { id: string; label: string }[]> = {
-  openai: [
-    { id: 'gpt-6-astra', label: 'GPT-6 Astra — รุ่นใหม่ล่าสุด แรงสุด (แพงกว่า)' },
-    { id: 'gpt-6.1-sol', label: 'GPT-6.1 Sol — งานซับซ้อน เครื่องมือเยอะ' },
-    { id: 'gpt-6.1-terra', label: 'GPT-6.1 Terra — เร็ว เขียนเป็นธรรมชาติ' },
-    { id: 'gpt-6-sol', label: 'GPT-6 Sol' },
-    { id: 'gpt-6-luna', label: 'GPT-6 Luna — ถูกกว่า' },
-  ],
-  anthropic: [
-    { id: 'claude-opus-5-5', label: 'Claude Opus 5.5' },
-    { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5 — ถูกกว่า' },
-  ],
-};
-if (!MODEL_CHOICES[PROVIDER].some((m) => m.id === MODEL)) MODEL_CHOICES[PROVIDER].unshift({ id: MODEL, label: MODEL });
-export const OPENAI_MODELS=MODEL_CHOICES.openai.map(m=>m.id);
-const REASONING_LEVELS = ['low', 'medium', 'high'];
-const REASONING = REASONING_LEVELS.includes(String(env.MOTION_LLM_REASONING)) ? String(env.MOTION_LLM_REASONING) : 'high';
+const MODEL = PROVIDER === 'openai' ? DEFAULT_OPENAI_MODEL : env.MOTION_LLM_MODEL || 'claude-opus-5-5';
+const ANTHROPIC_MODELS = [
+  {id: 'claude-opus-5-5', label: 'Claude Opus 5.5'},
+  {id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5'},
+];
+if (PROVIDER === 'anthropic' && !ANTHROPIC_MODELS.some(m => m.id === MODEL)) ANTHROPIC_MODELS.unshift({id: MODEL, label: MODEL});
 const MODEL_RE = /^[a-z0-9][a-z0-9.\-]{2,60}$/;
 const MAX_TURNS = Number(env.MOTION_LLM_MAX_TURNS || 48);
 const MAX_INPUT_TOKENS = Number(env.MOTION_LLM_MAX_INPUT_TOKENS || 1_200_000); // incl. cache reads, per draft
@@ -275,7 +264,7 @@ function openaiConversation(system: string, first: string, model: string, effort
       // reasoning tokens count against max_output_tokens, so leave room for high effort
       const tools: any[] = fnTools(active);
       if (active.ws && !active.drawing) tools.push({ type: 'web_search', search_context_size: WEB_SEARCH_CONTEXT, user_location: { type: 'approximate', country: 'TH', city: 'Bangkok', region: 'Bangkok', timezone: 'Asia/Bangkok' } });
-      const resp = await openai({ model, instructions: system, input, tools, reasoning: { effort: active.drawing && effort === 'high' ? 'medium' : effort }, ...(active.ws && !active.drawing ? { include: ['web_search_call.action.sources'] } : {}),
+      const resp = await openai({ model, instructions: system, input, tools, reasoning: { effort }, ...(active.ws && !active.drawing ? { include: ['web_search_call.action.sources'] } : {}),
         max_output_tokens: active.drawing ? 16000 : 24000,
         parallel_tool_calls: false, max_tool_calls: Math.max(1, Math.min(3, MAX_WEB_SEARCH - (active.searches || 0))),
         tool_choice: force ? { type: 'function', name: 'submit_episode' } : 'auto' }, onProgress);
@@ -884,6 +873,7 @@ export function creativePackageProblems(pkg:any, board:StoryboardT, ownerNote=''
 
 // ---------------------------------------------------------------- the generator
 type Deps = {
+  models?: ModelSource;
   guard: (c: Context, next: Next) => Promise<any>;
   signAsset?: (key:string)=>Promise<string|null>;
   createJob: (body: any, idem: string | null) => Promise<{ status: number; body: any }>;
@@ -1096,7 +1086,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
   }
 
   async function generate(id: string) {
-    const row = (await pool.query('SELECT * FROM drafts WHERE id=$1', [id])).rows[0];
+    const row = (await pool.query(STUDIO_DRAFT_BY_ID, [id])).rows[0];
     if (!row || row.status !== 'queued') return;
     const seen = new Map<string, Seen>();
     const research: any[] = Array.isArray(row.research) ? [...row.research] : [];
@@ -1206,7 +1196,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       const urls=[...new Set<string>(row.trend_context.sources.flatMap((s:any)=>[s.url,...(s.supporting_sources||[]).map((p:any)=>p.url)]).filter((s:any)=>typeof s==='string'))].slice(0,6);
       verificationCalls++;
       await log(id,'เปิดแหล่งเทรนด์ตรวจข้อมูลที่เปลี่ยนตามเวลาก่อนเขียนบท');
-      const checked=await verifySources(urls,{apiKey:env.OPENAI_API_KEY!,baseUrl:OPENAI_URL,model:PROVIDER==='openai'?model:'gpt-6.1-sol',onProgress:message=>log(id,message)});
+      const checked=await verifySources(urls,{apiKey:env.OPENAI_API_KEY!,baseUrl:OPENAI_URL,model:PROVIDER==='openai'?model:DEFAULT_OPENAI_MODEL,onProgress:message=>log(id,message)});
       for(const src of checked.sources)seen.set(normUrl(src.url),{...src,collected:todayIso(),via:'web'});
       for(const k of ['input_tokens','output_tokens','cache_read_input_tokens','cache_creation_input_tokens'] as const)usage[k]+=checked.usage[k];
       usage.web_searches+=checked.searches;
@@ -1224,7 +1214,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       const totalIn = usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens;
       if (totalIn > MAX_INPUT_TOKENS) throw new Error('ครบงบโทเค็นของร่างนี้แล้ว เก็บบทและภาพที่วาดสำเร็จไว้ สามารถลองใหม่เพื่อทำต่อได้');
       const mustSubmit = !!storyboard && artworkComplete(artwork, storyboard) && (turn >= MAX_TURNS - 2 || totalIn > MAX_INPUT_TOKENS * 0.8);
-      await log(id, `รอบที่ ${turn + 1}: ${storyboard ? active.lemo ? 'ตรวจบทและสไตล์ Lemo ก่อนอนุมัติผลิต' : `วาดทีละส่วน (${artwork.cast.length} ตัวละคร · ${artwork.scenes.length}/${storyboard.shots.length} ฉาก · reasoning ${effort === 'high' ? 'medium' : effort})` : 'ค้นข้อมูล/วางบท'} (${model})`);
+      await log(id, `รอบที่ ${turn + 1}: ${storyboard ? active.lemo ? 'ตรวจบทและสไตล์ Lemo ก่อนอนุมัติผลิต' : `วาดทีละส่วน (${artwork.cast.length} ตัวละคร · ${artwork.scenes.length}/${storyboard.shots.length} ฉาก · reasoning ${effort})` : 'ค้นข้อมูล/วางบท'} (${model})`);
       const { uses, usage: u, web } = await conv.turn(mustSubmit);
       if (web) {
         usage.web_searches += web.searches;
@@ -1266,7 +1256,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
               if (!checked) {
                 if (verificationCalls>=4) throw new Error('Exact source read budget used; cite only verified evidence or state the information is unavailable.');
                 verificationCalls++;
-                const options={apiKey:env.OPENAI_API_KEY!,baseUrl:OPENAI_URL,model:PROVIDER === 'openai' ? model : 'gpt-6.1-sol',onProgress:(message:string)=>log(id,message)};
+                const options={apiKey:env.OPENAI_API_KEY!,baseUrl:OPENAI_URL,model:PROVIDER === 'openai' ? model : DEFAULT_OPENAI_MODEL,onProgress:(message:string)=>log(id,message)};
                 checked=u.name === 'openai_search' ? await searchWeb(String(u.input?.query || ''),options) : await verifySources([url],options);
                 if (cfg0.firecrawl) await fcStore.saveWebRead(researchJob,cacheKey,checked); else webCache.set(cacheKey,checked);
                 for (const k of ['input_tokens','output_tokens','cache_read_input_tokens','cache_creation_input_tokens'] as const) usage[k]+=checked.usage[k];
@@ -1438,7 +1428,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     busy = true;
     try {
       for (;;) {
-        const next = (await pool.query("SELECT id FROM drafts WHERE status='queued' ORDER BY created_at LIMIT 1")).rows[0];
+        const next = (await pool.query(`SELECT id FROM drafts WHERE status='queued' AND ${IS_STUDIO_DRAFT} ORDER BY created_at LIMIT 1`)).rows[0];
         if (!next) break;
         try {
           await generate(next.id);
@@ -1455,7 +1445,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
   }
 
   async function produce(id: string) {
-    const row = (await pool.query('SELECT * FROM drafts WHERE id=$1', [id])).rows[0];
+    const row = (await pool.query(STUDIO_DRAFT_BY_ID, [id])).rows[0];
     if (!row) return { status: 404, body: { error: 'not found' } };
     if (row.status === 'submitted' && row.job_id) return { status: 200, body: { job_id: row.job_id, duplicate: true } };
     if(row.creative)return {status:409,body:{error:'Review and approve the itemized Creative Motion estimate before production'}};
@@ -1529,7 +1519,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
 
   // drafts that were mid-generation when the process restarted cannot resume the conversation
   pool.query(`UPDATE drafts SET status='failed', error='ระบบรีสตาร์ทระหว่างเขียน กด "เขียนใหม่" เพื่อเริ่มอีกครั้ง', updated_at=now()
-    WHERE status IN ('researching','writing')`).then(() => pump()).catch(() => {});
+    WHERE status IN ('researching','writing') AND ${IS_STUDIO_DRAFT}`).then(() => pump()).catch(() => {});
 
   // ---------------------------------------------------------------- routes
   const g = deps.guard;
@@ -1544,10 +1534,22 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     episode_number: r.episode_number ?? null, last: (r.log || []).slice(-1)[0]?.msg ?? null, error: r.error, auto_produce: r.auto_produce, source_type: r.source_type ?? 'studio', community_id: r.community_id ?? null,
   });
 
+  async function openAIBrainOptions(refreshNow = false) {
+    const catalog = await readModels(deps.models, refreshNow);
+    return {
+      models: catalog.ids.map(id => ({id, label:openAIModelLabel(id)})),
+      model_catalog: {source:catalog.source, checked_at:catalog.checked_at},
+    };
+  }
+  app.get('/app/api/studio/openai-models', g, async c => c.json(await openAIBrainOptions(c.req.query('refresh') === '1')));
+
   app.get('/app/api/studio/status', g, async (c) => {
-    const n = (await pool.query("SELECT count(*)::int AS n FROM drafts WHERE created_at > now() - interval '1 day'")).rows[0].n;
+    const n = (await pool.query(DAILY_STUDIO_DRAFT_COUNT)).rows[0].n;
+    const trends = trendSettings();
+    const openAI = PROVIDER === 'openai' || trends.enabled ? await openAIBrainOptions() : null;
+    const brainOptions = PROVIDER === 'openai' ? openAI : {models:ANTHROPIC_MODELS, model_catalog:null};
     return c.json({ ...configured(), creative:{...releaseGates(),styles:LEMO_STYLES}, presentation:{version:1,label:'โมชั่นกราฟิกแบบเดิม (EP004)',default_style:'classic'}, formats: Object.fromEntries(Object.entries(FORMATS).map(([k, f]) => [k, f.th])), model: MODEL,
-      models: MODEL_CHOICES[PROVIDER], reasoning: PROVIDER === 'openai' ? REASONING : null, reasoning_levels: PROVIDER === 'openai' ? REASONING_LEVELS : [], ai_suggestions:!!env.OPENAI_API_KEY, trend_research:trendSettings(), narration_previews:!!env.OPENAI_API_KEY, narration_styles:NARRATION_STYLES.map(({prompt,...style})=>style), source_text_limit:SOURCE_TEXT_LIMIT, drafts_today: n, daily_limit: DAILY_LIMIT, busy, max_credits: DRAFT_MAX_CREDITS });
+      ...brainOptions, reasoning: PROVIDER === 'openai' ? REASONING : null, reasoning_levels: PROVIDER === 'openai' ? REASONING_LEVELS : [], ai_suggestions:!!env.OPENAI_API_KEY, trend_research:{...trends,...openAI}, narration_previews:!!env.OPENAI_API_KEY, narration_styles:NARRATION_STYLES.map(({prompt,...style})=>style), source_text_limit:SOURCE_TEXT_LIMIT, drafts_today: n, daily_limit: DAILY_LIMIT, busy, max_credits: DRAFT_MAX_CREDITS });
   });
 
   // ---- characters made from photos
@@ -1633,7 +1635,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
   app.get('/app/api/studio/drafts', g, async (c) => {
     const r = await pool.query(`SELECT d.*, j.status AS job_status, j.progress AS job_progress, e.number AS episode_number FROM drafts d
       LEFT JOIN jobs j ON j.id = d.job_id LEFT JOIN episodes e ON e.id = d.episode_id
-      WHERE d.status <> 'discarded' ORDER BY d.created_at DESC LIMIT 40`);
+      WHERE d.status <> 'discarded' AND ${IS_STUDIO_DRAFT} ORDER BY d.created_at DESC LIMIT 40`);
     return c.json({ drafts: r.rows.map(summary) });
   });
 
@@ -1641,7 +1643,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const id = c.req.param('id');
     if (!isId(id)) return c.json({ error: 'not found' }, 404);
     const r = (await pool.query(`SELECT d.*, j.status AS job_status, j.progress AS job_progress, j.error AS job_error, e.number AS episode_number FROM drafts d
-      LEFT JOIN jobs j ON j.id = d.job_id LEFT JOIN episodes e ON e.id = d.episode_id WHERE d.id=$1`, [id])).rows[0];
+      LEFT JOIN jobs j ON j.id = d.job_id LEFT JOIN episodes e ON e.id = d.episode_id WHERE d.id=$1 AND ${IS_STUDIO_DRAFT}`, [id])).rows[0];
     if (!r) return c.json({ error: 'not found' }, 404);
     const dr = r.draft ? { ...r.draft } : null;
     if (dr) { delete dr.research_seen; if (Array.isArray(dr.cast)) dr.cast = dr.cast.map((x: any) => { const { backdrop, ...rest } = x; return { ...rest, has_backdrop: !!backdrop }; }); }
@@ -1652,7 +1654,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
   app.post('/app/api/studio/drafts/:id/research-budget',g,async(c)=>{
     const id=c.req.param('id');
     if (!isId(id)) return c.json({error:'not found'},404);
-    const row=(await pool.query('SELECT * FROM drafts WHERE id=$1',[id])).rows[0];
+    const row=(await pool.query(STUDIO_DRAFT_BY_ID,[id])).rows[0];
     if (!row) return c.json({error:'not found'},404);
     const b=await c.req.json().catch(()=>({}));
     if (b.approved !== true || b.confirmation !== `APPROVE FIRECRAWL TOTAL ${b.limit}`) return c.json({error:'Explicit owner approval of the new total is required.'},422);
@@ -1667,7 +1669,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
   app.get('/app/api/studio/drafts/:id/diagnostics', g, async (c) => {
     const id = c.req.param('id');
     if (!isId(id)) return c.json({error:'not found'},404);
-    const row = (await pool.query('SELECT log,storyboard,artwork,problems FROM drafts WHERE id=$1',[id])).rows[0];
+    const row = (await pool.query(`SELECT log,storyboard,artwork,problems FROM drafts WHERE id=$1 AND ${IS_STUDIO_DRAFT}`,[id])).rows[0];
     if (!row) return c.json({error:'not found'},404);
     const responseId = String(c.req.query('response_id') || '');
     const allowed = (row.log || []).flatMap((x:any)=>String(x.msg || '').match(/resp_[a-zA-Z0-9_-]+/g) || []);
@@ -1690,7 +1692,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
   // Only GET an already-recorded response; never submit a second paid request.
   app.post('/app/api/studio/drafts/:id/recover',g,async(c)=>{
     const id=c.req.param('id');if(!isId(id))return c.json({error:'not found'},404);
-    const row=(await pool.query('SELECT * FROM drafts WHERE id=$1',[id])).rows[0];
+    const row=(await pool.query(STUDIO_DRAFT_BY_ID,[id])).rows[0];
     if(row?.creative?.engine!=='lemo'||!row.storyboard)return c.json({error:'No saved Lemo storyboard'},409);
     if(row.status==='ready'||row.status==='submitted')return c.json({id,duplicate:true});
     if(row.status!=='failed')return c.json({error:'Wait for the current planner to finish'},409);
@@ -1738,9 +1740,12 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     if (topic.length < 4) return c.json({ error: 'พิมพ์หัวข้ออย่างน้อย 4 ตัวอักษร' }, 422);
     const cf = configured();
     if (!researchReady(cf)) return c.json({ error: `ยังไม่ได้ตั้งค่า ${researchMissing(cf)} ใน Railway (motion-api)` }, 503);
-    const n = (await pool.query("SELECT count(*)::int AS n FROM drafts WHERE created_at > now() - interval '1 day'")).rows[0].n;
+    const n = (await pool.query(DAILY_STUDIO_DRAFT_COUNT)).rows[0].n;
     if (n >= DAILY_LIMIT) return c.json({ error: `ครบโควตา ${DAILY_LIMIT} ร่างต่อวันแล้ว` }, 429);
-    const model = typeof b.model === 'string' && MODEL_RE.test(b.model) ? b.model : MODEL;
+    const model = b.model ?? MODEL;
+    if (typeof model !== 'string' || !MODEL_RE.test(model) || (PROVIDER === 'openai' && !(await readModels(deps.models)).ids.includes(model))) {
+      return c.json({error:'เลือกสมองที่ใช้ได้จากรายชื่อโมเดลล่าสุด'}, 422);
+    }
     const reasoning = REASONING_LEVELS.includes(b.reasoning) ? b.reasoning : REASONING;
     const ids: string[] = (Array.isArray(b.characters) ? b.characters : []).map(String).filter(isId).slice(0, 3);
     const chars = ids.length ? (await pool.query('SELECT id, name, look, backdrop FROM characters WHERE id = ANY($1::uuid[]) ORDER BY array_position($1::uuid[], id)', [ids])).rows.map((x: any) => ({ id: x.id, name: x.name, look: x.backdrop ? { ...x.look, backdrop: x.backdrop } : x.look })) : [];
@@ -1764,7 +1769,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
   app.patch('/app/api/studio/drafts/:id', g, async (c) => {
     const id = c.req.param('id');
     if (!isId(id)) return c.json({ error: 'not found' }, 404);
-    const row = (await pool.query('SELECT * FROM drafts WHERE id=$1', [id])).rows[0];
+    const row = (await pool.query(STUDIO_DRAFT_BY_ID, [id])).rows[0];
     if (!row || !row.draft) return c.json({ error: 'not found' }, 404);
     if (row.status !== 'ready') return c.json({ error: `แก้ได้เฉพาะร่างที่พร้อมตรวจ (ตอนนี้: ${row.status})` }, 409);
     const b = await c.req.json().catch(() => ({}));
@@ -1813,7 +1818,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
   app.post('/app/api/studio/drafts/:id/rewrite', g, async (c) => {
     const id = c.req.param('id');
     if (!isId(id)) return c.json({ error: 'not found' }, 404);
-    const row = (await pool.query('SELECT * FROM drafts WHERE id=$1', [id])).rows[0];
+    const row = (await pool.query(STUDIO_DRAFT_BY_ID, [id])).rows[0];
     if (!row) return c.json({ error: 'not found' }, 404);
     const b = await c.req.json().catch(() => ({}));
     let request;
@@ -1831,6 +1836,11 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     let narration: ReturnType<typeof parseNarration>, recurringCharacter: boolean, presenterKind: PresenterKind;
     try { narration = parseNarration({narration_style:b.narration_style ?? row.narration_style, narration_custom:b.narration_custom ?? row.narration_custom}); recurringCharacter = b.recurring_character === undefined ? row.recurring_character === true : parseRecurringCharacter(b.recurring_character); presenterKind = parsePresenterKind(b.presenter_kind, recurringCharacter && row.recurring_character !== true ? 'context' : parsePresenterKind(row.presenter_kind, 'legacy')); }
     catch (e) { return c.json({error:e instanceof Error ? e.message : 'invalid narration'},422); }
+    const model = b.model ?? row.model;
+    if (b.model !== undefined && (typeof model !== 'string' || !MODEL_RE.test(model) ||
+        (model !== row.model && PROVIDER === 'openai' && !(await readModels(deps.models)).ids.includes(model)))) {
+      return c.json({error:'เลือกสมองที่ใช้ได้จากรายชื่อโมเดลล่าสุด'}, 422);
+    }
     const previousNarration = parseNarration(row);
     const sameNarration = narration.narration_style === previousNarration.narration_style && narration.narration_custom === previousNarration.narration_custom;
     const reuseCheckpoints = !!(row.status === 'failed' && row.storyboard && sameNarration && recurringCharacter === (row.recurring_character === true) && presenterKind === parsePresenterKind(row.presenter_kind, 'legacy') && (b.note === undefined || String(b.note).trim() === String(row.note || '').trim()));
@@ -1838,7 +1848,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const visualVersion = reuseCheckpoints ? presentationVersion(row.presentation_version) : 1;
     const r = await pool.query('INSERT INTO drafts (topic, note, parent_id, auto_produce, model, reasoning, characters, source_type, community_id, style, music_mode, story_mode, source_text, research_job_id, request_key, request_hash, narration_style, narration_custom, recurring_character, presenter_kind, director_version, presentation_version, creative, trend_context) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24) ON CONFLICT (request_key) DO NOTHING RETURNING id',
       [row.topic, String(b.note ?? row.note ?? '').trim().slice(0, 1000) || null, row.id, row.source_type === 'community'||row.creative ? false : !!b.auto_produce,
-        typeof b.model === 'string' && MODEL_RE.test(b.model) ? b.model : row.model, REASONING_LEVELS.includes(b.reasoning) ? b.reasoning : row.reasoning,
+        model, REASONING_LEVELS.includes(b.reasoning) ? b.reasoning : row.reasoning,
         JSON.stringify(row.characters ?? []), row.source_type || 'studio', row.community_id ?? null, keepStyle, keepMusic, row.story_mode || 'name_story', row.source_text || null, row.research_job_id || row.id, request.key, request.hash, narration.narration_style, narration.narration_custom, recurringCharacter, presenterKind, directionVersion, visualVersion, row.creative?JSON.stringify(b.creative?{engine:row.creative.engine,settings:CreativeSettings.parse({...row.creative.settings,...b.creative})}:row.creative):null,row.trend_context?JSON.stringify(row.trend_context):null]);
     if (!r.rows.length) {
       const old = (await pool.query('SELECT id, request_hash FROM drafts WHERE request_key=$1',[request.key])).rows[0];

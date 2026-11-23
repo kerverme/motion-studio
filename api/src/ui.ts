@@ -9,6 +9,7 @@ import { z } from 'zod';
 import * as buffer from './buffer.js';
 import * as notion from './notion.js';
 import { analytics, syncPosts, reconcile } from './metrics.js';
+import {IS_STUDIO_DRAFT} from './studio-draft-queries.js';
 
 const env = process.env;
 const UI_PASSWORD = env.MOTION_UI_PASSWORD || '';
@@ -201,7 +202,7 @@ export function registerUi(app: Hono, pool: pg.Pool, deps: { API_TOKEN: string; 
       ORDER BY j.created_at DESC LIMIT 30`);
     // drafts an LLM is writing right now (the only place an LLM runs)
     const dr = await pool.query(`SELECT id, topic, status, model, reasoning, log, created_at, updated_at FROM drafts
-      WHERE status IN ('queued','researching','writing') ORDER BY created_at DESC LIMIT 5`);
+      WHERE status IN ('queued','researching','writing') AND ${IS_STUDIO_DRAFT} ORDER BY created_at DESC LIMIT 5`);
     return c.json({ jobs: r.rows, drafts: dr.rows.map((x: any) => ({ ...x, log: Array.isArray(x.log) ? x.log.slice(-6) : [] })), now: new Date().toISOString() });
   });
 

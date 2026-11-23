@@ -110,7 +110,9 @@ test('web-derived topic ideas require saved web research and never masquerade as
  assert.throws(()=>parseDetailedIdeas(r,[],3,'web',[],false));assert.throws(()=>parseDetailedIdeas(r,[],3,'trending',[],true));
 });
 test('research route authentication, request replay and conflicting payload do not create duplicate jobs',async()=>{
- process.env.MOTION_TREND_RESEARCH_ENABLED='1';process.env.TREND_RESEARCH_MODEL='verified-model';const app=new Hono();registerTrendRoutes(app,pool,async(c,next)=>c.req.header('authorization')==='owner'?next():c.json({},401));
+ process.env.MOTION_TREND_RESEARCH_ENABLED='1';process.env.TREND_RESEARCH_MODEL='gpt-6.1-terra';
+ let models=['gpt-6.1-terra','gpt-6.2-sol'];
+ const app=new Hono();registerTrendRoutes(app,pool,async(c,next)=>c.req.header('authorization')==='owner'?next():c.json({},401),async()=>({ids:models,source:'openai',checked_at:new Date().toISOString()}));
  const request_id=randomUUID(),headers={authorization:'owner','content-type':'application/json'};const body={request_id,platform:'both',query:'แรงตึงผิวกับน้ำ'};
  assert.equal((await app.request('/app/api/studio/trends/refresh',{method:'POST',body:JSON.stringify(body)})).status,401);
  const a=await app.request('/app/api/studio/trends/refresh',{method:'POST',headers,body:JSON.stringify(body)});assert.equal(a.status,202);const first:any=await a.json();
@@ -119,6 +121,16 @@ test('research route authentication, request replay and conflicting payload do n
  const found=await app.request('/app/api/studio/trends/runs/'+alias,{headers});assert.equal(found.status,200);assert.equal((await found.json() as any).id,first.id);
  assert.equal((await app.request('/app/api/studio/trends/refresh',{method:'POST',headers,body:JSON.stringify({...body,query:'เปลี่ยนหัวข้อ'})})).status,409);
  const rows:any=(await query('SELECT count(*)::int AS n FROM trend_alexandria_jobs WHERE request_id=$1',[request_id])).rows[0];assert.equal(rows.n,1);
+ const refresh=(payload:any)=>app.request('/app/api/studio/trends/refresh',{method:'POST',headers,body:JSON.stringify(payload)});
+ const selected={...body,request_id:randomUUID(),model:'gpt-6.2-sol'};
+ const response=await refresh(selected);assert.equal(response.status,202);const run=await response.json();assert.notEqual(run.id,first.id);assert.equal(run.model,selected.model);
+ const detail=await (await app.request('/app/api/studio/trends/runs/'+run.id,{headers})).json();assert.equal(detail.request.model,selected.model);
+ assert.equal((await refresh({...selected,model:'gpt-6.1-terra'})).status,409);
+ models=['gpt-7-sol'];process.env.TREND_RESEARCH_MODEL='gpt-7-sol';
+ assert.equal((await refresh(selected)).status,200,'replay survives model removal');
+ assert.equal((await (await refresh(body)).json()).model,'gpt-6.1-terra','an old request without a model retains its original default');
+ const invalid={...selected,request_id:randomUUID()};assert.equal((await refresh(invalid)).status,422);
+ assert.equal((await query('SELECT * FROM trend_alexandria_requests WHERE request_id=$1',[invalid.request_id])).rows.length,0);
  assert.equal((await app.request('/app/api/studio/trends')).status,401);
 });
 test('complete mocked research → Notion → topic → script selection uses corroborated sources and same checkpoints',async()=>{
@@ -126,16 +138,18 @@ test('complete mocked research → Notion → topic → script selection uses co
  const j=await job();let paid=0,openai=0,notionCreates=0;let planned=false;
  globalThis.fetch=async(url,init)=>{
   const u=String(url),body=init?.body?JSON.parse(String(init.body)):{};
-  if(u.includes('/v1/models/'))return Response.json({id:'gpt-6.1-terra'});
+  if(u.includes('/v1/models/')){assert.ok(u.endsWith('/gpt-6.2-sol'));return Response.json({id:'gpt-6.2-sol'});}
   if(u.endsWith('/team/credit-usage'))return Response.json({success:true,data:{remainingCredits:1000,planCredits:1000}});
   if(u.includes('firecrawl.dev')){const c=body.alexandria.capability;if(c==='find-tools')return response(c,{items:catalog,total:catalog.length},0);assert.ok(planned,'Web Search precedes paid calls');paid++;return response(c,payload);}
   if(u.includes('api.notion.com')){if(u.endsWith('/query'))return Response.json({results:[]});if(u.endsWith('/pages')){notionCreates++;return Response.json({id:'notion-page'});}return Response.json({id:'notion-page'});}
-  if(u.endsWith('/v1/responses')){openai++;const plan=body.text.format.name==='research_plan';if(plan)planned=true;return Response.json({id:'resp_mock_'+openai,status:'completed',usage:{input_tokens:300,output_tokens:100},output:[...(plan?[{type:'web_search_call',status:'completed',action:{sources:[{url:'https://science.example/surface',title:'Primary article'}]}}]:[]),{type:'message',content:[{type:'output_text',text:JSON.stringify(plan?{summary:'ข้อมูลจากเว็บ ยังไม่ใช่เทรนด์โซเชียล',queries:[{platform:'tiktok',thai:'แรงตึงผิวไทย',english:'surface tension Thai',capability:'tiktok/search-videos',reason:'ต้องตรวจตัวเลขจริง'}]}:{patterns:[assessment]})}]}]});}
+  if(u.endsWith('/v1/responses')){assert.equal(body.model,'gpt-6.2-sol');openai++;const plan=body.text.format.name==='research_plan';if(plan)planned=true;return Response.json({id:'resp_mock_'+openai,status:'completed',usage:{input_tokens:300,output_tokens:100},output:[...(plan?[{type:'web_search_call',status:'completed',action:{sources:[{url:'https://science.example/surface',title:'Primary article'}]}}]:[]),{type:'message',content:[{type:'output_text',text:JSON.stringify(plan?{summary:'ข้อมูลจากเว็บ ยังไม่ใช่เทรนด์โซเชียล',queries:[{platform:'tiktok',thai:'แรงตึงผิวไทย',english:'surface tension Thai',capability:'tiktok/search-videos',reason:'ต้องตรวจตัวเลขจริง'}]}:{patterns:[assessment]})}]}]});}
   throw new Error('Unexpected mock URL '+u);
  };
- const run={id:j.id,budget_id:j.budgetId,checkpoint:{},request:{platform:'tiktok',model:'gpt-6.1-terra',count:10,query:'แรงตึงผิว',audience:'เด็กไทย'}};
+ const run={id:j.id,budget_id:j.budgetId,checkpoint:{},request:{platform:'tiktok',model:'gpt-6.2-sol',count:10,query:'แรงตึงผิว',audience:'เด็กไทย'}};
  const result=await runResearch(pool,pool,run);assert.equal(result.status,'done');assert.equal(result.eligible_count,1);assert.equal(paid,2);assert.equal(openai,2);assert.equal(notionCreates,1);
  const rows=await eligibleTrends(pool);assert.equal(rows.length,1);assert.equal(rows[0].provider_name,'scrapecreators');assert.equal(rows[0].actual_credits,4);assert.equal(rows[0].supporting_sources.length,2);
+ assert.deepEqual((await eligibleTrends(pool,'both',10,j.id)).map(r=>r.id),[rows[0].id]);assert.deepEqual(await eligibleTrends(pool,'both',10,randomUUID()),[]);
+ assert.equal(rows[0].research_model,run.request.model);
  const props=notionProperties(rows[0]);assert.equal(props['Confidence']!.number,80);assert.equal(props['Actual Credits']!.number,4);
  const id=randomUUID();const ideas=['ทำไมพริกไทยหนีสบู่','แรงตึงผิวทำอะไรได้บ้าง','หยดน้ำเดินทางอย่างไร'].map(title=>({title,explanation:'จากการทดลอง',interesting:'ชวนสังเกต',kind:'trending',trend_ids:[rows[0].id]}));
  const parsed=parseDetailedIdeas({status:'completed',output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({ideas})}]}]},[],3,'trending',rows);assert.equal(parsed.length,3);
@@ -146,5 +160,5 @@ test('complete mocked research → Notion → topic → script selection uses co
 });
 test('production UI script parses and keeps unrelated creation surfaces with new research controls',()=>{
  const ui=readFileSync(new URL('./ui.html',import.meta.url),'utf8');for(const [,code] of ui.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g))new Script(code);
- for(const marker of ['Discover Trends','Last 7 Days','ผลค้นหาเทรนด์','Text to Video','Lemo','ms.trend_research_pending'])assert.ok(ui.includes(marker),marker);
+ for(const marker of ['สมองค้นหาเทรนด์','ย้อนหลัง 7 วัน','ผลค้นหาเทรนด์','Text to Video','Lemo','ms.trend_research_pending'])assert.ok(ui.includes(marker),marker);
 });
