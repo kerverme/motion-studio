@@ -1,11 +1,11 @@
 # Trend Research operations — Alexandria migration
 
 Production UI: https://studio.cloudbath.co/app
-Branch: `feat/alexandria-trend-research`. Preserve the latest production scene director and all existing rendering pipelines.
+Railway builds the web API from `codex/prompt-ab-sol-20261114` and the research worker from `feat/alexandria-trend-research`.
 
 ## Current rollout gate
 
-The browser-free adapter, migrations, UI and mocked integration are deployed. Authenticated catalogue discovery succeeds, and the account can access the configured research model. The first live social job returned `insufficient_credits` on both TikTok and Instagram. **Social retrieval and the full Notion social-evidence workflow are not yet production-verified.** Do not remove the old `jev-trend-research` service or its package until a funded bounded smoke test passes. It remains disabled for scheduling and is not a dependency of the new queue.
+On 2026-11-23 the production picker received 19 supported models from OpenAI. In run `0ad50a8b-8e25-471c-a249-2be8f32edf05`, the owner UI submitted GPT-6.2 Sol, and the worker recorded the same model. After a catalogue price change, the same run resumed from its web plan. Two TikTok searches returned 60 recent posts and cost 2 confirmed Firecrawl credits. The run retained two web sources and zero eligible social patterns. Production verification of an eligible pattern reaching Notion and a draft is still pending. The legacy Jev service has scheduling disabled.
 
 ## Runtime and configuration
 
@@ -13,7 +13,7 @@ The browser-free adapter, migrations, UI and mocked integration are deployed. Au
 - `DATABASE_URL`, `OPENAI_API_KEY`, `FIRECRAWL_API_KEY`, `NOTION_TOKEN` are backend references to the existing API service. Never expose values to the browser or logs.
 - `TREND_RESEARCH_MODEL` sets the research picker's default and the worker's startup model check. Owners can select another model from the account's OpenAI catalog before a search. The run records that model for planning, evidence analysis and retries. The writing and research pickers save independent preferences.
 - `NOTION_TREND_DATABASE_ID=41875d42-f42b-8193-bfc0-f9458b2f69fc`. Existing records and fields remain. New metadata fields were added in place.
-- `MOTION_TREND_RESEARCH_ENABLED=1` enables the manual UI. Automatic schedules are not enabled. `TREND_VERIFIED_PLATFORMS` must not be populated until live social retrieval succeeds.
+- `MOTION_TREND_RESEARCH_ENABLED=1` enables the manual UI. Automatic schedules are not enabled. `TREND_VERIFIED_PLATFORMS` lists platforms with verified social data. This run confirmed TikTok retrieval. Qualification of an eligible pattern and its downstream synchronization remain separate checks.
 - HTTP `/health` and the `alexandria_worker` integration heartbeat report model, catalogue/account/Notion checks. A running container alone does not establish data readiness.
 
 ## Research and billing
@@ -37,4 +37,4 @@ Provider metrics are observations, not independent fact verification. Confidence
 
 Run `npm run typecheck` and `node --import tsx --test --test-concurrency=1 src/*.test.ts` in `api/`. Automated provider fixtures come from official contracts recorded on 2026-11-15; mocks are not proof of live social access.
 
-After the owner resolves the actual Firecrawl credit rejection, run a bounded social job, inspect returned posts/dates/metrics, confirm Notion synchronization and select a corroborated topic into a draft with `auto_produce=false`. Check the shared ledger remains at or below 25 and duplicate request IDs reuse the same job. Only then confirm no active legacy jobs/dependents, remove the old service and `trend-worker/` package, retire its variables and verify production again. Do not reset `main` or overwrite a newly deployed commit. Historical validation reports are retained as historical evidence, not current operating instructions.
+For cutover, verify a live eligible pattern reaches Notion and that selecting it into a draft with `auto_produce=false` carries the original research budget. The 2026-11-23 run covered paid TikTok retrieval, model selection, same-job recovery and spending 2 of the 25 available credits. Before retiring Jev, check for active legacy jobs and dependents. Historical validation reports retain their original dates and outcomes.
