@@ -999,6 +999,7 @@ function studio(st, drafts){
       : 'ค่า OpenAI ที่ประเมินได้ $'+knownUSD.toFixed(4)+(latest.unpriced_calls?' · ยังมีรายการรอราคา':'');
     put(researchResults,[
       latest?.request?.query?h('div',{class:'sub'},'เรื่องที่ค้นหา · '+latest.request.query):'',
+      latest?.finished_at && latest.details?.received_count!=null?h('div',{class:'sub'},'ตรวจโพสต์ย้อนหลัง 7 วัน '+latest.evidence_count+' โพสต์ · แหล่งเว็บ '+(latest.details.web_sources||[]).length+' แหล่ง'):'',
       latest?.error?h('div',{class:'err'},latest.error):'',
       latest?.details?.limitation?h('div',{class:'sub'},latest.details.limitation):'',
       ...[...new Map((latest?.details?.warnings||[]).map(w=>[w.code,w])).values()].map(w=>h('div',{class:'sub'},({uncertain_cost:'ยังยืนยันราคาของเครื่องมือโซเชียลภายในวงเงินไม่ได้ ระบบจึงหยุดก่อนเรียกข้อมูล',insufficient_credits:'เครดิต Firecrawl ไม่พอ กรุณาตรวจยอดในบัญชี แล้วค้นคว้าใหม่ · ยังใช้ไอเดียจากเว็บได้',THIRD_PARTY_DATA_TERMS_REQUIRED:'เจ้าของบัญชีต้องตรวจและยอมรับข้อกำหนดผู้ให้บริการก่อน',budget_stopped:'หยุดเรียกข้อมูลเพื่อรักษางบ 25 เครดิต',capability_unavailable:'ผู้ให้บริการยังไม่มีเครื่องมือที่ต้องใช้',uncertain_charge:'การตอบกลับขาดหาย จึงหยุดไว้เพื่อป้องกันการคิดเงินซ้ำ',notion_sync_pending:'กำลังรอบันทึกลง Notion'}[w.code]||'ข้อจำกัด: '+w.code),w.action_url?h('a',{href:w.action_url,target:'_blank',rel:'noopener noreferrer'},' เปิดข้อกำหนดผู้ให้บริการ'):'')),
@@ -1019,6 +1020,14 @@ function studio(st, drafts){
     ]);
   };
   async function loadResearch(){const data=await api('/app/api/studio/trends?platform='+trendPlatform.value);if(researchResults.isConnected)renderResearch(data);return data;}
+  async function followRecentResearch(){
+    while(researchResults.isConnected && !viewedRun){
+      const data=await loadResearch();
+      const latest=data.runs?.find(run=>run.firecrawl);
+      if(!['queued','running'].includes(latest?.status))return;
+      await new Promise(resolve=>setTimeout(resolve,5000));
+    }
+  }
   async function discoverTrends(pending,resumeStage=null){
     if(researching)return;
     researching=true;viewedRun={id:pending.request_id,status:'queued',model:pending.model||researchSettings.research_model};updateResearchButton();
@@ -1071,7 +1080,7 @@ function studio(st, drafts){
   setTimeout(()=>{if(suggestPanel.isConnected){
     const pending=readIdeaStore(trendSlot,null);
     if(pending)void discoverTrends(pending);
-    else if(researchSettings.enabled)void loadResearch().catch(e=>{researchStatus.textContent=e.message;});
+    else if(researchSettings.enabled)void followRecentResearch().catch(e=>{researchStatus.textContent=e.message;});
     else researchStatus.textContent='ระบบค้นหาเทรนด์ยังไม่เปิดใช้งาน';
   }},0);
   async function getIdeas(pending){

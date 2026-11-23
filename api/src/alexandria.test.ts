@@ -118,6 +118,8 @@ test('research route authentication, request replay and conflicting payload do n
  assert.equal((await app.request('/app/api/studio/trends/refresh',{method:'POST',body:JSON.stringify(body)})).status,401);
  const a=await app.request('/app/api/studio/trends/refresh',{method:'POST',headers,body:JSON.stringify(body)});assert.equal(a.status,202);const first:any=await a.json();
  const b=await app.request('/app/api/studio/trends/refresh',{method:'POST',headers,body:JSON.stringify(body)});assert.equal(b.status,200);assert.equal((await b.json() as any).id,first.id);
+ // A fresh tab has a new client ID after the original time slot has elapsed.
+ await query("UPDATE trend_research_runs SET request_key='older-slot:'||id::text WHERE id=$1",[first.id]);
  const alias=randomUUID();const aliased=await app.request('/app/api/studio/trends/refresh',{method:'POST',headers,body:JSON.stringify({...body,request_id:alias})});assert.equal((await aliased.json() as any).id,first.id);
  const found=await app.request('/app/api/studio/trends/runs/'+alias,{headers});assert.equal(found.status,200);assert.equal((await found.json() as any).id,first.id);
  assert.equal((await app.request('/app/api/studio/trends/refresh',{method:'POST',headers,body:JSON.stringify({...body,query:'เปลี่ยนหัวข้อ'})})).status,409);

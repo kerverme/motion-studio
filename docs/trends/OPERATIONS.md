@@ -7,6 +7,8 @@ Railway builds the web API from `codex/prompt-ab-sol-20261114` and the research 
 
 On 2026-11-23 the production picker received 19 supported models from OpenAI. In run `0ad50a8b-8e25-471c-a249-2be8f32edf05`, the owner UI submitted GPT-6.2 Sol, and the worker recorded the same model. After a catalogue price change, the same run resumed from its web plan. Two TikTok searches returned 60 recent posts and cost 2 confirmed Firecrawl credits. The run retained two web sources and zero eligible social patterns. Production verification of an eligible pattern reaching Notion and a draft is still pending. The legacy Jev service has scheduling disabled.
 
+On the same day, run `ccc279b2-3d98-4090-9a11-80a1f150d21c` recovered from the former five-minute scoring timeout. The worker reused the original web plan, 55 recent social posts and 4 Firecrawl credits. GPT-6.2 Sol completed one replacement scoring request. Five web sources and zero eligible trends were recorded.
+
 ## Runtime and configuration
 
 - Railway `alexandria-trend-research`: service `1e357e16-5f6d-427c-813c-811d8739ddf6`, repository root `/api`, `Dockerfile.research`, Node 24, no browser, Socai or Jev imports.

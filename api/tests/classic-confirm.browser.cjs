@@ -161,6 +161,24 @@ const quote={revision:'revision-1',quote_hash:'quote-1',known_total_usd:0,unknow
   assert.deepEqual(await p.evaluate(()=>resumePosts),[{path:'/app/api/studio/trends/runs/stored/retry',body:{replace_cancelled:true}}]);
   assert.equal(await region.getByText('OpenAI เกินเวลารอ').count(),0);
  });
+ await test('a fresh tab follows an existing background search to a terminal result using only reads',async p=>{
+  await p.evaluate(()=>{
+   frame();STYLE_LIST=[];MUSIC_LIST=[];window.trendReads=0;window.writes=[];
+   const m={id:'gpt-6.2-sol',label:'GPT-6.2 Sol'};
+   api=async(path,opts={})=>{
+    if(opts.method==='POST')writes.push(path);
+    if(path.includes('/trends?')){
+     const done=++trendReads>1;
+     return {runs:[{id:'existing',created_at:new Date().toISOString(),finished_at:done?new Date().toISOString():null,status:done?'partial':'queued',request:{model:m.id},firecrawl:{actual:4},eligible_count:0,evidence_count:55,details:done?{received_count:55,web_sources:[]}:{openai_stage:'score'}}],trends:[]};
+    }return {};
+   };
+   studio({llm:true,provider:'openai',model:m.id,models:[m],reasoning:'high',reasoning_levels:['high'],formats:{},trend_research:{enabled:true,research_model:m.id,models:[m]}},[]);
+  });
+  const region=p.getByRole('region',{name:'ค้นหาเทรนด์',exact:true});
+  await region.getByText(/OpenAI กำลังวิเคราะห์ข้อมูลโซเชียล/).waitFor();
+  await region.getByText(/ตรวจโพสต์ย้อนหลัง 7 วัน 55 โพสต์/).waitFor();
+  assert.deepEqual(await p.evaluate(()=>({reads:trendReads,writes})),{reads:2,writes:[]});
+ });
  await test('Classic confirmation fits a narrow mobile drawer without horizontal overflow',async p=>{
   await p.setViewportSize({width:390,height:844});await p.evaluate(()=>{const target=document.getElementById('test-target');target.className='drawer';target.style.padding='20px';return creativeDraftView(target,fixture,async()=>{});});
   const sizes=await p.locator('#test-target').evaluate(el=>({scroll:el.scrollWidth,width:el.clientWidth}));assert.ok(sizes.scroll<=sizes.width+1,JSON.stringify(sizes));assert.equal(await p.locator('#test-target input:visible,#test-target textarea:visible,#test-target select:visible').count(),0);

@@ -58,14 +58,20 @@ export function registerTrendRoutes(app:Hono,pool:pg.Pool,guard:(c:Context,next:
       await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1,734991))',[request_id]);
       const existing=(await db.query(lookup,[request_id])).rows[0];
       if(existing){await db.query('COMMIT');return replay(existing);}
-      // A shared content/time slot also deduplicates simultaneous tabs and double clicks.
-      const slot='alexandria:'+hash+':'+Math.floor(Date.now()/600000);
-      const run=(await db.query("INSERT INTO trend_research_runs(request_key,request,status,heartbeat_at,details) VALUES($1,$2,'running',now(),'{\"engine\":\"alexandria\"}') ON CONFLICT(request_key) DO UPDATE SET request_key=EXCLUDED.request_key RETURNING id",[slot,JSON.stringify(request)])).rows[0];
-      let job=(await db.query('SELECT * FROM trend_alexandria_jobs WHERE run_id=$1',[run.id])).rows[0];
-      if(!job){const budgetId=randomUUID();await db.query('INSERT INTO research_jobs(id) VALUES($1)',[budgetId]);
-        job=(await db.query('INSERT INTO trend_alexandria_jobs(run_id,request_id,request_hash,budget_id) VALUES($1,$2,$3,$4) RETURNING *',[run.id,request_id,hash,budgetId])).rows[0];}
-      await db.query('INSERT INTO trend_alexandria_requests(request_id,run_id,request_hash) VALUES($1,$2,$3)',[request_id,run.id,hash]);
-      await db.query('COMMIT');return c.json({id:run.id,status:job.state,model,credit_limit:25,message:'รับคำขอแล้ว · ค้นเว็บก่อนตรวจโซเชียล · สูงสุด 25 เครดิต Firecrawl'},202);
+      // Reconnect to the same active search even after the ten-minute duplicate-click window.
+      await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1,734992))',[hash]);
+      let job=(await db.query("SELECT run_id,state FROM trend_alexandria_jobs WHERE request_hash=$1 AND state IN ('queued','running') ORDER BY updated_at DESC LIMIT 1",[hash])).rows[0];
+      if(!job){
+        const slot='alexandria:'+hash+':'+Math.floor(Date.now()/600000);
+        const run=(await db.query("INSERT INTO trend_research_runs(request_key,request,status,heartbeat_at,details) VALUES($1,$2,'running',now(),'{\"engine\":\"alexandria\"}') ON CONFLICT(request_key) DO UPDATE SET request_key=EXCLUDED.request_key RETURNING id",[slot,JSON.stringify(request)])).rows[0];
+        job=(await db.query('SELECT run_id,state FROM trend_alexandria_jobs WHERE run_id=$1',[run.id])).rows[0];
+        if(!job){
+          const budgetId=randomUUID();await db.query('INSERT INTO research_jobs(id) VALUES($1)',[budgetId]);
+          job=(await db.query('INSERT INTO trend_alexandria_jobs(run_id,request_id,request_hash,budget_id) VALUES($1,$2,$3,$4) RETURNING run_id,state',[run.id,request_id,hash,budgetId])).rows[0];
+        }
+      }
+      await db.query('INSERT INTO trend_alexandria_requests(request_id,run_id,request_hash) VALUES($1,$2,$3)',[request_id,job.run_id,hash]);
+      await db.query('COMMIT');return c.json({id:job.run_id,status:job.state,model,credit_limit:25,message:'รับคำขอแล้ว · ค้นเว็บก่อนตรวจโซเชียล · สูงสุด 25 เครดิต Firecrawl'},202);
     }catch(e){await db.query('ROLLBACK');throw e;}finally{db.release();}
   });
   app.get('/app/api/studio/trends/runs/:id',guard,async c=>{
