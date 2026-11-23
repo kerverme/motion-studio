@@ -51,22 +51,21 @@ export async function runResearch(pool:pg.Pool,db:Queryable,run:any,adapter=new 
  }
  checkpoint.calls ||= [];checkpoint.evidence ||= [];checkpoint.warnings ||= [];
  const requestTool=async(capability:string,options:Record<string,unknown>)=>{
-  if(checkpoint.account&&checkpoint.account.remaining_credits<2||checkpoint.warnings.some((w:any)=>['insufficient_credits','authentication_error','THIRD_PARTY_DATA_TERMS_REQUIRED'].includes(w.code))){
-   if(!checkpoint.warnings.some((w:any)=>w.code==='insufficient_credits')&&checkpoint.account?.remaining_credits<2)checkpoint.warnings.push({code:'insufficient_credits'});
-   await save();return;
-  }
+  if(checkpoint.warnings.some((w:any)=>['insufficient_credits','authentication_error','THIRD_PARTY_DATA_TERMS_REQUIRED'].includes(w.code)))return;
   const tool=tools.find(t=>t.capability===capability);if(!tool){checkpoint.warnings.push({code:'capability_unavailable',capability});await save();return;}
-  try{pricedTool(tool,options);}catch(e){checkpoint.warnings.push({code:e instanceof ResearchBudgetError?e.code:'unknown_cost',capability});await save();return;}
+  let maximum:number;
+  try{maximum=pricedTool(tool,options).maximum;}catch(e){checkpoint.warnings.push({code:e instanceof ResearchBudgetError?e.code:'unknown_cost',capability});await save();return;}
   const callKey=JSON.stringify({capability,options});if(checkpoint.calls.some((c:any)=>c.key===callKey))return;
+  if(checkpoint.account && checkpoint.account.remaining_credits<maximum){checkpoint.warnings.push({code:'insufficient_credits'});await save();return;}
   if(Date.now()>deadline-45000){checkpoint.warnings.push({code:'deadline',capability});await save();return;}
-  const budget=await store.snapshot(run.budget_id);if(budget.remaining<2||budget.blocked_reason){checkpoint.warnings.push({code:'budget_stopped',capability});await save();return;}
+  const budget=await store.snapshot(run.budget_id);if(budget.remaining<maximum||budget.blocked_reason){checkpoint.warnings.push({code:'budget_stopped',capability});await save();return;}
   try{
    const result=await adapter.execute(store,run.budget_id,tool,options,checkpoint.web_attempted===true);
    const items=normaliseSocial(capability,result.data,result.collected_at);
-   checkpoint.calls.push({key:callKey,provider:tool.provider,capability,max_credits:2,actual_credits:result.credits,cache_hit:result.cache_hit,received:items.length,at:result.collected_at});
+   checkpoint.calls.push({key:callKey,provider:tool.provider,capability,max_credits:maximum,actual_credits:result.credits,cache_hit:result.cache_hit,received:items.length,at:result.collected_at});
    const merged=new Map<string,SocialEvidence>((checkpoint.evidence as SocialEvidence[]).map(e=>[e.url,e]));for(const e of items)merged.set(e.url,e);checkpoint.evidence=[...merged.values()].slice(0,150);
    await save();
-  }catch(e){const code=e instanceof AlexandriaError||e instanceof ResearchBudgetError?e.code:'provider_failure';checkpoint.calls.push({key:callKey,provider:tool.provider,capability,max_credits:2,actual_credits:null,error:code});checkpoint.warnings.push({code,capability,...(e instanceof AlexandriaError&&e.actionUrl?{action_url:e.actionUrl}:{})});await save();}
+  }catch(e){const code=e instanceof AlexandriaError||e instanceof ResearchBudgetError?e.code:'provider_failure';checkpoint.calls.push({key:callKey,provider:tool.provider,capability,max_credits:maximum,actual_credits:null,error:code});checkpoint.warnings.push({code,capability,...(e instanceof AlexandriaError&&e.actionUrl?{action_url:e.actionUrl}:{})});await save();}
  };
  // At most two queries per requested platform, no pagination or autonomous agent loop.
  const queriedPlatforms=new Set<string>();

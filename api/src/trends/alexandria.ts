@@ -83,8 +83,10 @@ export class Alexandria {
   }
 }
 export function pricedTool(tool:Tool,options:Record<string,unknown>):SafeRequest {
-  // Reviewed against official catalogue on 2026-11-15. A runtime price change closes the gate.
-  if(tool.provider!=='scrapecreators'||!REVIEWED_TOOLS.includes(tool.capability)||tool.perRecord!==false||tool.creditsCost!==2||tool.billing?.maxCredits!==2)
+  // These fixed-price tools were reviewed up to two credits. Reserve the current catalogue price.
+  const maximum=tool.creditsCost;
+  if(tool.provider!=='scrapecreators'||!REVIEWED_TOOLS.includes(tool.capability)||tool.perRecord!==false||
+    !Number.isSafeInteger(maximum)||maximum<1||maximum>2||tool.billing?.maxCredits!==maximum)
     throw new ResearchBudgetError('uncertain_cost','This capability has no reviewed maximum that fits the 25-credit job');
   if(!Array.isArray(tool.options))throw new ResearchBudgetError('capability_contract','Missing provider input contract');
   if(options.include_replies===true||options.includeReplies===true)throw new ResearchBudgetError('uncertain_cost','Expanded comment replies have no approved maximum');
@@ -94,7 +96,7 @@ export function pricedTool(tool:Tool,options:Record<string,unknown>):SafeRequest
     if(Array.isArray(o.oneOf)&&!o.oneOf.includes(v))throw new ResearchBudgetError('capability_options','Unsupported provider option value');
   }
   const body={alexandria:{provider:tool.provider,capability:tool.capability,options}};
-  return {path:'/v2/scrape',body,maximum:2,urls:typeof options.url==='string'?[options.url]:[],key:createHash('sha256').update('alexandria-v1:'+JSON.stringify(body)).digest('hex')};
+  return {path:'/v2/scrape',body,maximum,urls:typeof options.url==='string'?[options.url]:[],key:createHash('sha256').update('alexandria-v1:'+JSON.stringify(body)).digest('hex')};
 }
 export async function verifyResearchModel(model:string,request:typeof fetch=fetch){
   if(!/^[a-zA-Z0-9._-]+$/.test(model))throw new Error('TREND_RESEARCH_MODEL must be configured');
