@@ -9,7 +9,10 @@ type Options = {
   now?: () => number;
   timeoutMs?: number;
   responseId?: string; // Resume reads of an already accepted background response.
+  pollOnce?: boolean; // Durable workers schedule the next read themselves.
 };
+
+export class OpenAIReadUnavailable extends Error {}
 
 export function networkCode(error: unknown): string {
   let e: any = error;
@@ -44,6 +47,7 @@ export async function openaiResponse(body: any, options: Options): Promise<any> 
         r = await request(url, { ...init, headers, signal: AbortSignal.timeout(Math.max(1, Math.min(60_000, deadline - now()))) });
         j = await r.json();
       } catch (error) {
+        if (polling && options.pollOnce) throw new OpenAIReadUnavailable('OpenAI ตรวจสถานะไม่สำเร็จ: '+networkCode(error)+idHint());
         if (polling && attempt < 4 && now() < deadline) {
           await progress(`การเชื่อมต่อสะดุด (${networkCode(error)}) กำลังตรวจงาน OpenAI เดิมอีกครั้ง`);
           await sleep(Math.min(2000 * (attempt + 1), Math.max(0, deadline - now())));
@@ -52,6 +56,9 @@ export async function openaiResponse(body: any, options: Options): Promise<any> 
         throw new Error(`OpenAI ${polling ? 'ตรวจสถานะ' : 'ส่งคำขอ'}ไม่สำเร็จ: ${networkCode(error)}${idHint()}${polling ? '' : ' — ไม่ส่งซ้ำอัตโนมัติเพื่อป้องกันคิดเงินซ้ำ'}`);
       }
       const quota = j.error?.code === 'insufficient_quota' || j.error?.type === 'insufficient_quota';
+      if (polling && options.pollOnce && !quota && (r.status===408 || r.status===429 || r.status>=500)) {
+        throw new OpenAIReadUnavailable('OpenAI HTTP '+r.status+idHint());
+      }
       // A 429 explicitly rejected the create. A 5xx or broken connection may
       // have accepted it, so only GETs may be retried in those cases.
       if (!quota && (r.status === 429 || (polling && r.status >= 500)) && attempt < 4 && now() < deadline) {
@@ -68,6 +75,11 @@ export async function openaiResponse(body: any, options: Options): Promise<any> 
   let response = responseId
     ? await readJson(`${base}/${responseId}`, {method:'GET'}, true)
     : await readJson(base, { method: 'POST', body: JSON.stringify({ ...body, background: true }) }, false);
+  if (options.pollOnce) {
+    if (typeof response.id!=='string' || !/^resp_[a-zA-Z0-9_-]+$/.test(response.id) || (responseId && response.id!==responseId)) throw new Error('OpenAI ไม่ยืนยันรหัสคำขอเดิม');
+    if (!['queued','in_progress','completed','incomplete','failed','cancelled'].includes(response.status)) throw new Error('OpenAI ส่งสถานะที่ไม่รู้จัก');
+    return response;
+  }
   if (typeof response.id === 'string' && /^resp_[a-zA-Z0-9_-]+$/.test(response.id)) responseId = response.id;
   let lastNotice = now();
   if (['queued', 'in_progress'].includes(response.status)) {

@@ -3,7 +3,7 @@ import {createServer} from 'node:http';
 import {readFile,readdir} from 'node:fs/promises';
 import {Alexandria,verifyResearchModel} from './alexandria.js';
 import {randomUUID} from 'node:crypto';
-import {runResearch} from './orchestrator.js';
+import {processResearchQueue} from './run-job.js';
 import {syncNotion} from './notion.js';
 import {reconcileUsage} from './provider.js';
 
@@ -42,21 +42,7 @@ async function tick(){
   // Shared with the old service during cutover: one consumer/Notion writer at a time.
   locked=Boolean((await db.query('SELECT pg_try_advisory_lock(424249) AS locked')).rows[0].locked);if(!locked)return;
   health.last_tick=new Date().toISOString();
-  await db.query("UPDATE trend_alexandria_jobs j SET state='queued' FROM trend_research_runs r WHERE r.id=j.run_id AND j.state='running' AND r.heartbeat_at<now()-interval '12 minutes'");
-  const job=(await db.query("UPDATE trend_alexandria_jobs SET state='running',updated_at=now() WHERE run_id=(SELECT run_id FROM trend_alexandria_jobs WHERE state='queued' ORDER BY updated_at LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING *")).rows[0];
-  if(job){
-   const run=(await db.query("UPDATE trend_research_runs SET status='running',started_at=COALESCE(started_at,now()),heartbeat_at=now(),worker_id=$2 WHERE id=$1 RETURNING *",[job.run_id,workerId])).rows[0];
-   const timer=setInterval(()=>void pool.query('UPDATE trend_research_runs SET heartbeat_at=now() WHERE id=$1',[run.id]).catch(()=>{}),15000);const started=Date.now();
-   log('research_started',{id:run.id,platform:run.request.platform});
-   try{
-    const result=await runResearch(pool,db,{...run,...job});
-    await db.query('UPDATE trend_research_runs SET status=$2,finished_at=now(),duration_ms=$3,evidence_count=$4,eligible_count=$5,details=$6,error=NULL WHERE id=$1',[run.id,result.status,Date.now()-started,result.evidence_count,result.eligible_count,JSON.stringify(result.details)]);
-    await db.query('UPDATE trend_alexandria_jobs SET state=$2,updated_at=now() WHERE run_id=$1',[run.id,result.status]);
-    log('research_finished',{id:run.id,status:result.status,evidence:result.evidence_count,eligible:result.eligible_count,budget:result.details.budget});
-   }catch(e){const error=e instanceof Error?e.message.slice(0,400):'Research failed';
-    await db.query("UPDATE trend_research_runs SET status='failed',finished_at=now(),error=$2 WHERE id=$1",[run.id,error]);await db.query("UPDATE trend_alexandria_jobs SET state='failed',updated_at=now() WHERE run_id=$1",[run.id]);log('research_failed',{id:run.id,error});
-   }finally{clearInterval(timer);}
-  }
+  await processResearchQueue(pool,db,workerId,log);
   await db.query("UPDATE trend_sources SET status='Expired',notion_synced_at=NULL WHERE status='Active' AND last_trend_evidence_at<now()-interval '7 days'");
   for(const row of (await db.query("SELECT * FROM trend_sources WHERE notion_synced_at IS NULL ORDER BY last_checked DESC LIMIT 10")).rows){try{await syncNotion(db,row);}catch{log('notion_sync_pending',{source_id:row.id});}}
   try{await reconcileUsage(db);}catch{log('usage_reconciliation_pending');}
