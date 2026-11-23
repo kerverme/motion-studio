@@ -13,6 +13,13 @@ const retryPricing=`j.state='partial' AND r.created_at>now()-interval '7 days' A
   AND j.checkpoint->'calls'='[]'::jsonb AND j.checkpoint->'evidence'='[]'::jsonb AND j.checkpoint->'patterns'='[]'::jsonb
   AND NOT EXISTS(SELECT 1 FROM jsonb_array_elements(j.checkpoint->'warnings') w WHERE w->>'code' IS DISTINCT FROM 'uncertain_cost')
   AND NOT EXISTS(SELECT 1 FROM firecrawl_requests f WHERE f.research_job_id=j.budget_id)`;
+const savedOpenAIResponse=`SELECT c.response_id FROM trend_provider_calls c
+  WHERE c.research_run_id=r.id AND c.status IN ('started','failed') AND c.response_id IS NOT NULL
+    AND COALESCE(c.api_usage->>'provider_status','') NOT IN ('failed','incomplete')
+    AND NOT (c.call_key LIKE '%:after_cancel' AND COALESCE(c.api_usage->>'provider_status','')='cancelled')
+    AND NOT EXISTS(SELECT 1 FROM trend_provider_calls repair WHERE repair.call_key=c.call_key||':after_cancel')
+  ORDER BY c.created_at DESC LIMIT 1`;
+const retryOpenAI=`j.state='failed' AND EXISTS(${savedOpenAIResponse})`;
 export function registerTrendRoutes(app:Hono,pool:pg.Pool,guard:(c:Context,next:Next)=>Promise<any>,models?:ModelSource){
   const presentRun=async(r:any)=>{
     const budget=r.budget_id?await new PgResearchBudget(pool).snapshot(r.budget_id):null;
@@ -22,7 +29,7 @@ export function registerTrendRoutes(app:Hono,pool:pg.Pool,guard:(c:Context,next:
   app.get('/app/api/studio/trends',guard,async c=>{
     const platform=['tiktok','instagram','youtube'].includes(c.req.query('platform')||'')?c.req.query('platform')!:'both';
     const settings=trendSettings();
-    const runs=(await pool.query(`SELECT r.id,COALESCE(j.state,r.status) AS status,r.request,r.created_at,r.finished_at,r.error,r.duration_ms,r.evidence_count,r.eligible_count,r.details,j.budget_id,(${retryPricing}) AS can_retry_pricing,
+    const runs=(await pool.query(`SELECT r.id,COALESCE(j.state,r.status) AS status,r.request,r.created_at,r.finished_at,r.error,r.duration_ms,r.evidence_count,r.eligible_count,r.details,j.budget_id,(${retryOpenAI}) AS can_resume_openai,(${retryPricing}) AS can_retry_pricing,
       (SELECT COALESCE(sum(estimated_usd),0) FROM trend_provider_calls WHERE research_run_id=r.id) AS known_estimated_usd,
       (SELECT count(*)::int FROM trend_provider_calls WHERE research_run_id=r.id AND estimated_usd IS NULL) AS unpriced_calls
       FROM trend_research_runs r LEFT JOIN trend_alexandria_jobs j ON j.run_id=r.id ORDER BY r.created_at DESC LIMIT 12`)).rows;
@@ -63,16 +70,26 @@ export function registerTrendRoutes(app:Hono,pool:pg.Pool,guard:(c:Context,next:
   });
   app.get('/app/api/studio/trends/runs/:id',guard,async c=>{
     const id=z.string().uuid().safeParse(c.req.param('id'));if(!id.success)return c.json({error:'not found'},404);
-    const r=(await pool.query(`SELECT r.*,j.budget_id,j.state AS status,(${retryPricing}) AS can_retry_pricing FROM trend_research_runs r JOIN trend_alexandria_jobs j ON j.run_id=r.id WHERE r.id=$1 OR r.id=(SELECT run_id FROM trend_alexandria_requests WHERE request_id=$1)`,[id.data])).rows[0];
+    const r=(await pool.query(`SELECT r.*,j.budget_id,j.state AS status,(${retryOpenAI}) AS can_resume_openai,(${retryPricing}) AS can_retry_pricing FROM trend_research_runs r JOIN trend_alexandria_jobs j ON j.run_id=r.id WHERE r.id=$1 OR r.id=(SELECT run_id FROM trend_alexandria_requests WHERE request_id=$1)`,[id.data])).rows[0];
     if(!r)return c.json({error:'not found'},404);
     const trends=r.eligible_count>0?(await eligibleTrends(pool,'both',10,r.id)).map(publicTrend):[];
-    return c.json({...await presentRun(r),trends});
+    const openai_calls=(await pool.query(`SELECT split_part(call_key,':',2) AS stage,split_part(call_key,':',3)='after_cancel' AS replacement,
+      model,response_id,COALESCE(api_usage->>'provider_status',status) AS status FROM trend_provider_calls
+      WHERE research_run_id=$1 ORDER BY created_at`,[r.id])).rows;
+    return c.json({...await presentRun(r),trends,openai_calls});
   });
   app.post('/app/api/studio/trends/runs/:id/retry',guard,async c=>{
     const id=z.string().uuid().safeParse(c.req.param('id'));if(!id.success)return c.json({error:'not found'},404);
-    const r=(await pool.query(`UPDATE trend_alexandria_jobs j SET state='queued',updated_at=now(),
-      checkpoint=CASE WHEN j.state='partial' THEN (j.checkpoint-'patterns'-'warnings') || '{"price_rechecked":true}'::jsonb ELSE j.checkpoint END
-      FROM trend_research_runs r WHERE j.run_id=$1 AND r.id=j.run_id AND (j.state='failed' OR (${retryPricing})) RETURNING j.run_id`,[id.data])).rows[0];
-    return r?c.json({id:r.run_id,message:'ทำงานต่อจาก checkpoint และงบเดิม ไม่ส่งคำขอที่ผลไม่แน่นอนซ้ำ'},202):c.json({error:'งานนี้ยังทำต่อไม่ได้'},409);
+    const options=await c.req.json().catch(()=>null);
+    const replaceCancelled=options?.replace_cancelled===true;
+    const r=(await pool.query(`WITH queued AS (
+      UPDATE trend_alexandria_jobs j SET state='queued',updated_at=now(),checkpoint=CASE
+        WHEN j.state='partial' THEN (j.checkpoint-'patterns'-'warnings') || '{"price_rechecked":true}'::jsonb
+        WHEN ${retryOpenAI} THEN jsonb_set(j.checkpoint,'{openai_retry}',jsonb_build_object(
+          'at',now(),'response_id',(${savedOpenAIResponse}),'replace_cancelled',$2::boolean))
+        ELSE j.checkpoint-'openai_retry' END
+      FROM trend_research_runs r WHERE j.run_id=$1 AND r.id=j.run_id AND (j.state='failed' OR (${retryPricing})) RETURNING j.run_id)
+      UPDATE trend_research_runs SET status='running',error=NULL,finished_at=NULL WHERE id IN (SELECT run_id FROM queued) RETURNING id`,[id.data,replaceCancelled])).rows[0];
+    return r?c.json({id:r.id,message:'รับงานเดิมเพื่อตรวจต่อแล้ว'},202):c.json({error:'งานนี้ยังทำต่อไม่ได้'},409);
   });
 }

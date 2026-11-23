@@ -134,6 +134,20 @@ test('research route authentication, request replay and conflicting payload do n
  assert.equal((await query('SELECT * FROM trend_alexandria_requests WHERE request_id=$1',[invalid.request_id])).rows.length,0);
  assert.equal((await app.request('/app/api/studio/trends')).status,401);
 });
+test('retrying a failed accepted response binds consent to its exact ID and reuses the same job and budget',async()=>{
+ const j=await job(),id='resp_cancelled_legacy';
+ await query("UPDATE trend_alexandria_jobs SET state='failed',checkpoint=$2 WHERE run_id=$1",[j.id,JSON.stringify({plan:{summary:'saved'},evidence:[{}]})]);
+ await query("UPDATE trend_research_runs SET status='failed',error='old timeout',finished_at=now() WHERE id=$1",[j.id]);
+ await query("INSERT INTO trend_provider_calls(research_run_id,call_key,model,status,response_id) VALUES($1,$2,'gpt-6.2-sol','failed',$3)",[j.id,j.id+':score',id]);
+ const app=new Hono();registerTrendRoutes(app,pool,async(_c,next)=>next(),['gpt-6.2-sol']);
+ const path='/app/api/studio/trends/runs/'+j.id;
+ const before=await (await app.request(path)).json();assert.equal(before.can_resume_openai,true);assert.equal(before.openai_calls[0].response_id,id);
+ const retry=()=>app.request(path+'/retry',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({replace_cancelled:true})});
+ assert.equal((await retry()).status,202);assert.equal((await retry()).status,409);
+ const after=await (await app.request(path)).json();assert.equal(after.id,j.id);assert.equal(after.budget_id,j.budgetId);assert.equal(after.status,'queued');assert.equal(after.error,null);
+ const saved:any=(await query('SELECT checkpoint FROM trend_alexandria_jobs WHERE run_id=$1',[j.id])).rows[0];
+ assert.deepEqual(saved.checkpoint.evidence,[{}]);assert.equal(saved.checkpoint.openai_retry.response_id,id);assert.equal(saved.checkpoint.openai_retry.replace_cancelled,true);
+});
 test('a price-only stop can resume once with the original web plan and budget, before any paid social call',async()=>{
  const j=await job();const plan={summary:'แผนจากเว็บ',queries:[]};
  const checkpoint={plan,web_attempted:true,web_sources:[{url:'https://example.com/'}],warnings:[{code:'uncertain_cost'}],calls:[],patterns:[],evidence:[]};

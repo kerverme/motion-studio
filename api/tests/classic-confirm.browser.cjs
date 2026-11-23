@@ -140,6 +140,27 @@ const quote={revision:'revision-1',quote_hash:'quote-1',known_total_usd:0,unknow
   await p.evaluate(()=>localStorage.setItem('ms.trend_brain',JSON.stringify({version:2,model:'gpt-retired'})));
   await p.evaluate(()=>reopenTrendScreen());assert.equal(await model.inputValue(),'');assert.equal(await button.isDisabled(),true);
  });
+ await test('a timed-out research stage resumes the saved job and shows progress without submitting another search',async p=>{
+  await p.evaluate(()=>{
+   frame();STYLE_LIST=[];MUSIC_LIST=[];const models=[{id:'gpt-6.2-sol',label:'GPT-6.2 Sol'}];
+   const saved={id:'stored',request:{query:'เรื่องใกล้ตัว',model:models[0].id,platform:'both'},error:'OpenAI เกินเวลารอ',status:'failed',can_resume_openai:true,firecrawl:{actual:4}};
+   window.resumePosts=[];
+   api=async(path,opts={})=>{
+    if(opts.method==='POST'){resumePosts.push({path,body:JSON.parse(opts.body)});saved.status='queued';saved.error=null;saved.can_resume_openai=false;saved.details={openai_stage:'score'};return {id:saved.id};}
+    if(path.includes('/trends?'))return {runs:[structuredClone(saved)],trends:[]};
+    if(path.endsWith('/runs/stored'))return structuredClone(saved);
+    return {};
+   };
+   window.finishResearch=()=>{saved.status='partial';saved.details={model:models[0].id};};
+   studio({provider:'openai',llm:true,web_search:true,model:models[0].id,models,reasoning:'high',reasoning_levels:['high'],formats:{},daily_limit:20,drafts_today:0,max_credits:4500,trend_research:{enabled:true,research_model:models[0].id,models}},[]);
+  });
+  const region=p.getByRole('region',{name:'ค้นหาเทรนด์',exact:true});
+  await region.getByRole('button',{name:'ทำงานต่อจากข้อมูลเดิม'}).evaluate(b=>{b.click();b.click();});
+  await region.getByText(/OpenAI กำลังวิเคราะห์ข้อมูลโซเชียล/).waitFor();await p.evaluate(()=>finishResearch());
+  await region.getByText(/หลักฐานยังไม่ครบ/).waitFor();
+  assert.deepEqual(await p.evaluate(()=>resumePosts),[{path:'/app/api/studio/trends/runs/stored/retry',body:{replace_cancelled:true}}]);
+  assert.equal(await region.getByText('OpenAI เกินเวลารอ').count(),0);
+ });
  await test('Classic confirmation fits a narrow mobile drawer without horizontal overflow',async p=>{
   await p.setViewportSize({width:390,height:844});await p.evaluate(()=>{const target=document.getElementById('test-target');target.className='drawer';target.style.padding='20px';return creativeDraftView(target,fixture,async()=>{});});
   const sizes=await p.locator('#test-target').evaluate(el=>({scroll:el.scrollWidth,width:el.clientWidth}));assert.ok(sizes.scroll<=sizes.width+1,JSON.stringify(sizes));assert.equal(await p.locator('#test-target input:visible,#test-target textarea:visible,#test-target select:visible').count(),0);
