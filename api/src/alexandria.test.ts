@@ -34,7 +34,8 @@ test('official discovery is authenticated, free, expanded and rejects login fail
 });
 test('unknown pricing, per-record fees, changed maximum and unsupported options stop before dispatch',()=>{
  assert.equal(pricedTool(tool,{query:'ไทย'}).maximum,2);
- for(const changed of [{...tool,creditsCost:3},{...tool,perRecord:true},{...tool,billing:undefined},{...tool,billing:{maxCredits:30}},{...tool,provider:'oriane'},{...tool,capability:'unreviewed'}])assert.throws(()=>pricedTool(changed,{query:'ไทย'}));
+ assert.equal(pricedTool({...tool,creditsCost:1,billing:{maxCredits:1}},{query:'ไทย'}).maximum,1);
+ for(const changed of [{...tool,creditsCost:1},{...tool,creditsCost:3,billing:{maxCredits:3}},{...tool,creditsCost:0,billing:{maxCredits:0}},{...tool,perRecord:true},{...tool,billing:undefined},{...tool,billing:{maxCredits:30}},{...tool,provider:'oriane'},{...tool,capability:'unreviewed'}])assert.throws(()=>pricedTool(changed,{query:'ไทย'}));
  assert.throws(()=>pricedTool(tool,{query:'ไทย',limit:100}));assert.throws(()=>pricedTool(tool,{query:'ไทย',date_posted:'made-up'}));
 });
 test('mixed legacy and Alexandria calls share one durable 25-credit limit, including after restart',async()=>{
@@ -133,6 +134,24 @@ test('research route authentication, request replay and conflicting payload do n
  assert.equal((await query('SELECT * FROM trend_alexandria_requests WHERE request_id=$1',[invalid.request_id])).rows.length,0);
  assert.equal((await app.request('/app/api/studio/trends')).status,401);
 });
+test('a price-only stop can resume once with the original web plan and budget, before any paid social call',async()=>{
+ const j=await job();const plan={summary:'แผนจากเว็บ',queries:[]};
+ const checkpoint={plan,web_attempted:true,web_sources:[{url:'https://example.com/'}],warnings:[{code:'uncertain_cost'}],calls:[],patterns:[],evidence:[]};
+ const app=new Hono();registerTrendRoutes(app,pool,async(_c,next)=>next(),['gpt-6.2-sol']);
+ const path='/app/api/studio/trends/runs/'+j.id;
+ const setPartial=(data:any)=>query("UPDATE trend_alexandria_jobs SET state='partial',checkpoint=$2 WHERE run_id=$1",[j.id,JSON.stringify(data)]);
+ const retry=()=>app.request(path+'/retry',{method:'POST'});
+ for(const extra of [{calls:[{key:'already dispatched'}]},{warnings:[{code:'uncertain_charge'}]},{evidence:[{}]},{price_rechecked:true}]){
+  await setPartial({...checkpoint,...extra});assert.equal((await retry()).status,409);
+ }
+ await setPartial(checkpoint);assert.equal((await (await app.request(path)).json()).can_retry_pricing,true);
+ assert.equal((await retry()).status,202);assert.equal((await retry()).status,409);
+ const saved:any=(await query('SELECT * FROM trend_alexandria_jobs WHERE run_id=$1',[j.id])).rows[0];
+ assert.equal(saved.budget_id,j.budgetId);assert.equal(saved.checkpoint.price_rechecked,true);assert.deepEqual(saved.checkpoint.plan,plan);
+ assert.deepEqual(saved.checkpoint.web_sources,checkpoint.web_sources);assert.equal(saved.checkpoint.patterns,undefined);
+ await setPartial(checkpoint);await query("INSERT INTO firecrawl_requests(id,research_job_id,endpoint,cache_key,source_urls,reserved_credits,state) VALUES($1,$2,'/v2/scrape','existing','{}',1,'uncertain')",[randomUUID(),j.budgetId]);
+ assert.equal((await retry()).status,409);
+});
 test('complete mocked research → Notion → topic → script selection uses corroborated sources and same checkpoints',async()=>{
  process.env.OPENAI_API_KEY='mock';process.env.NOTION_TOKEN='mock';process.env.NOTION_TREND_DATABASE_ID='mock-db';process.env.TREND_RESEARCH_MODEL='gpt-6.1-terra';
  const j=await job();let paid=0,openai=0,notionCreates=0;let planned=false;
@@ -140,17 +159,18 @@ test('complete mocked research → Notion → topic → script selection uses co
   const u=String(url),body=init?.body?JSON.parse(String(init.body)):{};
   if(u.includes('/v1/models/')){assert.ok(u.endsWith('/gpt-6.2-sol'));return Response.json({id:'gpt-6.2-sol'});}
   if(u.endsWith('/team/credit-usage'))return Response.json({success:true,data:{remainingCredits:1000,planCredits:1000}});
-  if(u.includes('firecrawl.dev')){const c=body.alexandria.capability;if(c==='find-tools')return response(c,{items:catalog,total:catalog.length},0);assert.ok(planned,'Web Search precedes paid calls');paid++;return response(c,payload);}
+  if(u.includes('firecrawl.dev')){const c=body.alexandria.capability;if(c==='find-tools')return response(c,{items:catalog.map(t=>({...t,creditsCost:1,billing:{maxCredits:1}})),total:catalog.length},0);assert.ok(planned,'Web Search precedes paid calls');paid++;return response(c,payload,1);}
   if(u.includes('api.notion.com')){if(u.endsWith('/query'))return Response.json({results:[]});if(u.endsWith('/pages')){notionCreates++;return Response.json({id:'notion-page'});}return Response.json({id:'notion-page'});}
   if(u.endsWith('/v1/responses')){assert.equal(body.model,'gpt-6.2-sol');openai++;const plan=body.text.format.name==='research_plan';if(plan)planned=true;return Response.json({id:'resp_mock_'+openai,status:'completed',usage:{input_tokens:300,output_tokens:100},output:[...(plan?[{type:'web_search_call',status:'completed',action:{sources:[{url:'https://science.example/surface',title:'Primary article'}]}}]:[]),{type:'message',content:[{type:'output_text',text:JSON.stringify(plan?{summary:'ข้อมูลจากเว็บ ยังไม่ใช่เทรนด์โซเชียล',queries:[{platform:'tiktok',thai:'แรงตึงผิวไทย',english:'surface tension Thai',capability:'tiktok/search-videos',reason:'ต้องตรวจตัวเลขจริง'}]}:{patterns:[assessment]})}]}]});}
   throw new Error('Unexpected mock URL '+u);
  };
  const run={id:j.id,budget_id:j.budgetId,checkpoint:{},request:{platform:'tiktok',model:'gpt-6.2-sol',count:10,query:'แรงตึงผิว',audience:'เด็กไทย'}};
  const result=await runResearch(pool,pool,run);assert.equal(result.status,'done');assert.equal(result.eligible_count,1);assert.equal(paid,2);assert.equal(openai,2);assert.equal(notionCreates,1);
- const rows=await eligibleTrends(pool);assert.equal(rows.length,1);assert.equal(rows[0].provider_name,'scrapecreators');assert.equal(rows[0].actual_credits,4);assert.equal(rows[0].supporting_sources.length,2);
+ const rows=await eligibleTrends(pool);assert.equal(rows.length,1);assert.equal(rows[0].provider_name,'scrapecreators');assert.equal(rows[0].actual_credits,2);assert.equal(rows[0].supporting_sources.length,2);
+ assert.ok(result.details.calls.every((c:any)=>c.max_credits===1));
  assert.deepEqual((await eligibleTrends(pool,'both',10,j.id)).map(r=>r.id),[rows[0].id]);assert.deepEqual(await eligibleTrends(pool,'both',10,randomUUID()),[]);
  assert.equal(rows[0].research_model,run.request.model);
- const props=notionProperties(rows[0]);assert.equal(props['Confidence']!.number,80);assert.equal(props['Actual Credits']!.number,4);
+ const props=notionProperties(rows[0]);assert.equal(props['Confidence']!.number,80);assert.equal(props['Actual Credits']!.number,2);
  const id=randomUUID();const ideas=['ทำไมพริกไทยหนีสบู่','แรงตึงผิวทำอะไรได้บ้าง','หยดน้ำเดินทางอย่างไร'].map(title=>({title,explanation:'จากการทดลอง',interesting:'ชวนสังเกต',kind:'trending',trend_ids:[rows[0].id]}));
  const parsed=parseDetailedIdeas({status:'completed',output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({ideas})}]}]},[],3,'trending',rows);assert.equal(parsed.length,3);
  await query("INSERT INTO topic_suggestions(id,request_hash,request,status,idea_details) VALUES($1,'hash','{}','done',$2)",[id,JSON.stringify(parsed)]);

@@ -1000,7 +1000,11 @@ function studio(st, drafts){
       latest?.request?.query?h('div',{class:'sub'},'เรื่องที่ค้นหา · '+latest.request.query):'',
       latest?.error?h('div',{class:'err'},latest.error):'',
       latest?.details?.limitation?h('div',{class:'sub'},latest.details.limitation):'',
-      ...[...new Map((latest?.details?.warnings||[]).map(w=>[w.code,w])).values()].map(w=>h('div',{class:'sub'},({insufficient_credits:'เครดิต Firecrawl ไม่พอ กรุณาตรวจยอดในบัญชี แล้วค้นคว้าใหม่ · ยังใช้ไอเดียจากเว็บได้',THIRD_PARTY_DATA_TERMS_REQUIRED:'เจ้าของบัญชีต้องตรวจและยอมรับข้อกำหนดผู้ให้บริการก่อน',budget_stopped:'หยุดเรียกข้อมูลเพื่อรักษางบ 25 เครดิต',capability_unavailable:'ผู้ให้บริการยังไม่มีเครื่องมือที่ต้องใช้',uncertain_charge:'การตอบกลับขาดหาย จึงหยุดไว้เพื่อป้องกันการคิดเงินซ้ำ',notion_sync_pending:'กำลังรอบันทึกลง Notion'}[w.code]||'ข้อจำกัด: '+w.code),w.action_url?h('a',{href:w.action_url,target:'_blank',rel:'noopener noreferrer'},' เปิดข้อกำหนดผู้ให้บริการ'):'')),
+      ...[...new Map((latest?.details?.warnings||[]).map(w=>[w.code,w])).values()].map(w=>h('div',{class:'sub'},({uncertain_cost:'ยังยืนยันราคาของเครื่องมือโซเชียลภายในวงเงินไม่ได้ ระบบจึงหยุดก่อนเรียกข้อมูล',insufficient_credits:'เครดิต Firecrawl ไม่พอ กรุณาตรวจยอดในบัญชี แล้วค้นคว้าใหม่ · ยังใช้ไอเดียจากเว็บได้',THIRD_PARTY_DATA_TERMS_REQUIRED:'เจ้าของบัญชีต้องตรวจและยอมรับข้อกำหนดผู้ให้บริการก่อน',budget_stopped:'หยุดเรียกข้อมูลเพื่อรักษางบ 25 เครดิต',capability_unavailable:'ผู้ให้บริการยังไม่มีเครื่องมือที่ต้องใช้',uncertain_charge:'การตอบกลับขาดหาย จึงหยุดไว้เพื่อป้องกันการคิดเงินซ้ำ',notion_sync_pending:'กำลังรอบันทึกลง Notion'}[w.code]||'ข้อจำกัด: '+w.code),w.action_url?h('a',{href:w.action_url,target:'_blank',rel:'noopener noreferrer'},' เปิดข้อกำหนดผู้ให้บริการ'):'')),
+      latest?.can_retry_pricing?h('button',{class:'btn',type:'button',on:{click:()=>{
+        if(researching)return;
+        const pending={...latest.request,request_id:latest.id,resume_only:true};saveIdeaStore(trendSlot,pending);void discoverTrends(pending,true);
+      }}},'ตรวจราคาแล้วค้นต่อจากงานเดิม'):'',
       latest?.details?.web_summary?h('details',{},h('summary',{},'ข้อมูลจากเว็บ · ยังไม่ใช่หลักฐานยืนยันเทรนด์โซเชียล'),h('p',{class:'sub'},latest.details.web_summary),...(latest.details.web_sources||[]).map(s=>h('div',{},h('a',{href:s.url,target:'_blank',rel:'noopener noreferrer'},s.title||s.url)))):'',
       shownTrends.length?h('h4',{},viewedRun?'เทรนด์ที่พบในงานนี้':'เทรนด์ที่ผ่านเกณฑ์ในช่วง 7 วัน'):'',
       ...shownTrends.map(t=>h('details',{style:'padding:10px 0;border-bottom:1px solid var(--line)'},h('summary',{},t.title+' · '+t.score+'/100'),h('p',{class:'sub'},'ความมั่นใจ '+t.confidence+'% · '+t.research_model+' · ตรวจ '+trendDate(t.last_verified)),h('p',{class:'sub'},'AI วิเคราะห์: '+t.summary),h('div',{class:'sub'},t.score_details?.reason||''),h('div',{class:'sub'},(t.score_details?.missing||[]).join(' · ')),...(t.supporting_sources||[]).map(sourceCard))),
@@ -1008,12 +1012,15 @@ function studio(st, drafts){
     ]);
   };
   async function loadResearch(){const data=await api('/app/api/studio/trends?platform='+trendPlatform.value);if(researchResults.isConnected)renderResearch(data);return data;}
-  async function discoverTrends(pending){
+  async function discoverTrends(pending,recheckPricing=false){
     if(researching)return;
     researching=true;viewedRun={id:pending.request_id,status:'queued',model:pending.model||researchSettings.research_model};updateResearchButton();
     researchStatus.textContent='กำลังค้นหาด้วย '+generationModelLabel(pending.model||researchSettings.research_model||'OpenAI')+'…';
     try{
-      let job;try{job=await api('/app/api/studio/trends/runs/'+pending.request_id);}catch(e){if(e.status!==404)throw e;job=await api('/app/api/studio/trends/refresh',{method:'POST',body:JSON.stringify(pending)});}
+      if(recheckPricing){
+        try{await api('/app/api/studio/trends/runs/'+pending.request_id+'/retry',{method:'POST'});}catch(e){if(e.status!==409)throw e;}
+      }
+      let job;try{job=await api('/app/api/studio/trends/runs/'+pending.request_id);}catch(e){if(e.status!==404||pending.resume_only)throw e;job=await api('/app/api/studio/trends/refresh',{method:'POST',body:JSON.stringify(pending)});}
       viewedRun=job;
       while(['queued','running'].includes(job.status)){
         await new Promise(resolve=>setTimeout(resolve,2500));if(!researchResults.isConnected)return;

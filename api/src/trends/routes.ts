@@ -7,6 +7,12 @@ import {PgResearchBudget} from '../firecrawl-budget.js';
 import {readModels,type ModelSource} from '../openai-models.js';
 export const trendSettings=()=>({enabled:process.env.MOTION_TREND_RESEARCH_ENABLED==='1',engine:'alexandria',verified_platforms:(process.env.TREND_VERIFIED_PLATFORMS||'').split(',').filter(x=>['tiktok','instagram','youtube'].includes(x)),window_days:7,refresh_hours:null,minimum_score:Number(process.env.TREND_MIN_SCORE)||70,timezone:'Asia/Bangkok',credit_limit:25,research_model:process.env.TREND_RESEARCH_MODEL||null});
 const Request=z.object({request_id:z.string().uuid(),platform:z.enum(['tiktok','instagram','youtube','both']).default('both'),query:z.string().trim().min(2).max(400).default('เรื่องใกล้ตัว วิทยาศาสตร์ เทคโนโลยี และกระแสสังคมไทย'),audience:z.string().trim().min(2).max(200).default('คนไทยทั่วไป'),count:z.number().int().min(1).max(10).default(10),model:z.string().min(1).max(100).optional()});
+// A price-only stop occurred before social execution. Reuse a recent web plan and its original budget once.
+const retryPricing=`j.state='partial' AND r.created_at>now()-interval '7 days' AND NOT (j.checkpoint ? 'price_rechecked')
+  AND j.checkpoint ? 'plan' AND j.checkpoint @> '{"web_attempted":true,"warnings":[{"code":"uncertain_cost"}]}'
+  AND j.checkpoint->'calls'='[]'::jsonb AND j.checkpoint->'evidence'='[]'::jsonb AND j.checkpoint->'patterns'='[]'::jsonb
+  AND NOT EXISTS(SELECT 1 FROM jsonb_array_elements(j.checkpoint->'warnings') w WHERE w->>'code' IS DISTINCT FROM 'uncertain_cost')
+  AND NOT EXISTS(SELECT 1 FROM firecrawl_requests f WHERE f.research_job_id=j.budget_id)`;
 export function registerTrendRoutes(app:Hono,pool:pg.Pool,guard:(c:Context,next:Next)=>Promise<any>,models?:ModelSource){
   const presentRun=async(r:any)=>{
     const budget=r.budget_id?await new PgResearchBudget(pool).snapshot(r.budget_id):null;
@@ -16,7 +22,7 @@ export function registerTrendRoutes(app:Hono,pool:pg.Pool,guard:(c:Context,next:
   app.get('/app/api/studio/trends',guard,async c=>{
     const platform=['tiktok','instagram','youtube'].includes(c.req.query('platform')||'')?c.req.query('platform')!:'both';
     const settings=trendSettings();
-    const runs=(await pool.query(`SELECT r.id,COALESCE(j.state,r.status) AS status,r.request,r.created_at,r.finished_at,r.error,r.duration_ms,r.evidence_count,r.eligible_count,r.details,j.budget_id,
+    const runs=(await pool.query(`SELECT r.id,COALESCE(j.state,r.status) AS status,r.request,r.created_at,r.finished_at,r.error,r.duration_ms,r.evidence_count,r.eligible_count,r.details,j.budget_id,(${retryPricing}) AS can_retry_pricing,
       (SELECT COALESCE(sum(estimated_usd),0) FROM trend_provider_calls WHERE research_run_id=r.id) AS known_estimated_usd,
       (SELECT count(*)::int FROM trend_provider_calls WHERE research_run_id=r.id AND estimated_usd IS NULL) AS unpriced_calls
       FROM trend_research_runs r LEFT JOIN trend_alexandria_jobs j ON j.run_id=r.id ORDER BY r.created_at DESC LIMIT 12`)).rows;
@@ -57,14 +63,16 @@ export function registerTrendRoutes(app:Hono,pool:pg.Pool,guard:(c:Context,next:
   });
   app.get('/app/api/studio/trends/runs/:id',guard,async c=>{
     const id=z.string().uuid().safeParse(c.req.param('id'));if(!id.success)return c.json({error:'not found'},404);
-    const r=(await pool.query('SELECT r.*,j.budget_id,j.state AS status FROM trend_research_runs r JOIN trend_alexandria_jobs j ON j.run_id=r.id WHERE r.id=$1 OR r.id=(SELECT run_id FROM trend_alexandria_requests WHERE request_id=$1)',[id.data])).rows[0];
+    const r=(await pool.query(`SELECT r.*,j.budget_id,j.state AS status,(${retryPricing}) AS can_retry_pricing FROM trend_research_runs r JOIN trend_alexandria_jobs j ON j.run_id=r.id WHERE r.id=$1 OR r.id=(SELECT run_id FROM trend_alexandria_requests WHERE request_id=$1)`,[id.data])).rows[0];
     if(!r)return c.json({error:'not found'},404);
     const trends=r.eligible_count>0?(await eligibleTrends(pool,'both',10,r.id)).map(publicTrend):[];
     return c.json({...await presentRun(r),trends});
   });
   app.post('/app/api/studio/trends/runs/:id/retry',guard,async c=>{
     const id=z.string().uuid().safeParse(c.req.param('id'));if(!id.success)return c.json({error:'not found'},404);
-    const r=(await pool.query("UPDATE trend_alexandria_jobs SET state='queued',updated_at=now() WHERE run_id=$1 AND state='failed' RETURNING run_id",[id.data])).rows[0];
+    const r=(await pool.query(`UPDATE trend_alexandria_jobs j SET state='queued',updated_at=now(),
+      checkpoint=CASE WHEN j.state='partial' THEN (j.checkpoint-'patterns'-'warnings') || '{"price_rechecked":true}'::jsonb ELSE j.checkpoint END
+      FROM trend_research_runs r WHERE j.run_id=$1 AND r.id=j.run_id AND (j.state='failed' OR (${retryPricing})) RETURNING j.run_id`,[id.data])).rows[0];
     return r?c.json({id:r.run_id,message:'ทำงานต่อจาก checkpoint และงบเดิม ไม่ส่งคำขอที่ผลไม่แน่นอนซ้ำ'},202):c.json({error:'งานนี้ยังทำต่อไม่ได้'},409);
   });
 }
