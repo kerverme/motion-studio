@@ -1,7 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import type { Context, Hono, Next } from 'hono';
 import type pg from 'pg';
-import type { discoverRankedModel, FalVideoModel } from './video-registry.js';
+import {
+  createRankedFalDiscovery,
+  registryIssue,
+  type discoverRankedModel,
+  type FalVideoModel
+} from './video-registry.js';
 import type { syncVideoKnowledge } from './video-director.js';
 
 const dataset = 'lmarena-ai/leaderboard-dataset';
@@ -20,7 +25,12 @@ export type ArenaRank = {
   provider: string;
   elo: number | null;
 };
-type RankedVideo = ArenaRank & { fal: FalVideoModel | null; video_to_video?: FalVideoModel | null };
+type RankedVideo = ArenaRank & {
+  fal: FalVideoModel | null;
+  video_to_video?: FalVideoModel | null;
+  fal_error?: string;
+  video_to_video_error?: string;
+};
 export type ArenaBoard = {
   category: ArenaCategory;
   source_url: string;
@@ -30,6 +40,7 @@ export type ArenaBoard = {
   last_success_at: string | null;
   last_attempt_at: string | null;
   stale: boolean;
+  registry_partial?: boolean;
   error: string | null;
   models: RankedVideo[];
 };
@@ -41,6 +52,9 @@ async function getOfficial(url: URL, request: typeof fetch) {
     headers: { accept: 'application/json', 'cache-control': 'no-cache' },
     cache: 'no-store',
     signal: AbortSignal.timeout(20_000)
+  }).catch((e: unknown) => {
+    const reason = e instanceof Error && e.name === 'TimeoutError' ? 'timeout' : 'connection failed';
+    throw new ArenaDataError('Arena ' + url.hostname + ' ' + reason);
   });
   if (!response.ok || !response.headers.get('content-type')?.includes('application/json')) {
     throw new ArenaDataError('Arena dataset HTTP ' + response.status);
@@ -149,6 +163,9 @@ export async function readVideoArena(db: Db): Promise<{ refreshing: boolean; cat
         last_success_at: row?.last_success_at ? new Date(row.last_success_at).toISOString() : null,
         last_attempt_at: row?.last_attempt_at ? new Date(row.last_attempt_at).toISOString() : null,
         stale: row?.stale ?? true,
+        registry_partial: (row?.models ?? []).some(
+          (model: RankedVideo) => model.fal_error || model.video_to_video_error
+        ),
         error: row?.error ?? null,
         models: row?.models ?? []
       };
@@ -180,12 +197,12 @@ export function createArenaSync(pool: pg.Pool, deps: ArenaDeps = {}) {
     renew.unref();
     let failed = false;
     try {
-      const discover = deps.discover ?? (await import('./video-registry.js')).discoverRankedModel;
+      const previous = await readVideoArena(pool);
       const revision = currentRevision(request);
       const verified = new Map<string, FalVideoModel>();
       // A related reference-to-video endpoint has no Arena rank. Check once per model name per refresh.
       const related = new Map<string, Promise<FalVideoModel | null>>();
-      function videoToVideo(name: string) {
+      function videoToVideo(name: string, discover: typeof discoverRankedModel) {
         const existing = related.get(name);
         if (existing) return existing;
         const discovery = discover(name, 'video-to-video');
@@ -197,14 +214,50 @@ export function createArenaSync(pool: pg.Pool, deps: ArenaDeps = {}) {
           try {
             const sha = await revision;
             const board = await fetchArenaRanks(category, sha, request);
+            const discover =
+              deps.discover ??
+              (await createRankedFalDiscovery(
+                board.models.flatMap(({ name }) => [
+                  { name, category },
+                  { name, category: 'video-to-video' as const }
+                ])
+              ));
             const models: RankedVideo[] = [];
-            // Limit discovery fan-out to one endpoint per board at a time.
+            const prior = previous.categories.find((b) => b.category === category)?.models ?? [];
+            const previousModels = new Map(prior.map((m) => [m.model_id, m]));
+            // A provider outage never removes an Arena model or changes its rank.
             for (const row of board.models) {
-              const [fal, video_to_video] = await Promise.all([
+              const old = previousModels.get(row.model_id);
+              const [primary, alternate] = await Promise.allSettled([
                 discover(row.name, category),
-                videoToVideo(row.name)
+                videoToVideo(row.name, discover)
               ]);
-              models.push({ ...row, fal, video_to_video });
+              const model: RankedVideo = { ...row, fal: null };
+              if (primary.status === 'fulfilled') {
+                model.fal = primary.value;
+                if (primary.value?.verification_error) model.fal_error = primary.value.verification_error;
+              } else {
+                model.fal_error = registryIssue(primary.reason);
+                model.fal = old?.fal ? { ...old.fal, available: false, reason: model.fal_error } : null;
+              }
+              if (alternate.status === 'fulfilled') {
+                model.video_to_video = alternate.value;
+                if (alternate.value?.verification_error)
+                  model.video_to_video_error = alternate.value.verification_error;
+              } else {
+                model.video_to_video_error = registryIssue(alternate.reason);
+                model.video_to_video = old?.video_to_video
+                  ? { ...old.video_to_video, available: false, reason: model.video_to_video_error }
+                  : null;
+              }
+              models.push(model);
+            }
+            const partial = models.filter((m) => m.fal_error || m.video_to_video_error);
+            if (partial.length) {
+              failed = true;
+              console.warn('Video registry partial refresh', category, partial.length, [
+                ...new Set(partial.flatMap((m) => [m.fal_error, m.video_to_video_error]).filter(Boolean))
+              ]);
             }
             const saved = await pool.query(
               `INSERT INTO video_arena_snapshots(category,source_updated_at,dataset_revision,models,last_success_at,last_attempt_at,error)
@@ -219,7 +272,10 @@ export function createArenaSync(pool: pg.Pool, deps: ArenaDeps = {}) {
                 'Arena snapshot is older than the stored leaderboard or the sync lease expired'
               );
             for (const model of models) {
-              for (const endpoint of [model.fal, model.video_to_video]) {
+              for (const endpoint of [
+                model.fal_error ? null : model.fal,
+                model.video_to_video_error ? null : model.video_to_video
+              ]) {
                 if (endpoint && (endpoint.endpoint_available ?? endpoint.available)) {
                   verified.set(endpoint.endpoint_id, endpoint);
                 }
@@ -228,10 +284,15 @@ export function createArenaSync(pool: pg.Pool, deps: ArenaDeps = {}) {
           } catch (e) {
             failed = true;
             // Include only locally generated, public dataset diagnostics in snapshot errors.
-            const error =
-              e instanceof ArenaDataError
-                ? e.message
-                : 'เชื่อมต่อแหล่งข้อมูล Arena หรือยืนยันข้อมูล fal.ai ไม่สำเร็จ';
+            const error = e instanceof ArenaDataError ? e.message : 'อ่านหรือบันทึกชุดข้อมูล Arena ไม่สำเร็จ';
+            console.warn(
+              'Video Arena board refresh failed',
+              category,
+              error,
+              typeof (e as any)?.code === 'string' && /^[A-Z0-9]{5}$/.test((e as any).code)
+                ? (e as any).code
+                : ''
+            );
             await pool.query(
               `INSERT INTO video_arena_snapshots(category,error,last_attempt_at)
             SELECT $2,$3,now() WHERE EXISTS(${leaseGuard}) ON CONFLICT(category) DO UPDATE SET error=excluded.error,last_attempt_at=excluded.last_attempt_at`,

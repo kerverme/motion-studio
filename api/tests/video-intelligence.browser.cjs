@@ -33,7 +33,7 @@ const arena = {refreshing:false,categories:[{category:'text-to-video',models:[
     window.calls=[];window.row=row;window.fixtureArena=arena;
     api=async(path,opts={})=>{
       const body=opts.body?JSON.parse(opts.body):null;calls.push({path,method:opts.method||'GET',body,key:opts.headers?.['idempotency-key']});
-      if(path.endsWith('/arena/refresh')){fixtureArena.categories[0].stale=false;fixtureArena.categories[0].error=null;return fixtureArena;}
+      if(path.endsWith('/arena/refresh')){fixtureArena.categories[0].stale=false;fixtureArena.categories[0].error=null;fixtureArena.categories[0].registry_partial=true;fixtureArena.categories[0].models[0].video_to_video_error='Source video metadata timed out';fixtureArena.categories[0].models[1].fal_error='Model schema temporarily unavailable';return fixtureArena;}
       if(path.endsWith('/arena'))return fixtureArena;
       if(path.endsWith('/plans')&&opts.method==='POST')return {id:row.id};
       if(path.endsWith('/plans'))return {plans:[row]};
@@ -63,7 +63,16 @@ const arena = {refreshing:false,categories:[{category:'text-to-video',models:[
   assert.equal(await label('เลือกโมเดลด้วยตัวเอง').locator('option',{hasText:'Available'}).evaluate(el=>el.disabled),true);
   await btn('รีเฟรชอันดับ').click();
   await page.waitForFunction(()=>calls.some(x=>x.path.endsWith('/arena/refresh')));
-  await page.getByText('Available',{exact:true}).click();await btn('เลือก Available').click();
+  await page.getByText(/อันดับ Arena อัปเดตแล้ว แต่ยังตรวจข้อมูล fal.ai ของบางรุ่นไม่ได้/).waitFor();
+  await page.getByText('Unmapped',{exact:true}).click();
+  await page.getByText(/Model schema temporarily unavailable/).waitFor();
+  assert.ok(await btn('เลือก Unmapped').isDisabled());
+  await page.getByText('Available',{exact:true}).click();
+  await page.getByText(/Source video metadata timed out/).waitFor();
+  assert.ok(await btn('เลือก Available').isEnabled());
+  await btn('เลือก Available').click();
+  assert.equal(await label('เลือกโมเดลด้วยตัวเอง').inputValue(),'fal-ai/test');
+  console.log('PASS Partial fal metadata failure retains live ranks, shows per-route causes and leaves verified routes selectable');
   assert.equal(await label('หัวข้อ Text to Video').inputValue(),'ใบไม้ทำงานอย่างไร');
   assert.equal(await label('เลือกโมเดลด้วยตัวเอง').inputValue(),'fal-ai/test');
   assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));

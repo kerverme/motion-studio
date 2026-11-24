@@ -23,7 +23,7 @@ function renderTextVideo(cfg,plans){
   const manualBox=tvField('โมเดลที่เลือก',manual);manualBox.hidden=true;
   const resolutionNote=h('small',{class:'sub'});
   function updateResolutions(){
-    const models=(tvLatestArena?.categories||[]).flatMap(board=>(board.models||[]).flatMap(m=>[m.fal,m.video_to_video])).filter(m=>m?.available);
+    const models=(tvLatestArena?.categories||[]).flatMap(board=>(board.models||[]).flatMap(m=>[m.fal_error?null:m.fal,m.video_to_video_error?null:m.video_to_video])).filter(m=>m?.available);
     const subset=route.value==='manual'&&manual.value?models.filter(m=>m.endpoint_id===manual.value):models;
     const wanted=resolution.value||'720p',supported=[...new Set(subset.flatMap(m=>m.resolutions||[]).map(r=>r.toLowerCase()))];
     const values=[...new Set(['720p',...supported,wanted])].sort((a,b)=>parseInt(a)-parseInt(b));
@@ -149,9 +149,9 @@ function tvLink(url,label){
 }
 function tvArenaOptions(info){
   const groups=(info?.categories||[]).map(c=>h('optgroup',{label:TV_CATEGORIES[c.category]||c.category},
-    (c.models||[]).map(m=>h('option',{value:m.fal?.endpoint_id||'',disabled:!m.fal?.available||c.stale},'#'+m.rank+' '+m.name+(!m.fal?.available?' · ยังสร้างไม่ได้':c.stale?' · รอรีเฟรช':'')))));
+    (c.models||[]).map(m=>h('option',{value:m.fal?.endpoint_id||'',disabled:!m.fal?.available||!!m.fal_error||c.stale},'#'+m.rank+' '+m.name+(m.fal_error?' · รอตรวจ fal.ai':!m.fal?.available?' · ยังสร้างไม่ได้':c.stale?' · รอรีเฟรช':'')))));
   const alternates=new Map();
-  for(const board of info?.categories||[])for(const m of board.models||[])if(!board.stale&&m.video_to_video?.available)alternates.set(m.video_to_video.endpoint_id,m.video_to_video);
+  for(const board of info?.categories||[])for(const m of board.models||[])if(!board.stale&&!m.video_to_video_error&&m.video_to_video?.available)alternates.set(m.video_to_video.endpoint_id,m.video_to_video);
   if(alternates.size)groups.push(h('optgroup',{label:'วิดีโอเป็นวิดีโอ · เลือกเอง'},[...alternates.values()].map(m=>h('option',{value:m.endpoint_id},m.name+' · '+m.endpoint_id))));
   return groups;
 }
@@ -167,11 +167,12 @@ function tvArenaPanel(onSync,onSelect){
     put(source,tvLink(cat?.source_url,'ดูอันดับบน Arena'),stamp?h('small',{class:'sub'},'ซิงก์ล่าสุด '+tvDate(stamp)+' (กรุงเทพฯ)'):null,cat?.source_updated_at?h('small',{class:'sub'},'Arena อัปเดต '+String(cat.source_updated_at).slice(0,10)):null);
     const rows=cat?.models||[];
     put(list,cat?.stale||cat?.error?h('p',{class:'tv-notice'},[rows.length?'กำลังแสดงอันดับที่บันทึกไว้':'ยังยืนยันอันดับปัจจุบันไม่ได้',cat.error].filter(Boolean).join(' · ')):null,
+      cat?.registry_partial&&!cat.stale?h('p',{class:'tv-notice',role:'status'},'อันดับ Arena อัปเดตแล้ว แต่ยังตรวจข้อมูล fal.ai ของบางรุ่นไม่ได้ เลือกรุ่นที่ตรวจผ่านได้'):null,
       rows.map(m=>{
         const f=m.fal,price=f?.price;
-        return h('details',{class:'tv-rank'},h('summary',{},h('span',{class:'tv-num'},'#'+m.rank),h('span',{},h('b',{},m.name),h('small',{class:'sub'},m.provider||'ไม่ระบุผู้พัฒนา')),h('span',{class:'sub'},m.elo==null?'':'Elo '+Number(m.elo).toLocaleString('th-TH',{maximumFractionDigits:1})),h('span',{class:'tv-availability'},f?.available?'ใช้กับ fal.ai ได้':'ยังสร้างไม่ได้')),
+        return h('details',{class:'tv-rank'},h('summary',{},h('span',{class:'tv-num'},'#'+m.rank),h('span',{},h('b',{},m.name),h('small',{class:'sub'},m.provider||'ไม่ระบุผู้พัฒนา')),h('span',{class:'sub'},m.elo==null?'':'Elo '+Number(m.elo).toLocaleString('th-TH',{maximumFractionDigits:1})),h('span',{class:'tv-availability'},m.fal_error?'รอตรวจ fal.ai':f?.available?'ใช้กับ fal.ai ได้':'ยังสร้างไม่ได้')),
           h('div',{class:'tv-rank-info'},h('span',{},'ความละเอียด · '+(f?.resolutions?.join(', ')||'ยังไม่ทราบ')),h('span',{},'ความยาว · '+(f?.durations?.length?f.durations.join(', ')+' วินาที':'ยังไม่ทราบ')),
-          h('span',{},'เสียงในตัว · '+(f?.audio===true?'รองรับ':f?.audio===false?'ไม่รองรับ':'ยังไม่ทราบ')),h('span',{},price?'ราคาฐาน '+[price.unit_price,price.currency,'/',price.unit].join(' '):'ราคายังไม่ยืนยัน'),f?.pricing_description?h('span',{},f.pricing_description):null,f?.billing?.rates?h('span',{},Object.entries(f.billing.rates).map(([res,usd])=>(res==='*'?'ทุกความละเอียด':res)+' · '+usd+(f.billing.basis==='per_request'?' USD ต่อวิดีโอ':' USD ต่อวินาที')).join(' / ')):null,f?.billing?.source_second_usd?h('small',{class:'sub'},'วิดีโอต้นฉบับ '+f.billing.source_second_usd+' USD ต่อวินาที'):null,f?.billing?.reference_image_usd?h('small',{class:'sub'},'ภาพอ้างอิง '+f.billing.reference_image_usd+' USD'):null,f?.reason?h('span',{class:'sub'},f.reason):null,h('button',{class:'btn',type:'button',disabled:!f?.available||cat.stale,on:{click:()=>onSelect(f.endpoint_id)}},'เลือก '+m.name),tvLink(f?.source_url,'ดูโมเดลบน fal.ai'),f?.checked_at?h('small',{class:'sub'},'ตรวจ fal.ai '+tvDate(f.checked_at)):null));
+          h('span',{},'เสียงในตัว · '+(f?.audio===true?'รองรับ':f?.audio===false?'ไม่รองรับ':'ยังไม่ทราบ')),h('span',{},price?'ราคาฐาน '+[price.unit_price,price.currency,'/',price.unit].join(' '):'ราคายังไม่ยืนยัน'),f?.pricing_description?h('span',{},f.pricing_description):null,f?.billing?.rates?h('span',{},Object.entries(f.billing.rates).map(([res,usd])=>(res==='*'?'ทุกความละเอียด':res)+' · '+usd+(f.billing.basis==='per_request'?' USD ต่อวิดีโอ':' USD ต่อวินาที')).join(' / ')):null,f?.billing?.source_second_usd?h('small',{class:'sub'},'วิดีโอต้นฉบับ '+f.billing.source_second_usd+' USD ต่อวินาที'):null,f?.billing?.reference_image_usd?h('small',{class:'sub'},'ภาพอ้างอิง '+f.billing.reference_image_usd+' USD'):null,f?.reason?h('span',{class:'sub'},f.reason):null,m.fal_error?h('small',{class:'tv-notice'},'ตรวจโมเดลบน fal.ai ไม่สำเร็จ · '+m.fal_error):null,m.video_to_video_error?h('small',{class:'tv-notice'},'ตรวจรุ่นวิดีโอเป็นวิดีโอไม่สำเร็จ · '+m.video_to_video_error):null,h('button',{class:'btn',type:'button',disabled:!f?.available||!!m.fal_error||cat.stale,on:{click:()=>onSelect(f.endpoint_id)}},'เลือก '+m.name),tvLink(f?.source_url,'ดูโมเดลบน fal.ai'),f?.checked_at?h('small',{class:'sub'},'ตรวจ fal.ai '+tvDate(f.checked_at)):null));
       }),!rows.length&&!inFlight&&!cat?.error?h('span',{class:'sub'},'ยังไม่มีอันดับที่ยืนยันได้สำหรับประเภทนี้'):null);
   }
   async function sync(force){
@@ -238,7 +239,7 @@ function tvSceneEditor(shot,index,editable,changed){
     issueBox.textContent=tvFlatText(prod.issues);issueBox.hidden=!issueBox.textContent;
   }
   function catalog(initial){
-    const model=categories.flatMap(c=>c.models||[]).flatMap(m=>[m.fal,m.video_to_video]).find(f=>f?.endpoint_id===endpoint.value);
+    const model=categories.flatMap(c=>c.models||[]).flatMap(m=>[m.fal_error?null:m.fal,m.video_to_video_error?null:m.video_to_video]).find(f=>f?.endpoint_id===endpoint.value);
     const secs=model?.durations||[],res=model?.resolutions||[];
     const selectedSeconds=initial?spec.duration:duration.value,selectedRes=initial?spec.resolution:resolution.value;
     function fill(el,choices,value){

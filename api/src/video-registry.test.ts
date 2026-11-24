@@ -1,6 +1,6 @@
 import {after,before,test} from 'node:test';
 import assert from 'node:assert/strict';
-import {buildVideoPayload,discoverRankedModel,estimateVideoPayload,getVideoModel,PREVIOUS_FRAME,validateVideoPayload,type VideoCategory} from './video-registry.js';
+import {createRankedFalDiscovery,FalRegistryError,registryIssue,buildVideoPayload,discoverRankedModel,estimateVideoPayload,getVideoModel,PREVIOUS_FRAME,validateVideoPayload,type VideoCategory} from './video-registry.js';
 
 const original=process.env.FAL_KEY;
 before(()=>{process.env.FAL_KEY='offline-test';});
@@ -91,4 +91,46 @@ test('documented per-video charge counts paid variants, never seconds',async()=>
   const m=await getVideoModel(id,'text-to-video',f.request),p=buildVideoPayload(m,{prompt:'A boat',duration:12,resolution:'720p',audio:false});
   assert.deepEqual(await estimateVideoPayload(m,p,2,f.request),{usd:1.5,quantity:2,unit:'videos'});
   await assert.rejects(estimateVideoPayload(m,p,1,async()=>Response.json({estimate_type:'unit_price',currency:'USD',total_cost:4})),/inconsistent/);
+});
+
+test('transient pricing and documentation errors keep exact catalog evidence and redact provider error bodies',async()=>{
+  const f=fixture();
+  const faulty:typeof fetch=async(url,init)=>{
+    if(String(url).includes('/pricing?'))return new Response('sensitive-provider-body',{status:403});
+    return f.request(url,init);
+  };
+  const model=await getVideoModel(imageId,'image-to-video',faulty);
+  assert.equal(model.endpoint_available,true);assert.equal(model.available,false);assert.equal(model.price,null);
+  assert.ok(model.resolutions.includes('720p'));assert.ok(model.billing?.rates['720p']);
+  assert.match(model.verification_error||'',/403/);assert.doesNotMatch(JSON.stringify(model),/sensitive-provider-body/);
+  const noDocs=await getVideoModel(imageId,'image-to-video',async(url,init)=>{
+    if(String(url).endsWith('/llms.txt'))throw new Error('private message');
+    return f.request(url,init);
+  });
+  assert.equal(noDocs.available,false);assert.ok(noDocs.price);assert.match(noDocs.verification_error||'',/เอกสารรุ่น/);
+  assert.doesNotMatch(JSON.stringify(noDocs),/private message/);
+  const noPrice=await getVideoModel(imageId,'image-to-video',async(url,init)=>String(url).includes('/pricing?')?new Response(null,{status:404}):f.request(url,init));
+  assert.equal(noPrice.available,false);assert.equal(noPrice.verification_error,undefined);assert.ok(noPrice.endpoint_available);
+  await assert.rejects(getVideoModel(imageId,'image-to-video',async()=>Response.json(null,{status:502})),e=>
+    e instanceof FalRegistryError && e.stage==='schema' && e.status===502 && !registryIssue(e).includes('private'));
+});
+test('fresh per-board pricing coalesces exact IDs and isolates missing rows without carrying rates between refreshes',async()=>{
+  const rows=[{name:'Grok Imagine Video 1.5',category:'image-to-video' as const},{name:'Grok Imagine Video 1.5',category:'text-to-video' as const}];
+  const textId='xai/grok-imagine-video/v1.5/text-to-video',image=fixture(),text=fixture(textId,'text-to-video');
+  let status=200;let count=0;
+  const request:typeof fetch=async(url,init)=>{
+    const u=new URL(String(url));
+    if(u.pathname.endsWith('/pricing')){
+      count++;
+      assert.deepEqual(new Set(u.searchParams.getAll('endpoint_id')),new Set([imageId,textId]));
+      return status===200?Response.json({prices:[{endpoint_id:imageId,unit_price:0.01,currency:'USD',unit:'seconds'}],has_more:false}):new Response(null,{status});
+    }
+    return (u.searchParams.get('endpoint_id')===textId||u.pathname.includes(textId)?text:image).request(url,init);
+  };
+  const lookup=createRankedFalDiscovery(rows,request);
+  const [a,b]=await Promise.all(rows.map(r=>lookup(r.name,r.category)));
+  assert.equal(count,1);assert.ok(a?.available);assert.ok(b?.endpoint_available);assert.equal(b.available,false);
+  status=429;
+  const again=createRankedFalDiscovery(rows,request),error=await again(rows[0].name,rows[0].category);
+  assert.equal(count,2);assert.equal(error?.available,false);assert.match(error?.verification_error||'',/429/);
 });

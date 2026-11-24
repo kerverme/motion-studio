@@ -8,7 +8,7 @@ export type FalVideoModel={
   endpoint_id:string; category:VideoCategory; name:string; available:boolean; endpoint_available?:boolean;
   resolutions:string[]; durations:number[]; audio:boolean|null; input_schema:Obj; schema_hash:string;
   price:{unit:string;unit_price:number;currency:string}|null; source_url:string; checked_at:string; reason?:string;
-  pricing_description?:string; billing?:Billing|null;
+  pricing_description?:string; billing?:Billing|null; verification_error?:string;
 };
 type Billing={rates:Record<string,number>;reference_image_usd?:number;source_second_usd?:number;basis?:'per_request'};
 export const PREVIOUS_FRAME='https://studio.cloudbath.co/internal/previous-frame.png';
@@ -24,14 +24,40 @@ function endpointUrl(endpoint:string,expand=false){
   if(expand)url.searchParams.set('expand','openapi-3.0');
   return url;
 }
-async function read(url:URL|string,request:typeof fetch,init:RequestInit={},allowMissingEndpoint=false){
-  const r=await request(url,{...init,redirect:'error',cache:'no-store',signal:AbortSignal.timeout(15_000)});
-  if(r.status===404 && allowMissingEndpoint)throw new MissingEndpoint('fal catalog endpoint not found');
-  if(!r.ok)throw new Error('fal metadata HTTP '+r.status);
+type RegistryStage='catalog'|'schema'|'documentation'|'pricing'|'estimate';
+const stageName:Record<RegistryStage,string>={catalog:'รายการโมเดล',schema:'OpenAPI',documentation:'เอกสารรุ่น',pricing:'ราคาบัญชี',estimate:'ประมาณราคา'};
+type RegistryFault='http'|'timeout'|'network'|'invalid'|'credentials'|'identity';
+export class FalRegistryError extends Error {
+  constructor(readonly stage:RegistryStage,readonly fault:RegistryFault,readonly status?:number) {
+    const hint=fault==='http'?'HTTP '+status+(status===429?' · ถึงขีดจำกัดชั่วคราว':status===401||status===403?' · ตรวจสิทธิ์การเข้าถึง':''):
+      ({timeout:'หมดเวลาตอบกลับ',network:'ติดต่อแหล่งข้อมูลไม่ได้',invalid:'คำตอบมีรูปแบบที่ตรวจไม่ได้',
+        credentials:'ไม่มีข้อมูลบัญชีสำหรับตรวจราคา',identity:'เอกสารไม่ตรงกับ endpoint'} as const)[fault as Exclude<RegistryFault,'http'>];
+    super('fal.ai · '+stageName[stage]+' · '+hint);
+    this.name='FalRegistryError';
+  }
+}
+// Only expose diagnostics generated locally. Provider bodies, request URLs and credentials stay out of logs and responses.
+export function registryIssue(error:unknown):string{
+  return error instanceof FalRegistryError?error.message:'fal.ai · ตรวจข้อมูลของรุ่นนี้ไม่สำเร็จ';
+}
+async function read(url:URL|string,request:typeof fetch,stage:RegistryStage,init:RequestInit={},allowMissing=false){
+  let r:Response;
+  try{
+    r=await request(url,{...init,redirect:'error',cache:'no-store',signal:AbortSignal.timeout(15_000)});
+  }catch(e){
+    const name=e instanceof Error?e.name:'';
+    throw new FalRegistryError(stage,name==='TimeoutError'||name==='AbortError'?'timeout':'network');
+  }
+  if(r.status===404 && allowMissing)throw new MissingEndpoint('fal catalog endpoint not found');
+  if(!r.ok)throw new FalRegistryError(stage,'http',r.status);
   return r;
 }
-function auth(){
-  if(!process.env.FAL_KEY)throw new Error('fal pricing credentials unavailable');
+async function readJson(url:URL|string,request:typeof fetch,stage:RegistryStage,init:RequestInit={},allowMissing=false){
+  const res=await read(url,request,stage,init,allowMissing);
+  try {return await res.json();}catch{throw new FalRegistryError(stage,'invalid');}
+}
+function auth(stage:RegistryStage='pricing'){
+  if(!process.env.FAL_KEY)throw new FalRegistryError(stage,'credentials');
   return {authorization:'Key '+process.env.FAL_KEY,'content-type':'application/json'};
 }
 function classified(endpoint:string,meta:Obj):VideoCategory|null{
@@ -65,7 +91,8 @@ function knownAlias(name:string,cat:VideoCategory):string|null|undefined{
   return undefined;
 }
 class MissingEndpoint extends Error {}
-export async function discoverRankedModel(name:string,category:VideoCategory,request:typeof fetch=fetch):Promise<FalVideoModel|null>{
+type PriceLookup=(endpoint:string)=>Promise<Obj|null>;
+export async function discoverRankedModel(name:string,category:VideoCategory,request:typeof fetch=fetch,lookup?:PriceLookup):Promise<FalVideoModel|null>{
   const qualified=name.trim().match(/^(.*?)\s*\((\d+p)\)$/i);
   const label=qualified?qualified[1]:name.trim();
   const normalized=canonicalName(label);
@@ -73,8 +100,8 @@ export async function discoverRankedModel(name:string,category:VideoCategory,req
   if(endpoint===undefined){
     const url=new URL(API);url.searchParams.set('q',label);url.searchParams.set('category',category==='video-editing'?'video-to-video':category);
     url.searchParams.set('limit','100');
-    const catalog=await (await read(url,request)).json();
-    if(!Array.isArray(catalog.models))throw new Error('Invalid fal catalog response');
+    const catalog=await readJson(url,request,'catalog');
+    if(!Array.isArray(catalog?.models))throw new FalRegistryError('catalog','invalid');
     // A partial or ambiguous search cannot establish a unique identity.
     if(catalog.has_more)return null;
     const matches=catalog.models.filter((m:Obj)=>{
@@ -86,7 +113,7 @@ export async function discoverRankedModel(name:string,category:VideoCategory,req
   }
   if(!endpoint)return null;
   try{
-    const model=await getVideoModel(endpoint,category,request);
+    const model=await getVideoModel(endpoint,category,request,lookup);
     if(qualified){
       model.resolutions=model.resolutions.filter(r=>r.toLowerCase()===qualified[2].toLowerCase());
       if(!model.resolutions.length){model.available=false; model.reason='endpoint ยังไม่รองรับความละเอียดที่ Arena ใช้จัดอันดับ';}
@@ -192,25 +219,73 @@ function billingRules(endpoint:string,paragraph:string):Billing|null{
   }
   return Object.keys(rates).length && Object.values(rates).every(v=>Number.isFinite(v)&&v>0)?{rates,reference_image_usd}:null;
 }
-async function details(endpoint:string,request:typeof fetch){
-  const url=new URL(API+'/pricing');url.searchParams.set('endpoint_id',endpoint);
-  // No account credentials are sent to the public documentation host.
-  const [docs,pricing]=await Promise.all([
-    read('https://fal.ai/models/'+endpoint+'/llms.txt',request,{},true).then(r=>r.text())
+async function livePriceRows(ids:string[],request:typeof fetch):Promise<Map<string,Obj>>{
+  const url=new URL(API+'/pricing');
+  ids.forEach(id=>url.searchParams.append('endpoint_id',id));
+  const result=await readJson(url,request,'pricing',{headers:auth()});
+  if(!Array.isArray(result?.prices)||result.has_more===true)throw new FalRegistryError('pricing','invalid');
+  return new Map(result.prices.filter((p:Obj)=>typeof p?.endpoint_id==='string'&&ids.includes(p.endpoint_id)).map((p:Obj)=>[p.endpoint_id,p]));
+}
+function absentPrice(e:unknown){
+  // Some exact catalog entries lack an account price. Authentication, throughput, schema and server errors are outages.
+  return e instanceof FalRegistryError && e.stage==='pricing' && e.status===404;
+}
+async function singlePrice(id:string,request:typeof fetch){
+  try {return (await livePriceRows([id],request)).get(id)??null;}
+  catch(e){if(absentPrice(e))return null;throw e;}
+}
+// A fresh lookup batch is scoped to ONE board refresh. Quote and pre-dispatch calls always fetch independently.
+export function createRankedFalDiscovery(rows:readonly {name:string;category:VideoCategory}[],request:typeof fetch=fetch){
+  const ids=new Set<string>();
+  for(const row of rows){
+    const name=row.name.replace(/\s*\(\d+p\)$/i,'');
+    const id=knownAlias(canonicalName(name),row.category);
+    if(id)ids.add(id);
+  }
+  const scheduled=[...ids];
+  let batch:Promise<Map<string,Obj>>|undefined;
+  const singles=new Map<string,Promise<Obj|null>>();
+  const one=(endpoint:string)=>{
+    let p=singles.get(endpoint);
+    if(!p){p=singlePrice(endpoint,request);singles.set(endpoint,p);}
+    return p;
+  };
+  async function lookup(endpoint:string){
+    if(!ids.has(endpoint)||scheduled.length>50)return one(endpoint);
+    batch??=livePriceRows(scheduled,request);
+    try{return (await batch).get(endpoint)??null;}
+    catch(e){
+      // Invalid/absent IDs in a batch must not hide a valid sibling. Never fan out on auth failures or throttling.
+      if(e instanceof FalRegistryError && [400,404,422].includes(e.status??0))return one(endpoint);
+      throw e;
+    }
+  }
+  return (name:string,category:VideoCategory)=>discoverRankedModel(name,category,request,lookup);
+}
+async function details(endpoint:string,request:typeof fetch,lookup?:PriceLookup){
+  // Fetch independent evidence, so a pricing outage cannot erase a verified model and its schema.
+  const [docResult,priceResult]=await Promise.allSettled([
+    read('https://fal.ai/models/'+endpoint+'/llms.txt',request,'documentation',{},true)
+      .then(async r=>{try{return await r.text();}catch{throw new FalRegistryError('documentation','invalid');}})
       .catch(e=>{if(e instanceof MissingEndpoint)return null;throw e;}),
-    process.env.FAL_KEY?read(url,request,{headers:auth()}).then(r=>r.json()):null,
+    process.env.FAL_KEY?(lookup?lookup(endpoint):singlePrice(endpoint,request)):Promise.reject(new FalRegistryError('pricing','credentials')),
   ]);
-  if(docs!==null && !docs.includes('`'+endpoint+'`'))throw new Error('fal pricing documentation endpoint mismatch');
+  const issues:string[]=[];
+  let docs:string|null=null;
+  if(docResult.status==='rejected')issues.push(registryIssue(docResult.reason));
+  else if(docResult.value!==null && !docResult.value.includes('`'+endpoint+'`'))issues.push(registryIssue(new FalRegistryError('documentation','identity')));
+  else docs=docResult.value;
+  if(priceResult.status==='rejected')issues.push(registryIssue(priceResult.reason));
   const paragraph=docs?pricingParagraph(docs):'';
-  if(pricing!==null && !Array.isArray(pricing.prices))throw new Error('Invalid fal pricing response');
-  const row=pricing?.prices.find((p:Obj)=>p.endpoint_id===endpoint);
+  const row=priceResult.status==='fulfilled'?priceResult.value:null;
   const price=row?.currency==='USD'&&Number.isFinite(row.unit_price)&&row.unit_price>0&&typeof row.unit==='string'
     ?{currency:'USD',unit_price:Number(row.unit_price),unit:String(row.unit)}:null;
-  return {price,billing:billingRules(endpoint,paragraph),pricing_description:paragraph.slice(0,1700)};
+  return {price,billing:billingRules(endpoint,paragraph),pricing_description:paragraph.slice(0,1700),
+    ...(issues.length?{verification_error:issues.join(' / ')}:{})};
 }
-export async function getVideoModel(endpoint:string,category:VideoCategory,request:typeof fetch=fetch):Promise<FalVideoModel>{
-  const catalog=await (await read(endpointUrl(endpoint,true),request,{},true)).json();
-  if(!Array.isArray(catalog.models))throw new Error('Invalid fal catalog response');
+export async function getVideoModel(endpoint:string,category:VideoCategory,request:typeof fetch=fetch,lookup?:PriceLookup):Promise<FalVideoModel>{
+  const catalog=await readJson(endpointUrl(endpoint,true),request,'schema',{},true);
+  if(!Array.isArray(catalog?.models))throw new FalRegistryError('catalog','invalid');
   const found=catalog.models.find((m:Obj)=>m.endpoint_id===endpoint);
   if(!found || classified(endpoint,found.metadata||{})!==category)throw new MissingEndpoint('No verified fal endpoint for this category');
   const active=found.metadata.status==='active';
@@ -224,7 +299,7 @@ export async function getVideoModel(endpoint:string,category:VideoCategory,reque
   const trimBound=sourceTrimLimit(endpoint,schema);
   if(trimBound)durations=Array.from({length:trimBound},(_,i)=>i+1);
   const resolutions:string[]=[...new Set<string>(variants(props.resolution).flatMap(f=>f.enum||[]).filter((v:unknown)=>typeof v==='string' && /^(?:\d+p|[248]k)$/i.test(v)))];
-  const info=await details(endpoint,request);
+  const info=await details(endpoint,request,lookup);
   const audio=audioControl(props)?true:(/\b(?:native audio|with audio|synchronized audio)\b/i.test(found.metadata.description||'')?true:null);
   const billableUnit=info.billing?.basis==='per_request'?/^(?:requests?|videos?|generations?)$/i:/^seconds?$/i;
   const available=!!(active&&compatible&&info.price&&billableUnit.test(info.price.unit)&&info.billing&&durations.length&&resolutions.length&&
@@ -233,9 +308,9 @@ export async function getVideoModel(endpoint:string,category:VideoCategory,reque
     (category!=='video-to-video'&&category!=='video-editing'||videoControl(props)));
   return {endpoint_id:endpoint,name:found.metadata.display_name,category,endpoint_available:active,available,resolutions,durations,audio,
     input_schema:schema,schema_hash:createHash('sha256').update(stableJson(schema)).digest('hex'),source_url:'https://fal.ai/models/'+endpoint+'/api',
-    checked_at:new Date().toISOString(),...info,...(available?{}:{reason:!active?'fal ระบุว่า endpoint นี้ยังไม่เปิดใช้งาน':!knownSchema?'ยังตรวจรูปแบบคำขอของรุ่นนี้ไม่ได้':!compatible?'ตัวอ่านวิดีโอยังไม่รองรับรูปแบบผลลัพธ์ของรุ่นนี้':!info.price?'ยังตรวจราคาบัญชีเป็น USD ไม่ได้':
+    checked_at:new Date().toISOString(),...info,...(available?{}:{reason:info.verification_error||(!active?'fal ระบุว่า endpoint นี้ยังไม่เปิดใช้งาน':!knownSchema?'ยังตรวจรูปแบบคำขอของรุ่นนี้ไม่ได้':!compatible?'ตัวอ่านวิดีโอยังไม่รองรับรูปแบบผลลัพธ์ของรุ่นนี้':!info.price?'ยังตรวจราคาบัญชีเป็น USD ไม่ได้':
       !info.billing?'ยังคำนวณราคาครบตามการตั้งค่าของรุ่นนี้ไม่ได้':!durations.length?'เวลาผลิตขึ้นกับคลิปต้นทาง หรือยังไม่มีช่วงเวลาที่ตรวจสอบได้':
-      'การตั้งค่าหรือหน่วยคิดเงินของรุ่นนี้ยังไม่รองรับ'})};
+      'การตั้งค่าหรือหน่วยคิดเงินของรุ่นนี้ยังไม่รองรับ')})};
 }
 function stableJson(value:any):string{
   if(Array.isArray(value))return '['+value.map(stableJson).join(',')+']';
@@ -321,7 +396,7 @@ export async function estimateVideoPayload(model:FalVideoModel,payload:Record<st
   const documented=quantity*(rate*(perRequest?1:duration)+inputCount*(model.billing.reference_image_usd||0)+
     (trimmed?duration*(model.billing.source_second_usd||0):0));
   const body={estimate_type:'unit_price',endpoints:{[model.endpoint_id]:{unit_quantity:units}}};
-  const estimate=await (await read(API+'/pricing/estimate',request,{method:'POST',headers:auth(),body:JSON.stringify(body)})).json();
+  const estimate=await readJson(API+'/pricing/estimate',request,'estimate',{method:'POST',headers:auth('estimate'),body:JSON.stringify(body)});
   if(estimate.estimate_type!=='unit_price'||estimate.currency!=='USD'||!Number.isFinite(estimate.total_cost)||estimate.total_cost<0||
     Math.abs(estimate.total_cost-model.price.unit_price*units)>0.010001)throw new Error('fal quote changed or estimate is inconsistent');
   return {usd:Math.ceil(Math.max(documented,estimate.total_cost)*1e6-1e-8)/1e6,unit:model.price.unit,quantity:units};

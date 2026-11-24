@@ -108,6 +108,7 @@ test('durable synchronization coalesces across replicas, verifies every Top 10 r
     const gate = new Promise<void>((resolve) => {
       unblock = resolve;
     });
+    let partialRegistry = false;
     let failedEdit = false,
       rollBack = false;
     let metadataReads = 0,
@@ -132,6 +133,7 @@ test('durable synchronization coalesces across replicas, verifies every Top 10 r
       },
       discover: async (name: string, category: any) => {
         providerReads++;
+        if (partialRegistry && name === 'model-2') throw new Error('secret provider response redacted');
         if (name !== 'model-2' && name !== 'model-3') return null;
         return {
           name,
@@ -226,6 +228,40 @@ test('durable synchronization coalesces across replicas, verifies every Top 10 r
     assert.equal(scheduled.started, true);
     await scheduled.done;
     assert.deepEqual([metadataReads, providerReads, knowledgeLookups], [5, 190, 36]);
+    partialRegistry = true;
+    await (
+      await sync.begin(true)
+    ).done;
+    const degraded = await readVideoArena(pool);
+    for (const board of degraded.categories) {
+      assert.equal(board.stale, false);
+      assert.equal(board.registry_partial, true);
+      assert.equal(board.models.length, 10);
+      const impacted = board.models[1];
+      assert.equal(impacted.rank, 2);
+      assert.equal(impacted.fal?.available, false);
+      assert.equal(impacted.fal?.schema_hash, 'test');
+      assert.equal(impacted.video_to_video?.available, false);
+      assert.ok(impacted.fal_error && !impacted.fal_error.includes('secret'));
+      assert.equal(board.models[2].fal_error, undefined);
+    }
+    await db.exec('DELETE FROM video_arena_snapshots');
+    await (
+      await sync.begin(true)
+    ).done;
+    const cold = await readVideoArena(pool);
+    assert.equal(
+      cold.categories.every((b) => b.registry_partial && b.models.length === 10 && b.models[1].fal === null),
+      true
+    );
+    partialRegistry = false;
+    await (
+      await sync.begin(true)
+    ).done;
+    assert.equal(
+      (await readVideoArena(pool)).categories.every((b) => !b.registry_partial && b.models[1].fal?.available),
+      true
+    );
   } finally {
     await db.close();
   }
