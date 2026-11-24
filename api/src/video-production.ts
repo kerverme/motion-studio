@@ -7,7 +7,7 @@ import { VideoInput, VideoPlan, digest, money } from './text-video-contract.js';
 import { parseNarration } from './narration.js';
 import { readVideoArena } from './video-arena.js';
 import { directVideoScene, StoryBibleSchema, SceneDirectionSchema, chooseGenerationSeconds } from './video-director.js';
-import { PREVIOUS_FRAME, getVideoModel, buildVideoPayload, validateVideoPayload, estimateVideoPayload, type FalVideoModel, type VideoCategory } from './video-registry.js';
+import { PREVIOUS_FRAME, getVideoModel, buildVideoPayload, validateVideoPayload, previewVideoPayload, estimateVideoPayload, type FalVideoModel, type VideoCategory } from './video-registry.js';
 
 const Input = VideoInput.omit({video_model:true}).extend({
   engine_version:z.literal(2),routing_mode:z.enum(['best_value','best_quality','within_budget','manual']).default('best_value'),
@@ -33,7 +33,7 @@ const reference=z.string().url().refine(s=>{ const u=new URL(s);return u.protoco
 const editsSchema=z.object({endpoint_id:z.string().max(240).optional(),prompt:z.string().min(1).max(20000).optional(),original_prompt:z.string().min(1).max(10000).optional(),prompt_mode:z.enum(['optimized','original','manual']).default('optimized'),
   duration:z.number().int().min(1).max(60).optional(),edited_duration:z.number().positive().max(60).optional(),resolution:z.string().min(1).max(24).optional(),quantity:z.number().int().min(1).max(4).default(1),audio:z.boolean().default(false),approve_resolution:z.boolean().default(false),reference_url:z.union([reference,z.literal('')]).optional(),sfx:z.object({text:z.string().trim().min(1).max(500),duration_seconds:z.number().min(.5).max(22)}).nullable().optional()});
 export {PREVIOUS_FRAME};
-export const productionProviders={arena:readVideoArena,model:getVideoModel,direct:directVideoScene,estimate:estimateVideoPayload,build:buildVideoPayload,validate:validateVideoPayload};
+export const productionProviders={arena:readVideoArena,model:getVideoModel,direct:directVideoScene,estimate:estimateVideoPayload,preview:previewVideoPayload,build:buildVideoPayload,validate:validateVideoPayload};
 export type ProductionProviders=typeof productionProviders;
 type ArenaSnapshot=Awaited<ReturnType<typeof readVideoArena>>;
 function currentRanked(arena:ArenaSnapshot) {
@@ -96,7 +96,6 @@ export async function prepareProduction(pool:pg.Pool,input:ProductionInput,raw:u
   const ranked=currentRanked(arena);
   const soundOffer=(await pool.query("SELECT data FROM integrations WHERE provider='text_video_worker' AND updated_at>now()-interval '2 minutes'")).rows[0]?.data;
   let remaining=input.budget_usd, editedTotal=0;
-  const estimate=requestEstimates(providers);
   const scenes=[];
   for(const [index,scene] of plan.shots.entries()) {
     const previousScene=previous?.shots?.find((s:any)=>s.id===scene.id);
@@ -110,20 +109,37 @@ export async function prepareProduction(pool:pg.Pool,input:ProductionInput,raw:u
     const base={...edit,...(sound?{sfx:sound}:{}),resolution,edited_duration:edited,original_prompt:original};
     // Preserve a manual choice on subsequent edits. Automatic routes may change when the scene or budget changes.
     const manual=edit.endpoint_id && (previousProduction?.endpoint_id!==edit.endpoint_id || previousProduction?.model_override) ? edit.endpoint_id : input.routing_mode==='manual' ? input.manual_endpoint : undefined;
-    const category=manual?undefined:index===0 && !edit.reference_url?'text-to-video':'image-to-video';
-      const matching=ranked.filter(m=> (!manual || m.endpoint_id===manual) && (!category || m.category===category) && m.resolutions.some(s=>s.toLowerCase()===resolution.toLowerCase()) && (!edit.audio || m.audio===true));
-      const attempts=await Promise.allSettled(matching.map(async m=>{
-        const seconds=edit.duration && (previousProduction?.duration!==edit.duration || previousProduction.duration_override) ? edit.duration : chooseGenerationSeconds(m.durations,edited);
-        if(!seconds||seconds<edited || !m.durations.includes(seconds)) throw new Error('ระยะเวลาที่เลือกไม่รองรับในโมเดลนี้');
-        const details=media(m.category,index,edit.reference_url);
-        const payload=providers.build(m,{duration:seconds,resolution,prompt:original,audio:edit.audio,aspect_ratio:'9:16',...details});
-        const {usd}=await estimate(m,payload,seconds);
-        return {...m,generation_seconds:seconds,estimated_usd:usd};
-      }));
-      const candidates=attempts.flatMap(r=>r.status==='fulfilled'?[r.value]:[]);
-      const issue=matching.length?message(attempts.find(r=>r.status==='rejected')?.reason || 'ยังยืนยันค่าใช้จ่ายไม่ได้'):'ไม่มีรุ่น Arena Top 10 ที่ตรวจสอบราคาได้และรองรับข้อมูล/ความละเอียดนี้ กรุณาตรวจอันดับหรือเลือกโมเดลและความละเอียดเอง';
-      const minimum=candidates.length?Math.min(...candidates.map(c=>c.estimated_usd))*edit.quantity:0;
-      scenes.push({index,scene,previousProduction,edit,original,resolution,edited,base,manual,category,candidates,issue,minimum});
+    const requiredFrame=!!scene.direction.requires_reference_frame || !!edit.reference_url;
+    const preferred=manual?undefined:index===0 && !requiredFrame?'text-to-video':'image-to-video';
+    const allowTextFallback=index>0 && !manual && !requiredFrame && preferred==='image-to-video';
+    function compatible(category:VideoCategory|undefined) {
+      const matching=ranked.filter(m=>(!manual || m.endpoint_id===manual) && (!category || m.category===category) &&
+        (!scene.direction.requires_reference_frame || m.category==='image-to-video') &&
+        m.resolutions.some(s=>s.toLowerCase()===resolution.toLowerCase()) && (!edit.audio || m.audio===true));
+      const candidates=[];
+      let issue='ไม่มีรุ่น Arena Top 10 ที่ตรวจสอบราคาได้และรองรับข้อมูล/ความละเอียดนี้ กรุณาตรวจอันดับหรือเลือกโมเดลและความละเอียดเอง';
+      for(const m of matching) {
+        try {
+          const seconds=edit.duration && (previousProduction?.duration!==edit.duration || previousProduction.duration_override) ? edit.duration : chooseGenerationSeconds(m.durations,edited);
+          if(!seconds||seconds<edited || !m.durations.includes(seconds)) throw new Error('ระยะเวลาที่เลือกไม่รองรับในโมเดลนี้');
+          const details=media(m.category,index,edit.reference_url);
+          const payload=providers.build(m,{duration:seconds,resolution,prompt:original,audio:edit.audio,aspect_ratio:'9:16',...details});
+          // Candidate comparison uses the official tariff captured with this exact ranked endpoint.
+          // Live provider estimates are reserved for the selected model and the binding quote.
+          const {usd}=providers.preview(m,payload,1,seconds);
+          if(!Number.isFinite(usd) || usd<=0) throw new Error('ยังยืนยันราคาการสร้างฉากไม่ได้');
+          candidates.push({...m,generation_seconds:seconds,estimated_usd:usd});
+        } catch(error) {issue=message(error);}
+      }
+      return {candidates,issue};
+    }
+    let category=preferred as VideoCategory|undefined;
+    let result=compatible(category);
+    const textFallback=allowTextFallback && result.candidates.length===0;
+    if(textFallback) {category='text-to-video';result=compatible(category);}
+    const {candidates,issue}=result;
+    const minimum=candidates.length?Math.min(...candidates.map(c=>c.estimated_usd))*edit.quantity:0;
+    scenes.push({index,scene,previousProduction,edit,original,resolution,edited,base,manual,category,candidates,issue,minimum,textFallback});
   }
   if(editedTotal>input.duration) throw new Error('ความยาวรวมหลังตัดต่อเกินระยะเวลาที่เลือก');
   const out=[];
@@ -137,23 +153,23 @@ export async function prepareProduction(pool:pg.Pool,input:ProductionInput,raw:u
     }
   }
   let futureMinimum=scenes.reduce((sum,s)=>sum+s.minimum,0);
-  for(const {index,scene,previousProduction,edit,original,resolution,edited,base,manual,category,candidates,issue,minimum} of scenes) {
+  for(const {index,scene,previousProduction,edit,original,resolution,edited,base,manual,category,candidates,issue,minimum,textFallback} of scenes) {
     futureMinimum-=minimum;
     const available=input.routing_mode==='within_budget'?Math.max(0,remaining-futureMinimum):remaining;
     try {
       if(!candidates.length) throw new Error(issue);
-      const directed=await providers.direct(pool,{scene,index,bible:plan.story_bible,candidates,mode:manual?'manual':input.routing_mode,budget_usd:Math.round(available*1e6)/1e6/edit.quantity,resolution,manual_endpoint_id:manual,prompt_mode:edit.prompt_mode==='optimized'?'auto':'original',original_prompt:edit.prompt_mode==='manual' ? (edit.prompt || original) : original,previous_end_frame:!edit.reference_url && candidates[0].category==='image-to-video'?plan.shots[index-1]?.end_frame:undefined,has_explicit_reference:!!edit.reference_url,previous_direction:plan.shots[index-1]?.direction,requires_native_audio:edit.audio,required_category:manual?candidates[0]?.category:category,edited_seconds:edited});
+      const directed=await providers.direct(pool,{scene,index,bible:plan.story_bible,candidates,mode:manual?'manual':input.routing_mode,budget_usd:Math.round(available*1e6)/1e6/edit.quantity,resolution,manual_endpoint_id:manual,prompt_mode:edit.prompt_mode==='optimized'?'auto':'original',original_prompt:edit.prompt_mode==='manual' ? (edit.prompt || original) : original,previous_text_state:textFallback?plan.shots[index-1]?.end_frame:undefined,previous_end_frame:!edit.reference_url && candidates[0].category==='image-to-video'?plan.shots[index-1]?.end_frame:undefined,has_explicit_reference:!!edit.reference_url,previous_direction:plan.shots[index-1]?.direction,requires_native_audio:edit.audio,required_category:manual?candidates[0]?.category:category,edited_seconds:edited});
       const model=candidates.find(m=>m.endpoint_id===directed.endpoint_id);
       if(!model) throw new Error('โมเดลที่เลือกไม่อยู่ในผลการตรวจล่าสุด');
       const prompt=edit.prompt_mode==='manual' ? edit.prompt || original : directed.prompt;
       const payload=providers.build(model,{prompt,resolution,duration:model.generation_seconds,audio:edit.audio,aspect_ratio:'9:16',...media(model.category,index,edit.reference_url)});
       providers.validate(model,payload);
-      const cost=(await estimate(model,payload,model.generation_seconds)).usd;
+      const cost=providers.preview(model,payload,1,model.generation_seconds).usd;
       remaining-=cost*edit.quantity;
       const issues=directed.inspection.passed?[]:directed.inspection.issues.map((i:any)=>typeof i==='string'?i:i.message||JSON.stringify(i));
       if(Array.from(scene.narration).length>Math.max(25,22*edited)) issues.push('บทบรรยายยาวเกินช่วงตัดต่อ กรุณาย่อบทหรือเพิ่มเวลาฉาก');
       if(resolution.toLowerCase()!=='720p'&&!edit.approve_resolution) issues.push('ยืนยันความละเอียดทางเลือกของฉากนี้ก่อนส่งผลิต');
-      out.push({...scene,production:{...base,prompt,endpoint_id:model.endpoint_id,category:model.category,model_name:model.name,rank:model.category==='video-to-video'?null:model.rank,rank_category:model.rank_category,reason:directed.selection_reason,knowledge_sources:directed.knowledge_sources,prompt_format:directed.prompt_format,knowledge_version:directed.knowledge_version,inspection:directed.inspection,issues,duration:model.generation_seconds,model_override:!!manual,duration_override:!!edit.duration && (previousProduction?.duration!==edit.duration || !!previousProduction?.duration_override),estimated_usd:money(cost*edit.quantity),schema_hash:model.schema_hash}});
+      out.push({...scene,production:{...base,prompt,endpoint_id:model.endpoint_id,category:model.category,model_name:model.name,rank:model.category==='video-to-video'?null:model.rank,rank_category:model.rank_category,reason:[directed.selection_reason,...(textFallback?['อ้างอิงฉากก่อนด้วยคำบรรยาย ไม่มีเฟรมภาพอ้างอิง']:[]),'ราคาอ้างอิงจากข้อมูลที่ตรวจไว้ ต้องตรวจราคาสดก่อนอนุมัติ'].join(' · '),knowledge_sources:directed.knowledge_sources,prompt_format:directed.prompt_format,knowledge_version:directed.knowledge_version,inspection:directed.inspection,issues,duration:model.generation_seconds,model_override:!!manual,duration_override:!!edit.duration && (previousProduction?.duration!==edit.duration || !!previousProduction?.duration_override),estimated_usd:money(cost*edit.quantity),estimate_status:'snapshot',schema_hash:model.schema_hash}});
     } catch(e) {
       out.push({...scene,production:{...base,endpoint_id:manual || edit.endpoint_id || '',prompt:edit.prompt||original,model_override:!!manual,issues:[message(e)],estimated_usd:null}});
     }

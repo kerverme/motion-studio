@@ -1,12 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Context, Hono, Next } from 'hono';
 import type pg from 'pg';
-import {
-  createRankedFalDiscovery,
-  registryIssue,
-  type discoverRankedModel,
-  type FalVideoModel
-} from './video-registry.js';
+import { createRankedFalDiscovery, registryIssue, type FalVideoModel } from './video-registry.js';
 import type { syncVideoKnowledge } from './video-director.js';
 
 const dataset = 'lmarena-ai/leaderboard-dataset';
@@ -175,7 +170,7 @@ export async function readVideoArena(db: Db): Promise<{ refreshing: boolean; cat
 
 type ArenaDeps = {
   request?: typeof fetch;
-  discover?: typeof discoverRankedModel;
+  createDiscovery?: typeof createRankedFalDiscovery;
   knowledge?: typeof syncVideoKnowledge;
 };
 const leaseGuard =
@@ -199,10 +194,27 @@ export function createArenaSync(pool: pg.Pool, deps: ArenaDeps = {}) {
     try {
       const previous = await readVideoArena(pool);
       const revision = currentRevision(request);
+      const publications = await Promise.allSettled(
+        categories.map(async (category) => {
+          const sha = await revision;
+          return { sha, category, ...(await fetchArenaRanks(category, sha, request)) };
+        })
+      );
+      // fal accepts multiple exact endpoint IDs in a single schema/pricing request. Seed once
+      // across the whole refresh, including alternate routes shared by several leaderboard rows.
+      const discoveryInputs = publications.flatMap((result) =>
+        result.status === 'fulfilled'
+          ? result.value.models.flatMap(({ name }) => [
+              { name, category: result.value.category },
+              { name, category: 'video-to-video' as const }
+            ])
+          : []
+      );
+      const discover = (deps.createDiscovery ?? createRankedFalDiscovery)(discoveryInputs);
       const verified = new Map<string, FalVideoModel>();
       // A related reference-to-video endpoint has no Arena rank. Check once per model name per refresh.
       const related = new Map<string, Promise<FalVideoModel | null>>();
-      function videoToVideo(name: string, discover: typeof discoverRankedModel) {
+      function videoToVideo(name: string) {
         const existing = related.get(name);
         if (existing) return existing;
         const discovery = discover(name, 'video-to-video');
@@ -210,18 +222,12 @@ export function createArenaSync(pool: pg.Pool, deps: ArenaDeps = {}) {
         return discovery;
       }
       await Promise.all(
-        categories.map(async (category) => {
+        categories.map(async (category, index) => {
           try {
-            const sha = await revision;
-            const board = await fetchArenaRanks(category, sha, request);
-            const discover =
-              deps.discover ??
-              (await createRankedFalDiscovery(
-                board.models.flatMap(({ name }) => [
-                  { name, category },
-                  { name, category: 'video-to-video' as const }
-                ])
-              ));
+            const publication = publications[index];
+            if (publication.status !== 'fulfilled') throw publication.reason;
+            const board = publication.value;
+            const sha = board.sha;
             const models: RankedVideo[] = [];
             const prior = previous.categories.find((b) => b.category === category)?.models ?? [];
             const previousModels = new Map(prior.map((m) => [m.model_id, m]));
@@ -230,7 +236,7 @@ export function createArenaSync(pool: pg.Pool, deps: ArenaDeps = {}) {
               const old = previousModels.get(row.model_id);
               const [primary, alternate] = await Promise.allSettled([
                 discover(row.name, category),
-                videoToVideo(row.name, discover)
+                videoToVideo(row.name)
               ]);
               const model: RankedVideo = { ...row, fal: null };
               if (primary.status === 'fulfilled') {

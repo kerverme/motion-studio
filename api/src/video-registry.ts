@@ -18,11 +18,8 @@ addFormats(schemaValidators);
 const safeEndpoint=/^[a-z0-9][a-z0-9_.-]*(?:\/[a-z0-9][a-z0-9_.-]*)+$/i;
 const generation=['text-to-video','image-to-video'];
 
-function endpointUrl(endpoint:string,expand=false){
+function validateEndpointId(endpoint:string){
   if(endpoint.length>230 || !safeEndpoint.test(endpoint))throw new Error('Invalid fal endpoint ID');
-  const url=new URL(API);url.searchParams.set('endpoint_id',endpoint);
-  if(expand)url.searchParams.set('expand','openapi-3.0');
-  return url;
 }
 type RegistryStage='catalog'|'schema'|'documentation'|'pricing'|'estimate';
 const stageName:Record<RegistryStage,string>={catalog:'รายการโมเดล',schema:'OpenAPI',documentation:'เอกสารรุ่น',pricing:'ราคาบัญชี',estimate:'ประมาณราคา'};
@@ -40,14 +37,51 @@ export class FalRegistryError extends Error {
 export function registryIssue(error:unknown):string{
   return error instanceof FalRegistryError?error.message:'fal.ai · ตรวจข้อมูลของรุ่นนี้ไม่สำเร็จ';
 }
+type Gate={tail:Promise<unknown>;next:number};
+const gates=new WeakMap<typeof fetch,Map<string,Gate>>();
+const delay=(ms:number)=>new Promise<void>(finish=>setTimeout(finish,ms));
+function retryDelay(value:string|null){
+  if(value===null)return 2000;
+  if(/^\d+(?:\.\d+)?$/.test(value))return Math.max(0,Number(value)*1000);
+  const when=Date.parse(value);return Number.isFinite(when)?Math.max(0,when-Date.now()):2000;
+}
 async function read(url:URL|string,request:typeof fetch,stage:RegistryStage,init:RequestInit={},allowMissing=false){
+  const target=new URL(url);
+  const official=target.origin==='https://api.fal.ai';
+  const headers=new Headers(init.headers);
+  if(official && process.env.FAL_KEY)headers.set('authorization','Key '+process.env.FAL_KEY);
+  else headers.delete('authorization');
+  const send=async()=>{
+    try{return await request(target,{...init,headers,redirect:'error',cache:'no-store',signal:AbortSignal.timeout(15_000)});}
+    catch(e){
+      const name=e instanceof Error?e.name:'';
+      throw new FalRegistryError(stage,name==='TimeoutError'||name==='AbortError'?'timeout':'network');
+    }
+  };
   let r:Response;
-  try{
-    r=await request(url,{...init,redirect:'error',cache:'no-store',signal:AbortSignal.timeout(15_000)});
-  }catch(e){
-    const name=e instanceof Error?e.name:'';
-    throw new FalRegistryError(stage,name==='TimeoutError'||name==='AbortError'?'timeout':'network');
-  }
+  if(official){
+    // Only read-only Platform API operations reach here. Queue delivery and media generation use a separate service.
+    let buckets=gates.get(request);if(!buckets){buckets=new Map();gates.set(request,buckets);}
+    const bucket=(stage==='schema'||stage==='catalog')?'catalog':'pricing';
+    let gate=buckets.get(bucket);if(!gate){gate={tail:Promise.resolve(),next:0};buckets.set(bucket,gate);}
+    const slot=gate;
+    const task=slot.tail.then(async()=>{
+      for(let attempt=0;;attempt++){
+        const wait=Math.max(0,slot.next-Date.now());
+        if(wait>35_000)throw new FalRegistryError(stage,'http',429);
+        if(wait)await delay(wait);
+        slot.next=Date.now()+(bucket==='catalog'?500:100);
+        const response=await send();
+        if(response.status!==429)return response;
+        const retry=retryDelay(response.headers.get('retry-after'));
+        slot.next=Math.max(slot.next,Date.now()+retry);
+        if(attempt||retry>35_000)return response;
+        await response.body?.cancel().catch(()=>{});
+      }
+    });
+    slot.tail=task.then(()=>{},()=>{});
+    r=await task;
+  }else r=await send();
   if(r.status===404 && allowMissing)throw new MissingEndpoint('fal catalog endpoint not found');
   if(!r.ok)throw new FalRegistryError(stage,'http',r.status);
   return r;
@@ -92,15 +126,42 @@ function knownAlias(name:string,cat:VideoCategory):string|null|undefined{
 }
 class MissingEndpoint extends Error {}
 type PriceLookup=(endpoint:string)=>Promise<Obj|null>;
-export async function discoverRankedModel(name:string,category:VideoCategory,request:typeof fetch=fetch,lookup?:PriceLookup):Promise<FalVideoModel|null>{
+type CatalogScope={exact:(endpoint:string)=>Promise<Obj|null>;search:(label:string)=>Promise<Obj>};
+function searchCatalog(label:string,request:typeof fetch,category?:VideoCategory){
+  const url=new URL(API);url.searchParams.set('q',label);url.searchParams.set('limit','100');
+  if(category)url.searchParams.set('category',category==='video-editing'?'video-to-video':category);
+  return readJson(url,request,'catalog');
+}
+async function catalogGroup(ids:string[],request:typeof fetch):Promise<Map<string,Obj>>{
+  const url=new URL(API);
+  // Official catalog accepts at most ten expanded OpenAPI documents and repeated endpoint_id filters.
+  for(const id of ids){validateEndpointId(id);url.searchParams.append('endpoint_id',id);}
+  url.searchParams.set('expand','openapi-3.0');url.searchParams.set('limit',String(ids.length));
+  let result;
+  try{result=await readJson(url,request,'schema',{},true);}
+  catch(e){
+    if(!(e instanceof MissingEndpoint))throw e;
+    if(ids.length===1)return new Map();
+    // fal returns a single 404 for a batch containing one removed ID. Isolate it without remapping any version.
+    const half=Math.ceil(ids.length/2),first=await catalogGroup(ids.slice(0,half),request);
+    const rest=await catalogGroup(ids.slice(half),request);
+    return new Map([...first,...rest]);
+  }
+  if(!Array.isArray(result?.models) || result.has_more===true)throw new FalRegistryError('schema','invalid');
+  const out=new Map<string,Obj>();
+  for(const m of result.models){
+    if(!m || !ids.includes(m.endpoint_id)||out.has(m.endpoint_id))throw new FalRegistryError('schema','invalid');
+    out.set(m.endpoint_id,m);
+  }
+  return out;
+}
+export async function discoverRankedModel(name:string,category:VideoCategory,request:typeof fetch=fetch,lookup?:PriceLookup,scope?:CatalogScope):Promise<FalVideoModel|null>{
   const qualified=name.trim().match(/^(.*?)\s*\((\d+p)\)$/i);
   const label=qualified?qualified[1]:name.trim();
   const normalized=canonicalName(label);
   let endpoint=knownAlias(normalized,category);
   if(endpoint===undefined){
-    const url=new URL(API);url.searchParams.set('q',label);url.searchParams.set('category',category==='video-editing'?'video-to-video':category);
-    url.searchParams.set('limit','100');
-    const catalog=await readJson(url,request,'catalog');
+    const catalog=await (scope?scope.search(label):searchCatalog(label,request,category));
     if(!Array.isArray(catalog?.models))throw new FalRegistryError('catalog','invalid');
     // A partial or ambiguous search cannot establish a unique identity.
     if(catalog.has_more)return null;
@@ -113,7 +174,7 @@ export async function discoverRankedModel(name:string,category:VideoCategory,req
   }
   if(!endpoint)return null;
   try{
-    const model=await getVideoModel(endpoint,category,request,lookup);
+    const model=await getVideoModel(endpoint,category,request,lookup,scope);
     if(qualified){
       model.resolutions=model.resolutions.filter(r=>r.toLowerCase()===qualified[2].toLowerCase());
       if(!model.resolutions.length){model.available=false; model.reason='endpoint ยังไม่รองรับความละเอียดที่ Arena ใช้จัดอันดับ';}
@@ -234,7 +295,7 @@ async function singlePrice(id:string,request:typeof fetch){
   try {return (await livePriceRows([id],request)).get(id)??null;}
   catch(e){if(absentPrice(e))return null;throw e;}
 }
-// A fresh lookup batch is scoped to ONE board refresh. Quote and pre-dispatch calls always fetch independently.
+// Fresh lookup batches are scoped to ONE Arena synchronization. Quote and pre-dispatch calls always fetch independently.
 export function createRankedFalDiscovery(rows:readonly {name:string;category:VideoCategory}[],request:typeof fetch=fetch){
   const ids=new Set<string>();
   for(const row of rows){
@@ -260,7 +321,28 @@ export function createRankedFalDiscovery(rows:readonly {name:string;category:Vid
       throw e;
     }
   }
-  return (name:string,category:VideoCategory)=>discoverRankedModel(name,category,request,lookup);
+  const chunks=new Map<string,string[]>();
+  for(let i=0;i<scheduled.length;i+=10){
+    const chunk=scheduled.slice(i,i+10);
+    for(const id of chunk)chunks.set(id,chunk);
+  }
+  const batches=new Map<string,Promise<Map<string,Obj>>>();
+  const searches=new Map<string,Promise<Obj>>();
+  const scope:CatalogScope={
+    async exact(endpoint){
+      const ids=chunks.get(endpoint)??[endpoint],key=ids.join(',');
+      let rows=batches.get(key);
+      if(!rows){rows=catalogGroup(ids,request);batches.set(key,rows);}
+      return (await rows).get(endpoint)??null;
+    },
+    search(label){
+      const key=canonicalName(label);
+      let rows=searches.get(key);
+      if(!rows){rows=searchCatalog(label,request);searches.set(key,rows);}
+      return rows;
+    }
+  };
+  return (name:string,category:VideoCategory)=>discoverRankedModel(name,category,request,lookup,scope);
 }
 async function details(endpoint:string,request:typeof fetch,lookup?:PriceLookup){
   // Fetch independent evidence, so a pricing outage cannot erase a verified model and its schema.
@@ -283,10 +365,9 @@ async function details(endpoint:string,request:typeof fetch,lookup?:PriceLookup)
   return {price,billing:billingRules(endpoint,paragraph),pricing_description:paragraph.slice(0,1700),
     ...(issues.length?{verification_error:issues.join(' / ')}:{})};
 }
-export async function getVideoModel(endpoint:string,category:VideoCategory,request:typeof fetch=fetch,lookup?:PriceLookup):Promise<FalVideoModel>{
-  const catalog=await readJson(endpointUrl(endpoint,true),request,'schema',{},true);
-  if(!Array.isArray(catalog?.models))throw new FalRegistryError('catalog','invalid');
-  const found=catalog.models.find((m:Obj)=>m.endpoint_id===endpoint);
+export async function getVideoModel(endpoint:string,category:VideoCategory,request:typeof fetch=fetch,lookup?:PriceLookup,scope?:CatalogScope):Promise<FalVideoModel>{
+  validateEndpointId(endpoint);
+  const found=scope?await scope.exact(endpoint):(await catalogGroup([endpoint],request)).get(endpoint);
   if(!found || classified(endpoint,found.metadata||{})!==category)throw new MissingEndpoint('No verified fal endpoint for this category');
   const active=found.metadata.status==='active';
   // A catalog entry can lack a usable queue schema. Retain its ranking and observed price.
@@ -382,7 +463,7 @@ export function buildVideoPayload(model:FalVideoModel,scene:SceneInput):Record<s
   }
   validateVideoPayload(model,payload);return payload;
 }
-export async function estimateVideoPayload(model:FalVideoModel,payload:Record<string,unknown>,quantity=1,request:typeof fetch=fetch,verifiedMediaSeconds?:number):Promise<{usd:number;unit:string;quantity:number}>{
+export function previewVideoPayload(model:FalVideoModel,payload:Record<string,unknown>,quantity=1,verifiedMediaSeconds?:number){
   validateVideoPayload(model,payload);
   if(!model.available||!model.billing||!model.price||!Number.isSafeInteger(quantity)||quantity<1)throw new Error('No verified fal quote available');
   const trimmed=sourceTrimLimit(model.endpoint_id,model.input_schema);
@@ -395,9 +476,13 @@ export async function estimateVideoPayload(model:FalVideoModel,payload:Record<st
   const inputCount=model.category==='image-to-video'?1:0;
   const documented=quantity*(rate*(perRequest?1:duration)+inputCount*(model.billing.reference_image_usd||0)+
     (trimmed?duration*(model.billing.source_second_usd||0):0));
-  const body={estimate_type:'unit_price',endpoints:{[model.endpoint_id]:{unit_quantity:units}}};
+  return {usd:Math.ceil(Math.max(documented,model.price.unit_price*units)*1e6-1e-8)/1e6,unit:model.price.unit,quantity:units};
+}
+export async function estimateVideoPayload(model:FalVideoModel,payload:Record<string,unknown>,quantity=1,request:typeof fetch=fetch,verifiedMediaSeconds?:number):Promise<{usd:number;unit:string;quantity:number}>{
+  const preview=previewVideoPayload(model,payload,quantity,verifiedMediaSeconds);
+  const body={estimate_type:'unit_price',endpoints:{[model.endpoint_id]:{unit_quantity:preview.quantity}}};
   const estimate=await readJson(API+'/pricing/estimate',request,'estimate',{method:'POST',headers:auth('estimate'),body:JSON.stringify(body)});
   if(estimate.estimate_type!=='unit_price'||estimate.currency!=='USD'||!Number.isFinite(estimate.total_cost)||estimate.total_cost<0||
-    Math.abs(estimate.total_cost-model.price.unit_price*units)>0.010001)throw new Error('fal quote changed or estimate is inconsistent');
-  return {usd:Math.ceil(Math.max(documented,estimate.total_cost)*1e6-1e-8)/1e6,unit:model.price.unit,quantity:units};
+    Math.abs(estimate.total_cost-model.price!.unit_price*preview.quantity)>0.010001)throw new Error('fal quote changed or estimate is inconsistent');
+  return {...preview,usd:Math.ceil(Math.max(preview.usd,estimate.total_cost)*1e6-1e-8)/1e6};
 }

@@ -5,7 +5,7 @@ import {readdirSync,readFileSync} from 'node:fs';
 import {PGlite} from '@electric-sql/pglite';
 import {Hono} from 'hono';
 import {registerTextVideo} from './text-video.js';
-import {productionProviders,parseProductionInput,PREVIOUS_FRAME,bindSourceClip,type ProductionProviders} from './video-production.js';
+import {productionProviders,parseProductionInput,prepareProduction,createProductionQuote,PREVIOUS_FRAME,bindSourceClip,type ProductionProviders} from './video-production.js';
 import type {FalVideoModel} from './video-registry.js';
 
 const db=new PGlite();let tail=Promise.resolve();
@@ -21,6 +21,7 @@ let price=.1;let stale=false;let lookups=0;
 const mock={...productionProviders,
   arena:async()=>({refreshing:false,categories:models.map((m,i)=>({category:m.category,stale,error:null,last_success_at:new Date().toISOString(),models:[{rank:i+1,name:m.name,fal:m}]}))}),
   model:async(id:string)=>{lookups++;return {...models.find(m=>m.endpoint_id===id)!,price:{unit:'seconds',unit_price:price,currency:'USD'}};},
+  preview:(_m:FalVideoModel,payload:any)=>({usd:price*payload.duration,unit:'seconds',quantity:payload.duration}),
   estimate:async(_m:FalVideoModel,payload:any)=>({usd:Math.round(price*payload.duration*1e4)/1e4,unit:'seconds',quantity:payload.duration}),
   direct:async(_db:any,ctx:any)=>{const c=ctx.candidates[0];return {endpoint_id:c.endpoint_id,model_name:c.name,rank:c.rank,selection_reason:'Verified cost and duration',knowledge_version:'mock-v1',inspection:{passed:true,issues:[],revisions:0},prompt:ctx.prompt_mode==='original'?ctx.original_prompt:'Directed '+ctx.scene.visual_prompt,generation_seconds:c.generation_seconds,edited_seconds:ctx.edited_seconds,knowledge_sources:[],prompt_format:'original'};},
 } as unknown as ProductionProviders;
@@ -69,4 +70,31 @@ test('verified audio and sampled-frame inspection are itemized, price-bound, and
     const produced=await approve(row,q);assert.equal(produced.status,201,await produced.clone().text());const job=(await produced.json()).id;await query("UPDATE jobs SET status='QUALITY_CHECK' WHERE id=$1",[job]);const check=(slot:string)=>send(app,internal,{job_id:job,slot},'POST',{'x-internal-token':'private-fixture'});
     assert.equal((await check('qa:shot_01')).status,200);await setWorker({...audio,qa_rate:{...rate,input_per_million:99},sfx_usd_per_second:.09});assert.equal((await check('qa:shot_01')).status,409);assert.equal((await check('sfx:shot_01')).status,409);
   } finally {await setWorker(w);delete process.env.MOTION_REVERSE_OPENAI_RATE_JSON;}
+});
+
+test('auto continuity uses an eligible text endpoint when image routes fail; manual and required-frame requests remain blocked',async()=>{
+  const input=parseProductionInput({engine_version:2,topic:'a floating bottle'});
+  const original=await mock.arena(pool as any);
+  const t2v=original.categories.find(c=>c.category==='text-to-video')!;
+  const other={...t2v.models[0],name:'Other',rank:3,fal:{...models[0],endpoint_id:'mock/second/text-to-video'}};
+  const image=original.categories.find(c=>c.category==='image-to-video')!;
+  let previews=0,liveReads=0;const selections:any[]=[];
+  const onlyText={...mock,arena:async()=>({...original,categories:[{...t2v,models:[...t2v.models,other]},image]}),
+    preview:(...args:Parameters<typeof mock.preview>)=>{previews++;if(args[0].category==='image-to-video')throw new Error('price unavailable');return mock.preview(...args);},
+    estimate:(...args:Parameters<typeof mock.estimate>)=>{liveReads++;return mock.estimate(...args);},
+    direct:(...args:Parameters<typeof mock.direct>)=>{selections.push(args[1]);return mock.direct(...args);}};
+  const p:any=await prepareProduction(pool as any,input,plan,undefined,onlyText);
+  assert.deepEqual(p.shots.map((s:any)=>s.production.issues),[[],[]]);assert.equal(p.shots[1].production.category,'text-to-video');
+  assert.match(p.shots[1].production.reason,/อ้างอิงฉากก่อนด้วยคำบรรยาย ไม่มีเฟรมภาพอ้างอิง/);
+  assert.equal(selections[1].previous_text_state,plan.shots[0].end_frame);assert.equal(selections[1].previous_end_frame,undefined);assert.equal(selections[1].has_explicit_reference,false);
+  assert.equal(liveReads,0,'candidate routing does not consume fal estimate requests');assert.ok(previews>selections.length);
+  const row={request:input,plan:p,revision:randomUUID()};const opts={usd_to_thb:33};
+  const verified=await createProductionQuote(pool as any,row,opts,w,[],null,onlyText);assert.equal(liveReads,2,'both distinct approved durations require fresh estimates');assert.equal(verified.fal[1].previous_frame,false);assert.equal(verified.fal[1].payload.image_url,undefined);
+  await assert.rejects(createProductionQuote(pool as any,row,opts,w,[],null,{...onlyText,estimate:async()=>{throw Error('fal estimate unavailable');}}),/fal estimate unavailable/);
+  const i2v=await prepareProduction(pool as any,input,plan,undefined,mock);assert.equal((i2v.shots[1].production as any).category,'image-to-video');
+  const required=structuredClone(p);required.shots[1].direction.requires_reference_frame=true;
+  let blocked=await prepareProduction(pool as any,input,required,p,onlyText);assert.ok(blocked.shots[1].production.issues.length);
+  const linked=structuredClone(p);linked.shots[1].production.reference_url='https://fal.media/ref.png';
+  blocked=await prepareProduction(pool as any,input,linked,p,onlyText);assert.ok(blocked.shots[1].production.issues.length);
+  blocked=await prepareProduction(pool as any,{...input,routing_mode:'manual',manual_endpoint:models[1].endpoint_id},plan,undefined,onlyText);assert.ok(blocked.shots[1].production.issues.length);
 });

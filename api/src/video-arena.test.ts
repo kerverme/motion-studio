@@ -114,6 +114,7 @@ test('durable synchronization coalesces across replicas, verifies every Top 10 r
     let metadataReads = 0,
       providerReads = 0,
       knowledgeLookups = 0;
+    const batches: number[] = [];
     const deps = {
       request: async (input: RequestInfo | URL) => {
         const u = new URL(String(input));
@@ -131,25 +132,28 @@ test('durable synchronization coalesces across replicas, verifies every Top 10 r
           }))
         );
       },
-      discover: async (name: string, category: any) => {
-        providerReads++;
-        if (partialRegistry && name === 'model-2') throw new Error('secret provider response redacted');
-        if (name !== 'model-2' && name !== 'model-3') return null;
-        return {
-          name,
-          category,
-          available: name === 'model-2',
-          endpoint_available: true,
-          endpoint_id: 'provider/' + category + '/' + name,
-          input_schema: {},
-          schema_hash: 'test',
-          checked_at: new Date().toISOString(),
-          source_url: 'https://fal.ai/models/provider/' + name,
-          resolutions: ['720p'],
-          durations: [5],
-          audio: false,
-          price: null
-        } as FalVideoModel;
+      createDiscovery: (inputs: readonly { name: string; category: string }[]) => {
+        batches.push(inputs.length);
+        return async (name: string, category: any) => {
+          providerReads++;
+          if (partialRegistry && name === 'model-2') throw new Error('secret provider response redacted');
+          if (name !== 'model-2' && name !== 'model-3') return null;
+          return {
+            name,
+            category,
+            available: name === 'model-2',
+            endpoint_available: true,
+            endpoint_id: 'provider/' + category + '/' + name,
+            input_schema: {},
+            schema_hash: 'test',
+            checked_at: new Date().toISOString(),
+            source_url: 'https://fal.ai/models/provider/' + name,
+            resolutions: ['720p'],
+            durations: [5],
+            audio: false,
+            price: null
+          } as FalVideoModel;
+        };
       },
       knowledge: async (_: unknown, models: unknown[]) => {
         knowledgeLookups += models.length;
@@ -178,6 +182,7 @@ test('durable synchronization coalesces across replicas, verifies every Top 10 r
       assert.ok(board.last_success_at);
     }
     assert.equal((await sync.begin(false)).started, false);
+    assert.deepEqual(batches, [60]); // All three boards share one provider catalog and rate batch.
     assert.deepEqual([metadataReads, providerReads, knowledgeLookups], [1, 40, 8]);
     const initialEdit = initial.categories[2];
 
@@ -191,6 +196,7 @@ test('durable synchronization coalesces across replicas, verifies every Top 10 r
       [false, false, true]
     );
     const stale = partial.categories[2];
+    assert.deepEqual(batches, [60, 40]);
     assert.equal(stale.error, 'Arena dataset HTTP 503');
     assert.equal(stale.last_success_at, initialEdit.last_success_at);
     assert.deepEqual(stale.models, initialEdit.models);

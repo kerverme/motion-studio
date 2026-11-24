@@ -41,7 +41,7 @@ test('exact Arena version, resolution, official queue alias and tier-plus-image 
   assert.equal(p.generate_audio,false);assert.equal(p.image_url,PREVIOUS_FRAME);assert.equal(p.duration,5);
   assert.deepEqual(await estimateVideoPayload(m,p,2,f.request),{usd:1.42,quantity:10,unit:'seconds'});
   assert.equal(f.calls.filter(x=>x.init.method==='POST').length,1);
-  assert.ok(f.calls.every(x=>new Headers(x.init.headers).has('authorization')===x.url.pathname.includes('/pricing')));
+  assert.ok(f.calls.every(x=>new Headers(x.init.headers).has('authorization')===(x.url.origin==='https://api.fal.ai')));
   assert.throws(()=>validateVideoPayload(m,{...p,x:'silently ignored parameter'}),/Unknown fal payload/);
   assert.throws(()=>validateVideoPayload(m,{...p,generate_audio:'false'}),/Invalid fal payload/);
   assert.throws(()=>buildVideoPayload(m,{prompt:'first',duration:4,resolution:'720p',audio:false}),/first frame/);
@@ -117,20 +117,50 @@ test('transient pricing and documentation errors keep exact catalog evidence and
 test('fresh per-board pricing coalesces exact IDs and isolates missing rows without carrying rates between refreshes',async()=>{
   const rows=[{name:'Grok Imagine Video 1.5',category:'image-to-video' as const},{name:'Grok Imagine Video 1.5',category:'text-to-video' as const}];
   const textId='xai/grok-imagine-video/v1.5/text-to-video',image=fixture(),text=fixture(textId,'text-to-video');
-  let status=200;let count=0;
+  let status=200;let count=0;let catalogs=0;
   const request:typeof fetch=async(url,init)=>{
     const u=new URL(String(url));
     if(u.pathname.endsWith('/pricing')){
       count++;
       assert.deepEqual(new Set(u.searchParams.getAll('endpoint_id')),new Set([imageId,textId]));
-      return status===200?Response.json({prices:[{endpoint_id:imageId,unit_price:0.01,currency:'USD',unit:'seconds'}],has_more:false}):new Response(null,{status});
+      return status===200?Response.json({prices:[{endpoint_id:imageId,unit_price:0.01,currency:'USD',unit:'seconds'}],has_more:false}):new Response(null,{status,headers:{'retry-after':'120'}});
+    }
+    if(u.pathname==='/v1/models'){
+      assert.deepEqual(new Set(u.searchParams.getAll('endpoint_id')),new Set([imageId,textId]));catalogs++;
+      assert.equal(u.searchParams.get('limit'),'2');return Response.json({models:[image.model,text.model],has_more:false});
     }
     return (u.searchParams.get('endpoint_id')===textId||u.pathname.includes(textId)?text:image).request(url,init);
   };
   const lookup=createRankedFalDiscovery(rows,request);
   const [a,b]=await Promise.all(rows.map(r=>lookup(r.name,r.category)));
-  assert.equal(count,1);assert.ok(a?.available);assert.ok(b?.endpoint_available);assert.equal(b.available,false);
+  assert.equal(count,1);assert.equal(catalogs,1);assert.ok(a?.available);assert.ok(b?.endpoint_available);assert.equal(b.available,false);
   status=429;
   const again=createRankedFalDiscovery(rows,request),error=await again(rows[0].name,rows[0].category);
   assert.equal(count,2);assert.equal(error?.available,false);assert.match(error?.verification_error||'',/429/);
+});
+
+test('official bulk 404 isolates the absent ID and retains its verified sibling',async()=>{
+  const textId='xai/grok-imagine-video/v1.5/text-to-video',f=fixture();
+  const rows=[{name:'Grok Imagine Video 1.5',category:'image-to-video' as const},{name:'Grok Imagine Video 1.5',category:'text-to-video' as const}];
+  const batches:string[][]=[];
+  const discover=createRankedFalDiscovery(rows,async(url,init)=>{
+    const u=new URL(String(url)),ids=u.searchParams.getAll('endpoint_id');
+    if(u.pathname==='/v1/models'){
+      batches.push(ids);
+      if(ids.includes(textId))return new Response(null,{status:404});
+    }
+    return f.request(url,init);
+  });
+  const [image,text]=await Promise.all(rows.map(r=>discover(r.name,r.category)));
+  assert.ok(image?.available);assert.equal(text,null);assert.deepEqual(batches,[[imageId,textId],[imageId],[textId]]);
+});
+test('catalog retries a short 429 once and searches a new Arena name just once across categories',async()=>{
+  const calls:string[]=[];
+  const discover=createRankedFalDiscovery([],async(url,init)=>{
+    const u=new URL(String(url));assert.equal(u.origin,'https://api.fal.ai');assert.ok(new Headers(init?.headers).has('authorization'));
+    calls.push(String(url));
+    return calls.length===1 ? new Response(null,{status:429,headers:{'retry-after':'0'}}) : Response.json({models:[],has_more:false});
+  });
+  const models=await Promise.all([discover('Future Model 1.4','text-to-video'),discover('Future Model 1.4','video-editing')]);
+  assert.deepEqual(models,[null,null]);assert.equal(calls.length,2);assert.equal(new Set(calls).size,1);
 });

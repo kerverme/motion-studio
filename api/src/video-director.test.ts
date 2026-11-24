@@ -149,3 +149,16 @@ test('director retrieves compact eligible guide context; compiler binds LLM-craf
   input.scene.direction.model_cues[0].knowledge_version='f'.repeat(64);
   assert.ok(!(await directVideoScene(db,input)).prompt.includes(cue));
 });
+
+test('later text-only shots carry the described prior state without inventing an attached frame or changing original prompts',async()=>{
+  const input={...data(),index:1,required_category:'text-to-video',previous_text_state:'The leather wallet lies beside the green barrier on the left.'};
+  const directed=await directVideoScene(db,input);
+  assert.ok(directed.inspection.passed);assert.ok(directed.prompt.includes(input.previous_text_state));
+  assert.doesNotMatch(directed.prompt,/supplied|uploaded|reference image/i);
+  assert.match(directed.selection_reason,/ไม่มีภาพอินพุต/);
+  const manual='Use the supplied reference image of the wallet near the barrier.';
+  const invalid=await directVideoScene(db,{...input,prompt_mode:'original',original_prompt:manual});
+  assert.equal(invalid.prompt,manual);assert.equal(invalid.inspection.passed,false);
+  assert.throws(()=>routeVideoModel({...input,scene:{...input.scene,direction:{...input.scene.direction,requires_reference_frame:true}}}));
+  assert.throws(()=>routeVideoModel({...input,has_explicit_reference:true}));
+});
