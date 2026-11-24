@@ -250,13 +250,15 @@ details summary{cursor:pointer;color:var(--ink-2);font-size:14px;margin-top:10px
 .tv-tabs [aria-pressed=true]{color:var(--accent);background:var(--accent-soft);border-color:var(--accent)}
 .tv-rank,.tv-fold,.tv-line{border-top:1px solid var(--line);padding:12px 0}
 .tv-rank summary,.tv-fold summary,.tv-confirm summary{cursor:pointer}
-.tv-rank summary{display:grid;align-items:center;grid-template-columns:40px 1fr auto auto;gap:14px}
+.tv-rank>summary{display:grid;align-items:center;grid-template-columns:40px 1fr auto auto;gap:14px}
 .tv-rank b,.tv-rank summary small,.tv-scene summary small{display:block}
 .tv-rank summary small,.tv-scene summary small{font-weight:400}
 .tv-availability,.tv-num,.tv-total strong{color:var(--accent);font-variant-numeric:tabular-nums}
 .tv-availability{font-size:13px}
 .tv-rank-info,.tv-fold[open]>.tv-stack,.tv-fold[open]>.tv-field{padding-top:13px}
 .tv-rank-info{grid-template-columns:repeat(auto-fit,minmax(min(195px,100%),1fr));font-size:14px;color:var(--ink-2)}
+.tv-tariff{grid-column:1/-1}.tv-tariff>p{line-height:1.65;margin:8px 0}
+.tv-actions>.btn[hidden]{display:none}
 .tv-scene{margin:0;padding:14px 16px;border:1px solid var(--line);border-radius:var(--r-md);background:var(--surface)}
 .tv-scene summary{font-weight:600}
 .tv-scene summary small{margin-top:4px}
@@ -274,7 +276,7 @@ details summary{cursor:pointer;color:var(--ink-2);font-size:14px;margin-top:10px
 .tv-line{display:grid;gap:8px}.tv-line h3{margin:0}.tv-copy{white-space:pre-wrap}
 .tv-cost-lines{padding-inline-start:20px}
 .tv-quote-summary+.tv-fold{margin:12px 0}
-@media(max-width:600px){.tv-review .tv-grid{grid-template-columns:1fr}.tv-rank summary{grid-template-columns:28px 1fr auto;gap:6px}.tv-rank summary .tv-availability{grid-column:2 / -1}.tv-confirm{padding:16px}.tv-actions .btn{white-space:normal}}
+@media(max-width:600px){.tv-review .tv-grid{grid-template-columns:1fr}.tv-rank>summary{grid-template-columns:28px 1fr auto;gap:6px}.tv-rank summary .tv-availability{grid-column:2 / -1}.tv-confirm{padding:16px}.tv-actions .btn{white-space:normal}}
 @media(max-width:600px){.tv-grid{grid-template-columns:1fr}.tv-panel{padding:16px}.tv-price strong{font-size:22px}}
 .composer{background:var(--surface);border:1px solid var(--line-2);border-radius:var(--r-lg);padding:20px 22px;display:flex;flex-direction:column;gap:12px}
 .composer textarea,.field{width:100%;padding:12px 14px;border-radius:var(--r-md);border:1px solid var(--line);background:var(--raised);line-height:1.55;resize:vertical}

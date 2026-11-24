@@ -172,7 +172,8 @@ function tvArenaPanel(onSync,onSelect){
         const f=m.fal,price=f?.price;
         return h('details',{class:'tv-rank'},h('summary',{},h('span',{class:'tv-num'},'#'+m.rank),h('span',{},h('b',{},m.name),h('small',{class:'sub'},m.provider||'ไม่ระบุผู้พัฒนา')),h('span',{class:'sub'},m.elo==null?'':'Elo '+Number(m.elo).toLocaleString('th-TH',{maximumFractionDigits:1})),h('span',{class:'tv-availability'},m.fal_error?'รอตรวจ fal.ai':f?.available?'ใช้กับ fal.ai ได้':'ยังสร้างไม่ได้')),
           h('div',{class:'tv-rank-info'},h('span',{},'ความละเอียด · '+(f?.resolutions?.join(', ')||'ยังไม่ทราบ')),h('span',{},'ความยาว · '+(f?.durations?.length?f.durations.join(', ')+' วินาที':'ยังไม่ทราบ')),
-          h('span',{},'เสียงในตัว · '+(f?.audio===true?'รองรับ':f?.audio===false?'ไม่รองรับ':'ยังไม่ทราบ')),h('span',{},price?'ราคาฐาน '+[price.unit_price,price.currency,'/',price.unit].join(' '):'ราคายังไม่ยืนยัน'),f?.pricing_description?h('span',{},f.pricing_description):null,f?.billing?.rates?h('span',{},Object.entries(f.billing.rates).map(([res,usd])=>(res==='*'?'ทุกความละเอียด':res)+' · '+usd+(f.billing.basis==='per_request'?' USD ต่อวิดีโอ':' USD ต่อวินาที')).join(' / ')):null,f?.billing?.source_second_usd?h('small',{class:'sub'},'วิดีโอต้นฉบับ '+f.billing.source_second_usd+' USD ต่อวินาที'):null,f?.billing?.reference_image_usd?h('small',{class:'sub'},'ภาพอ้างอิง '+f.billing.reference_image_usd+' USD'):null,f?.reason?h('span',{class:'sub'},f.reason):null,m.fal_error?h('small',{class:'tv-notice'},'ตรวจโมเดลบน fal.ai ไม่สำเร็จ · '+m.fal_error):null,m.video_to_video_error?h('small',{class:'tv-notice'},'ตรวจรุ่นวิดีโอเป็นวิดีโอไม่สำเร็จ · '+m.video_to_video_error):null,h('button',{class:'btn',type:'button',disabled:!f?.available||!!m.fal_error||cat.stale,on:{click:()=>onSelect(f.endpoint_id)}},'เลือก '+m.name),tvLink(f?.source_url,'ดูโมเดลบน fal.ai'),f?.checked_at?h('small',{class:'sub'},'ตรวจ fal.ai '+tvDate(f.checked_at)):null));
+          h('span',{},'เสียงในตัว · '+(f?.audio===true?'รองรับ':f?.audio===false?'ไม่รองรับ':'ยังไม่ทราบ')),h('span',{},price?'ราคาฐาน '+[price.unit_price,price.currency,'/',price.unit].join(' '):'ราคายังไม่ยืนยัน'),f?.billing?.rates?h('span',{},Object.entries(f.billing.rates).map(([res,usd])=>(res==='*'?'ทุกความละเอียด':res)+' · '+usd+(f.billing.basis==='per_request'?' USD ต่อวิดีโอ':' USD ต่อวินาที')).join(' / ')):null,f?.billing?.source_second_usd?h('small',{class:'sub'},'วิดีโอต้นฉบับ '+f.billing.source_second_usd+' USD ต่อวินาที'):null,f?.billing?.reference_image_usd?h('small',{class:'sub'},'ภาพอ้างอิง '+f.billing.reference_image_usd+' USD'):null,f?.reason?h('span',{class:'sub'},f.reason):null,m.fal_error?h('small',{class:'tv-notice'},'ตรวจโมเดลบน fal.ai ไม่สำเร็จ · '+m.fal_error):null,m.video_to_video_error?h('small',{class:'tv-notice'},'ตรวจรุ่นวิดีโอเป็นวิดีโอไม่สำเร็จ · '+m.video_to_video_error):null,h('button',{class:'btn',type:'button',disabled:!f?.available||!!m.fal_error||cat.stale,on:{click:()=>onSelect(f.endpoint_id)}},'เลือก '+m.name),tvLink(f?.source_url,'ดูโมเดลบน fal.ai'),f?.checked_at?h('small',{class:'sub'},'ตรวจ fal.ai '+tvDate(f.checked_at)):null,
+          f?.pricing_description?h('details',{class:'tv-tariff'},h('summary',{},'รายละเอียดราคาจาก fal.ai'),h('p',{},f.pricing_description)):null));
       }),!rows.length&&!inFlight&&!cat?.error?h('span',{class:'sub'},'ยังไม่มีอันดับที่ยืนยันได้สำหรับประเภทนี้'):null);
   }
   async function sync(force){
@@ -227,10 +228,20 @@ function tvSceneEditor(shot,index,editable,changed){
   const resWarning=h('label',{class:'tv-check tv-notice'},allowRes,'ยืนยันให้ใช้ความละเอียดที่แสดงแทน 720p ในฉากนี้');
   const reference=h('input',{type:'url',placeholder:'https://…',value:spec.reference_url||'','aria-label':'URL สื่ออ้างอิงฉาก '+(index+1)});
   const refBox=tvField('URL รูปหรือวิดีโออ้างอิง',reference,'ใช้ลิงก์ HTTPS ที่ผู้ให้บริการเปิดได้ในระหว่างผลิต');
-  const sound=h('textarea',{rows:2,maxlength:500,placeholder:shot.direction?.audio||'','aria-label':'เสียงประกอบฉาก '+(index+1)},spec.sfx?.text||'');
+  const sound=h('textarea',{rows:2,maxlength:500,placeholder:'เว้นว่างหากฉากนี้ไม่มีเสียงประกอบ','aria-label':'เสียงประกอบฉาก '+(index+1)},spec.sfx?.text||'');
   const soundDuration=h('input',{type:'number',min:0.5,max:22,step:'any',value:spec.sfx?.duration_seconds??'',placeholder:'วินาที','aria-label':'ความยาวเสียงประกอบฉาก '+(index+1)});
-  const soundBox=h('details',{class:'tv-fold'},h('summary',{},'เสียงประกอบ ElevenLabs (ไม่บังคับ)'),h('div',{class:'tv-grid'},tvField('คำอธิบายเสียง',sound,TV_CONFIG?.sfx_usd_per_second?null:'กำลังรอราคาของโมเดลเสียงประกอบ เว้นว่างเพื่อข้าม'),tvField('ความยาว (วินาที)',soundDuration)));
-  function audioControls(){soundBox.hidden=audio.checked;soundDuration.required=!!sound.value.trim()&&!audio.checked;}
+  const cue=shot.direction?.sound_effect;
+  const clearSound=h('button',{type:'button',class:'btn',on:{click:()=>{
+    sound.value='';soundDuration.value='';audioControls();changed(true);
+  }}},'ลบเสียงประกอบ');
+  const proposal=editable&&cue?.kind==='effect'&&cue.text&&cue.duration_seconds>0?h('button',{type:'button',class:'btn',on:{click:()=>{
+    sound.value=cue.text;soundDuration.value=cue.duration_seconds;audioControls();changed(true);
+  }}},'ใช้เสียงที่ผู้กำกับแนะนำ'):null;
+  const soundBox=h('details',{class:'tv-fold'},h('summary',{},'เสียงประกอบ ElevenLabs (ไม่บังคับ)'),h('div',{class:'tv-grid'},tvField('คำอธิบายเสียง',sound,TV_CONFIG?.sfx_usd_per_second?null:'กำลังรอราคาของโมเดลเสียงประกอบ เว้นว่างเพื่อข้าม'),tvField('ความยาว (วินาที)',soundDuration)),h('div',{class:'tv-actions'},proposal,editable?clearSound:null));
+  function audioControls(){
+    const active=!!sound.value.trim();soundBox.hidden=audio.checked;soundDuration.required=active&&!audio.checked;
+    clearSound.hidden=!active;if(proposal)proposal.hidden=active;
+  }
   sound.addEventListener('input',audioControls);audio.addEventListener('change',audioControls);
   const issueBox=h('div',{class:'tv-notice',role:'status'}),reason=h('p',{class:'sub'}),knowledge=h('small',{class:'sub'});
   function notes(prod){
@@ -270,10 +281,11 @@ function tvSceneEditor(shot,index,editable,changed){
   if(!editable)node.querySelectorAll('input,select,textarea').forEach(el=>el.disabled=true);
   for(const el of node.querySelectorAll('input,select,textarea'))el.addEventListener(el.tagName==='SELECT'||el.type==='checkbox'?'change':'input',()=>changed(true));
   function collect(){return {...shot,narration:spoken.value,...(shot.direction?{direction:direction.read(),end_frame:endFrame.value,visual_prompt:initialVisual.value}:{}),production:{...spec,endpoint_id:endpoint.value,prompt_mode:mode.value,prompt:mode.value==='original'?original.value:prompt.value,original_prompt:original.value,
-    duration:Number(duration.value)||undefined,edited_duration:Number(edited.value)||undefined,resolution:resolution.value||undefined,approve_resolution:!resWarning.hidden&&allowRes.checked,quantity:Number(quantity.value),audio:audio.checked,sfx:sound.value.trim()&&!audio.checked?{text:sound.value.trim(),duration_seconds:Number(soundDuration.value)}:undefined,reference_url:!refBox.hidden&&reference.value.trim()||undefined}};}
+    duration:Number(duration.value)||undefined,edited_duration:Number(edited.value)||undefined,resolution:resolution.value||undefined,approve_resolution:!resWarning.hidden&&allowRes.checked,quantity:Number(quantity.value),audio:audio.checked,sfx:sound.value.trim()&&!audio.checked?{text:sound.value.trim(),duration_seconds:Number(soundDuration.value)}:null,reference_url:!refBox.hidden&&reference.value.trim()||undefined}};}
   function saved(updated){
     if(!updated?.production)return;
-    Object.assign(spec,updated.production);notes(spec);
+    Object.assign(spec,updated.production);spec.sfx=updated.production.sfx??null;
+    sound.value=spec.sfx?.text||'';soundDuration.value=spec.sfx?.duration_seconds??'';notes(spec);
     if(spec.endpoint_id&&![...endpoint.options].some(o=>o.value===spec.endpoint_id))endpoint.append(h('option',{value:spec.endpoint_id},spec.endpoint_id));
     endpoint.value=spec.endpoint_id||'';catalog(true);
     original.value=spec.original_prompt||original.value;

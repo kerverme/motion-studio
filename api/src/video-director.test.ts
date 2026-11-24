@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {PGlite} from '@electric-sql/pglite';
 import {ensureVideoKnowledge,buildKnowledge,retrieveKnowledge} from './video-director-knowledge.js';
-import {directVideoScene,routeVideoModel,chooseGenerationSeconds,StoryBibleSchema,type DirectionInput} from './video-director.js';
+import {directVideoScene,routeVideoModel,chooseGenerationSeconds,SceneDirectionSchema,StoryBibleSchema,type DirectionInput} from './video-director.js';
 
 const db=new PGlite();
 before(async()=>{
@@ -161,4 +161,15 @@ test('later text-only shots carry the described prior state without inventing an
   assert.equal(invalid.prompt,manual);assert.equal(invalid.inspection.passed,false);
   assert.throws(()=>routeVideoModel({...input,scene:{...input.scene,direction:{...input.scene.direction,requires_reference_frame:true}}}));
   assert.throws(()=>routeVideoModel({...input,has_explicit_reference:true}));
+});
+
+test('external SFX require an explicit event and timing; old atmosphere text remains descriptive',()=>{
+  const legacy={...scene.direction,audio:'Quiet platform ambience under Thai narration.'};
+  const parsed=SceneDirectionSchema.parse(legacy);assert.equal(parsed.audio,legacy.audio);assert.equal(parsed.sound_effect,undefined);
+  assert.deepEqual(SceneDirectionSchema.parse({...legacy,sound_effect:{kind:'none'}}).sound_effect,{kind:'none'});
+  const positive={kind:'effect',text:'Wallet slaps the tiled floor.',duration_seconds:.8};
+  assert.deepEqual(SceneDirectionSchema.parse({...legacy,sound_effect:positive}).sound_effect,positive);
+  for(const sound_effect of [{kind:'none',text:'music'}, {...positive,text:' '},{...positive,duration_seconds:.25},{...positive,duration_seconds:6}]){
+    assert.equal(SceneDirectionSchema.safeParse({...legacy,sound_effect}).success,false);
+  }
 });

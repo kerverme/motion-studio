@@ -17,7 +17,7 @@ const spec = {endpoint_id:'fal-ai/test',resolution:'720p',duration:5,edited_dura
 const shot = {id:'leaf',narration:'ใบไม้คลี่ออก',end_frame:'a green leaf in frame',visual_prompt:'Closeup of a real leaf gradually unfolding.',direction:{camera:'wide shot',actions:[]},production:spec};
 const row = {id:'plan-test',status:'ready',request:{topic:'ใบไม้',duration:60,model:'gpt-6.2-sol',reasoning:'high',budget_usd:5,routing_mode:'best_value',engine_version:2},revision:1,plan:{title:'ใบไม้',visual_bible:'Green',synopsis:'เรื่องของใบไม้',shots:[shot],sources:[]}};
 const arena = {refreshing:false,categories:[{category:'text-to-video',models:[
-  {rank:1,name:'Available',elo:1020,provider:'Provider',fal:{available:true,category:'text-to-video',endpoint_id:'fal-ai/test',resolutions:['720p','1080p'],durations:[5,10],audio:true,price:{unit_price:0.07,currency:'USD',unit:'second'}}},
+  {rank:1,name:'Available',elo:1020,provider:'Provider',fal:{available:true,category:'text-to-video',endpoint_id:'fal-ai/test',resolutions:['720p','1080p'],durations:[5,10],audio:true,pricing_description:'Official billing documentation for multiple resolutions.',price:{unit_price:0.07,currency:'USD',unit:'second'}}},
   {rank:2,name:'Unmapped',elo:null,fal:null}],stale:true,error:'snapshot retained',last_success_at:'2026-11-20T00:00:00Z'}]};
 (async()=>{
  const browser=await firefox.launch({headless:true,env:{...process.env,MOZ_DISABLE_CONTENT_SANDBOX:'1'}});
@@ -70,6 +70,8 @@ const arena = {refreshing:false,categories:[{category:'text-to-video',models:[
   await page.getByText('Available',{exact:true}).click();
   await page.getByText(/Source video metadata timed out/).waitFor();
   assert.ok(await btn('เลือก Available').isEnabled());
+  const tariff=page.getByText('Official billing documentation for multiple resolutions.');
+  assert.equal(await tariff.isVisible(),false);await page.getByText('รายละเอียดราคาจาก fal.ai',{exact:true}).click();assert.ok(await tariff.isVisible());
   await btn('เลือก Available').click();
   assert.equal(await label('เลือกโมเดลด้วยตัวเอง').inputValue(),'fal-ai/test');
   console.log('PASS Partial fal metadata failure retains live ranks, shows per-route causes and leaves verified routes selectable');
@@ -157,6 +159,25 @@ const arena = {refreshing:false,categories:[{category:'text-to-video',models:[
   assert.equal(await page.evaluate(()=>calls.filter(c=>c.path.endsWith('/quote')).length-nativeQuoteStart),1);
   assert.equal(await page.evaluate(()=>Object.hasOwn(calls.filter(c=>c.path.endsWith('/quote')).at(-1).body,'eleven_usd_per_1000_characters')),false);
   console.log('PASS Native-only plan obtains a quote with no verified ElevenLabs rate and no client-supplied price');
+  await page.evaluate(()=>{
+    document.querySelector('.drawer .d-top button').click();
+    row.plan.shots[0].production.audio=false;row.plan.shots[0].production.sfx=null;
+    row.plan.shots[0].direction.audio='No sound effects, quiet narration only.';row.plan.shots[0].direction.sound_effect={kind:'none'};openTextVideo(row.id);
+  });
+  const soundDetails=page.getByText('เสียงประกอบ ElevenLabs (ไม่บังคับ)',{exact:true});
+  await soundDetails.click();
+  const sound=label('เสียงประกอบฉาก 1'),seconds=label('ความยาวเสียงประกอบฉาก 1');
+  assert.equal(await sound.inputValue(),'');assert.doesNotMatch(await sound.getAttribute('placeholder'),/quiet narration|No sound effects/);
+  assert.equal(await btn('ใช้เสียงที่ผู้กำกับแนะนำ').count(),0);
+  await sound.fill('A single wooden knock');await seconds.fill('1.5');
+  await page.waitForFunction(()=>row.plan.shots[0].production.sfx?.text==='A single wooden knock');
+  await page.evaluate(()=>{document.querySelector('.drawer .d-top button').click();openTextVideo(row.id);});
+  await soundDetails.click();assert.equal(await sound.inputValue(),'A single wooden knock');
+  await btn('ลบเสียงประกอบ').click();await page.waitForFunction(()=>row.plan.shots[0].production.sfx===null);
+  await page.evaluate(()=>{document.querySelector('.drawer .d-top button').click();openTextVideo(row.id);});
+  await soundDetails.click();assert.equal(await sound.inputValue(),'');assert.equal(await seconds.inputValue(),'');
+  assert.equal(await page.evaluate(()=>calls.filter(x=>x.path.endsWith('/produce')).length),1);
+  console.log('PASS Silent direction stays silent; explicit positive SFX edits and removal persist without generation');
   assert.deepEqual(errors,[]);
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});

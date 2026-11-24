@@ -1,3 +1,4 @@
+import {correctedSoundPlan,obsoleteSoundCharge} from './video-sound.js';
 import {getVideoFx} from './video-fx.js';
 import { DIRECTOR_INSTRUCTIONS, directorKnowledgeContext } from './video-director.js';
 import { parseProductionInput,parseProductionPlan,prepareProduction,createProductionQuote,quoteBinding,verifyProductionSlot,productionProviders,type ProductionProviders } from './video-production.js';
@@ -28,6 +29,15 @@ export function registerTextVideo(app:Hono,pool:pg.Pool,options:Options) {
   const providers=options.production||productionProviders;
   const parseRequest=(raw:any)=>raw?.engine_version===2 ? parseProductionInput(raw) : parseVideoInput(raw);
   const get=async(id:string,cl:any=pool,lock=false)=>(await cl.query('SELECT * FROM text_video_plans WHERE id=$1'+(lock?' FOR UPDATE':''),[id])).rows[0];
+  // Old v2 drafts sometimes copied a request for silence into a paid SFX slot.
+  // Only revise unapproved drafts. Issued approvals remain immutable and are checked at dispatch.
+  async function reconcileSound(row:any) {
+    if(!row || row.request?.engine_version!==2 || row.status!=='ready' || row.job_id || row.approval) return row;
+    const plan=correctedSoundPlan(row.plan);
+    if(plan===row.plan && !obsoleteSoundCharge(plan,row.quote)) return row;
+    const updated=await pool.query("UPDATE text_video_plans SET plan=$2,revision=$3,quote=NULL,updated_at=now() WHERE id=$1 AND revision=$4 AND job_id IS NULL AND approval IS NULL AND status='ready' RETURNING *",[row.id,JSON.stringify(plan),randomUUID(),row.revision]);
+    return updated.rows[0]?{...row,...updated.rows[0]}:await get(row.id);
+  }
   const shape=(r:any)=>({id:r.id,status:r.status,request:r.request,plan:r.plan,revision:r.revision,quote:r.quote,approval:r.approval,job_id:r.job_id,error:r.error,progress:r.progress,created_at:r.created_at,updated_at:r.updated_at,job_status:r.job_status,job_error:r.job_error,episode_number:r.episode_number,usage:r.usage,job_stage:r.job_stage,job_updated_at:r.job_updated_at,job_created_at:r.job_created_at,qa_report:r.qa_report,repair_scene:r.repair_scene,repair_quality:r.repair_quality});
   async function worker(){const r=(await pool.query("SELECT data,updated_at FROM integrations WHERE provider='text_video_worker'")).rows[0];const fresh=r&&Date.now()-new Date(r.updated_at).getTime()<120000;return fresh?r.data:null;}
   async function generate(row:any){
@@ -79,7 +89,7 @@ JSON shape: {title,synopsis,kind:"educational"|"fiction",visual_bible,sources:[{
   async function start(){await pool.query("UPDATE text_video_plans SET status='failed',error='ระบบรีสตาร์ทระหว่างส่ง OpenAI ไม่ส่งซ้ำอัตโนมัติ',updated_at=now() WHERE status='planning' AND response_id IS NULL");await pool.query("UPDATE text_video_plans SET status='queued' WHERE status='planning' AND response_id IS NOT NULL");kick();}
   app.get(PREFIX+'/config',options.guard,async c=>{const [w, catalog, fx] = await Promise.all([worker(), readModels(options.models), getVideoFx()]);
     return c.json({engine_version:2,usd_to_thb:fx.rate,fx_source:fx.source,fx_date:fx.date,voice_model:w?.voice_model||null,voice_pricing_source:w?.audio_pricing_source||null,voice_pricing_checked_at:Number.isFinite(w?.capabilities_checked_at)?new Date(w.capabilities_checked_at*1000).toISOString():null,voice_usd_per_1000_characters:w?.voice_usd_per_1000_characters||null,sfx_models:w?.sfx_models||[],sfx_usd_per_second:w?.sfx_usd_per_second||null,intelligence_worker_ready:w?.production_version===2,models:VIDEO_MODELS, brains:catalog.ids, default_brain:DEFAULT_OPENAI_MODEL, default_reasoning:DEFAULT_REASONING, reasoning_levels:REASONING_LEVELS, model_catalog:{source:catalog.source,checked_at:catalog.checked_at},narration_styles:NARRATION_STYLES.map(({id,label})=>({id,label})),durations:[60,90,120],shot_seconds:15,openai_configured:!!env.OPENAI_API_KEY,fal_configured:!!env.FAL_KEY,worker_ready:!!(w?.fal&&w?.eleven),voice_id:w?.voice_id||null,eleven_pricing:ELEVEN_API_PRICING});});
-  app.get(PREFIX+'/plans',options.guard,async c=>{const r=await pool.query('SELECT p.*,j.status AS job_status,e.number AS episode_number FROM text_video_plans p LEFT JOIN jobs j ON j.id=p.job_id LEFT JOIN episodes e ON e.id=j.episode_id ORDER BY p.created_at DESC LIMIT 30');return c.json({plans:r.rows.map(shape)});});
+  app.get(PREFIX+'/plans',options.guard,async c=>{const r=await pool.query('SELECT p.*,j.status AS job_status,e.number AS episode_number FROM text_video_plans p LEFT JOIN jobs j ON j.id=p.job_id LEFT JOIN episodes e ON e.id=j.episode_id ORDER BY p.created_at DESC LIMIT 30');return c.json({plans:(await Promise.all(r.rows.map(reconcileSound))).map(shape)});});
   app.post(PREFIX+'/plans',options.guard,async c=>{
     try{
       const raw=await c.req.json(), id=UUID.parse(c.req.header('idempotency-key'));
@@ -93,7 +103,7 @@ JSON shape: {title,synopsis,kind:"educational"|"fiction",visual_bible,sources:[{
       await pool.query('INSERT INTO text_video_plans(id,request_hash,request) VALUES($1,$2,$3) ON CONFLICT DO NOTHING',[id,hash,JSON.stringify(input)]);const row=await get(id);if(row.request_hash!==hash)return c.json({error:'คำขอเดิมมีข้อมูลต่างกัน'},409);kick();return c.json(shape(row),202);
     }catch(e){return c.json({error:e instanceof Error?e.message:'ข้อมูลไม่ถูกต้อง'},422);}
   });
-  app.get(PREFIX+'/plans/:id',options.guard,async c=>{if(!UUID.safeParse(c.req.param('id')).success)return c.json({error:'not found'},404);const row=(await pool.query('SELECT p.*,b.quality AS repair_quality,j.status AS job_status,j.error AS job_error,j.qa_report,j.created_at AS job_created_at,j.updated_at AS job_updated_at,(SELECT message FROM job_events WHERE job_id=j.id ORDER BY id DESC LIMIT 1) AS job_stage,e.number AS episode_number FROM text_video_plans p LEFT JOIN jobs j ON j.id=p.job_id LEFT JOIN episodes e ON e.id=j.episode_id LEFT JOIN video_model_benchmarks b ON b.id=p.repair_benchmark_id WHERE p.id=$1',[c.req.param('id')])).rows[0];if(row?.status==='queued')kick();return row?c.json(shape(row)):c.json({error:'not found'},404);});
+  app.get(PREFIX+'/plans/:id',options.guard,async c=>{if(!UUID.safeParse(c.req.param('id')).success)return c.json({error:'not found'},404);const row=(await pool.query('SELECT p.*,b.quality AS repair_quality,j.status AS job_status,j.error AS job_error,j.qa_report,j.created_at AS job_created_at,j.updated_at AS job_updated_at,(SELECT message FROM job_events WHERE job_id=j.id ORDER BY id DESC LIMIT 1) AS job_stage,e.number AS episode_number FROM text_video_plans p LEFT JOIN jobs j ON j.id=p.job_id LEFT JOIN episodes e ON e.id=j.episode_id LEFT JOIN video_model_benchmarks b ON b.id=p.repair_benchmark_id WHERE p.id=$1',[c.req.param('id')])).rows[0];if(row?.status==='queued')kick();return row?c.json(shape(await reconcileSound(row))):c.json({error:'not found'},404);});
   app.post(PREFIX+'/plans/:id/resume',options.guard,async c=>{if(!UUID.safeParse(c.req.param('id')).success)return c.json({error:'not found'},404);const row=await get(c.req.param('id'));if(!row?.response_id||row.plan||row.job_id||row.status!=='failed')return c.json({error:'ไม่มีงาน OpenAI เดิมที่รอตรวจ'},409);await pool.query("UPDATE text_video_plans SET status='queued',error=NULL WHERE id=$1",[row.id]);kick();return c.json({id:row.id,status:'queued'});});
   app.patch(PREFIX+'/plans/:id',options.guard,async c=>{
     try{if(!UUID.safeParse(c.req.param('id')).success)return c.json({error:'not found'},404);const raw=await c.req.json();const row=await get(c.req.param('id'));
@@ -108,7 +118,7 @@ JSON shape: {title,synopsis,kind:"educational"|"fiction",visual_bible,sources:[{
     }catch(e){return c.json({error:e instanceof Error?e.message:'แก้บทไม่ได้'},422);}
   });
   app.post(PREFIX+'/plans/:id/quote',options.guard,async c=>{
-    try{const id=UUID.parse(c.req.param('id')),raw=await c.req.json(),row=await get(id);if(!row?.plan||!['ready','producing'].includes(row.status))return c.json({error:'ต้องวางบทให้เสร็จก่อน'},409);
+    try{const id=UUID.parse(c.req.param('id')),raw=await c.req.json(),row=await reconcileSound(await get(id));if(!row?.plan||!['ready','producing'].includes(row.status))return c.json({error:'ต้องวางบทให้เสร็จก่อน'},409);
       if(row.job_id){const job=(await pool.query('SELECT status FROM jobs WHERE id=$1',[row.job_id])).rows[0];if(job?.status!=='FAILED')return c.json({error:'งานเดิมยังทำอยู่หรือเสร็จแล้ว'},409);}
       const v2=row.request.engine_version===2;
       const w=await worker();if(!w?.fal||(!v2&&!w?.eleven)||!env.FAL_KEY)return c.json({error:'ยังส่งผลิตไม่ได้: ต้องตั้ง FAL_KEY ที่ API/worker และรอ worker พร้อม ElevenLabs'},503);
@@ -127,7 +137,7 @@ JSON shape: {title,synopsis,kind:"educational"|"fiction",visual_bible,sources:[{
     }catch(e){return c.json({error:e instanceof Error?e.message:'คิดราคาไม่สำเร็จ'},422);}
   });
   app.post(PREFIX+'/plans/:id/produce',options.guard,async c=>{
-    let cl:pg.PoolClient|undefined; try{const id=UUID.parse(c.req.param('id')),raw=await c.req.json();const row=await get(id);if(!row)throw new Error('ไม่พบร่าง');
+    let cl:pg.PoolClient|undefined; try{const id=UUID.parse(c.req.param('id')),raw=await c.req.json();const row=await reconcileSound(await get(id));if(!row)throw new Error('ไม่พบร่าง');
       if(row.approval?.id===raw.quote_id&&row.job_id){return c.json({id:row.job_id,duplicate:true});}
       const q=row.quote;if(!q||q.id!==raw.quote_id||raw.confirmation!==`CONFIRM ${q.id}`||raw.approved!==true||raw.revision!==row.revision)throw new Error('ต้องตรวจบทและยืนยันราคานี้ก่อนส่ง fal.ai และ ElevenLabs');
       if(Date.now()>Date.parse(q.expires_at)||q.plan_hash!==digest({input:row.request,plan:row.plan}))throw new Error('ราคาหมดอายุหรือบทเปลี่ยนแล้ว ต้องคิดราคาและยืนยันใหม่');
@@ -167,6 +177,7 @@ JSON shape: {title,synopsis,kind:"educational"|"fiction",visual_bible,sources:[{
       const record=(await pool.query(`SELECT p.*,j.status AS job_status,j.package->'text_video' AS spec FROM text_video_plans p JOIN jobs j ON j.id=p.job_id WHERE j.id=$1`,[raw.job_id])).rows[0];
       const a=record?.approval,spec=record?.spec;
       if(!a || !spec || spec.version!==2 || record.status!=='producing' || !['GENERATING_AUDIO','RENDERING','QUALITY_CHECK'].includes(record.job_status) || spec.plan_id!==record.id || digest(spec.approval)!==digest(a) || !a.approved_at || !(Date.parse(a.valid_until)>Date.now()) || (raw.approval_id && a.id!==raw.approval_id) || a.plan_hash!==digest({input:record.request,plan:record.plan}) || a.plan_hash!==digest({input:spec.input,plan:spec.plan})) throw new Error('งานหรือขอบเขตการอนุมัติไม่ตรงกัน หรือหมดอายุแล้ว');
+      if(obsoleteSoundCharge(record.plan,a)) throw new Error('รายการเสียงประกอบเดิมไม่ตรงกับคำกำกับเสียง กรุณาคิดราคาและยืนยันใหม่ก่อนส่งคำขอเพิ่ม');
       const old=(await pool.query('SELECT status,approval_id FROM text_video_calls WHERE job_id=$1 AND slot=$2 ORDER BY created_at DESC LIMIT 1',[raw.job_id,raw.slot])).rows[0];
       if(old && (old.status!=='failed'||old.approval_id===a.id)) throw new Error('เคยส่งคำขอนี้แล้ว กรุณาตรวจผลเดิม');
       await verifyProductionSlot(pool,a,raw.slot,await worker(),providers);

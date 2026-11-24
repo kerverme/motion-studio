@@ -1,3 +1,4 @@
+import {planSound,selectedSound} from './video-sound.js';
 import { currentReverseRate } from './reverse-rate.js';
 import { promptRate } from './reverse-prompts.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -105,8 +106,8 @@ export async function prepareProduction(pool:pg.Pool,input:ProductionInput,raw:u
     const original=inheritedOriginal?scene.visual_prompt:edit.original_prompt || scene.visual_prompt;
     const resolution=edit.resolution || input.resolution, edited=edit.edited_duration || scene.direction.duration_seconds;
     editedTotal+=edited;
-    const sound=!previous && soundOffer?.sfx_models?.length && positive(soundOffer.sfx_credits_per_second) && positive(soundOffer.sfx_usd_per_second) && scene.direction.audio ? {text:scene.direction.audio,duration_seconds:Math.min(4,edited)} : edit.sfx;
-    const base={...edit,...(sound?{sfx:sound}:{}),resolution,edited_duration:edited,original_prompt:original};
+    const sound=planSound(scene,edited,edit,previousScene,!!soundOffer?.sfx_models?.length && positive(soundOffer.sfx_credits_per_second) && positive(soundOffer.sfx_usd_per_second));
+    const base={...edit,sfx:sound.effect,sfx_origin:sound.origin,resolution,edited_duration:edited,original_prompt:original};
     // Preserve a manual choice on subsequent edits. Automatic routes may change when the scene or budget changes.
     const manual=edit.endpoint_id && (previousProduction?.endpoint_id!==edit.endpoint_id || previousProduction?.model_override) ? edit.endpoint_id : input.routing_mode==='manual' ? input.manual_endpoint : undefined;
     const requiredFrame=!!scene.direction.requires_reference_frame || !!edit.reference_url;
@@ -270,13 +271,14 @@ export async function createProductionQuote(pool:pg.Pool,row:any,opts:any,w:any,
       const characters=Array.from(shot.narration).length,credits=Math.ceil(characters*1.10);
       eleven.push({slot:voiceSlot,scene_id:shot.id,text:shot.narration,model_id:w.voice_model,voice_id:w.voice_id,characters,credits,usd_per_1000_characters:voicePrice,estimated_usd:money(credits*voicePrice/1000)});pending_slots.push(voiceSlot);
     }
-    if(p.sfx) {
+    const selected=selectedSound(shot);
+    if(selected) {
       const sfxSlot='sfx:'+shot.id,sound=archived(sfxSlot,previous?.eleven || []);
       if(sound) {
-        if(sound.text!==p.sfx.text || sound.duration_seconds!==p.sfx.duration_seconds) throw new Error('เสียงประกอบที่ใช้ผลเดิมต่างจากแผน');
+        if(sound.text!==selected.text || sound.duration_seconds!==selected.duration_seconds) throw new Error('เสียงประกอบที่ใช้ผลเดิมต่างจากแผน');
         eleven.push(sound);continue;
       }
-      const model_id=w.sfx_models?.[0],{duration_seconds,text}=p.sfx;
+      const model_id=w.sfx_models?.[0],{duration_seconds,text}=selected;
       if(!w.eleven||!model_id||!positive(w.sfx_credits_per_second)||!positive(w.sfx_usd_per_second)) throw new Error('ยังไม่มีโมเดลเอฟเฟกต์เสียงและราคาที่ตรวจสอบได้ ปิดเอฟเฟกต์เสียงหรืออัปเดตค่าใช้จ่าย');
       if(duration_seconds>p.edited_duration) throw new Error('เอฟเฟกต์เสียงต้องไม่ยาวเกินฉาก');
       eleven.push({slot:sfxSlot,scene_id:shot.id,model_id,text,duration_seconds,credits:Math.ceil(w.sfx_credits_per_second*duration_seconds),usd_per_second:w.sfx_usd_per_second,estimated_usd:money(w.sfx_usd_per_second*duration_seconds)});pending_slots.push(sfxSlot);

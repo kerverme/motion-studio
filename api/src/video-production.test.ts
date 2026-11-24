@@ -1,3 +1,5 @@
+import {digest} from './text-video-contract.js';
+import {silentSoundEffect,planSound} from './video-sound.js';
 import assert from 'node:assert/strict';
 import { test, before, after } from 'node:test';
 import {randomUUID} from 'node:crypto';
@@ -13,7 +15,7 @@ const query=async(sql:string,args:any[]=[])=>{const r=await db.query<any>(sql,ar
 const pool={query,connect:async()=>{const prev=tail;let release!:()=>void;tail=new Promise(r=>release=r);await prev;return {query,release};}};
 const headers={'content-type':'application/json','x-session':'ok'};
 const path='/app/api/text-video/plans',internal='/internal/text-video/check-dispatch';
-const plan={title:'จดหมายในขวด',synopsis:'เรื่องแต่งของขวดที่ลอยไปตามลำน้ำจนพบกับชายฝั่ง',kind:'fiction',visual_bible:'A green glass bottle, a quiet golden river and a consistent low horizon.',sources:[],story_bible:{characters:[],locations:[{id:'river',description:'Quiet golden river'}],props:[{id:'bottle',description:'Green empty bottle'}],visual_style:'Ink animation',lighting:'Morning sunlight',continuity_rules:['Keep the green bottle.']},shots:[4,7].map((seconds,i)=>({id:'shot_0'+(i+1),narration:i?'ขวดเดินทางต่อไปจนพบชายฝั่ง':'ขวดเริ่มล่องไปตามแม่น้ำ',visual_prompt:'A green bottle drifts across the water towards a quiet bank.',end_frame:'The green bottle drifts past the bank.',source_ids:[],direction:{scene_type:'landscape',purpose:'Show its journey.',subjects:['bottle'],setting:'river',camera:'Slow tracking shot',lighting:'Morning sunlight',actions:[{id:'float',actor:'bottle',action:'Float along the water.',after:[]}],opening_state:'The green bottle floats.',closing_state:'The green bottle floats past the bank.',duration_seconds:seconds,audio:'Quiet water lapping.'}}))};
+const plan={title:'จดหมายในขวด',synopsis:'เรื่องแต่งของขวดที่ลอยไปตามลำน้ำจนพบกับชายฝั่ง',kind:'fiction',visual_bible:'A green glass bottle, a quiet golden river and a consistent low horizon.',sources:[],story_bible:{characters:[],locations:[{id:'river',description:'Quiet golden river'}],props:[{id:'bottle',description:'Green empty bottle'}],visual_style:'Ink animation',lighting:'Morning sunlight',continuity_rules:['Keep the green bottle.']},shots:[4,7].map((seconds,i)=>({id:'shot_0'+(i+1),narration:i?'ขวดเดินทางต่อไปจนพบชายฝั่ง':'ขวดเริ่มล่องไปตามแม่น้ำ',visual_prompt:'A green bottle drifts across the water towards a quiet bank.',end_frame:'The green bottle drifts past the bank.',source_ids:[],direction:{scene_type:'landscape',purpose:'Show its journey.',subjects:['bottle'],setting:'river',camera:'Slow tracking shot',lighting:'Morning sunlight',actions:[{id:'float',actor:'bottle',action:'Float along the water.',after:[]}],opening_state:'The green bottle floats.',closing_state:'The green bottle floats past the bank.',duration_seconds:seconds,audio:'Quiet water lapping.',sound_effect:{kind:'effect',text:'Quiet water lapping.',duration_seconds:4}}}))};
 const models=(['text-to-video','image-to-video'] as const).map((category,i):FalVideoModel=>({category,endpoint_id:'mock/example/'+category,name:'Example '+category,available:true,audio:true,resolutions:['720p','1080p'],durations:[4,8,12],schema_hash:'schema-'+i,price:{currency:'USD',unit:'seconds',unit_price:.1},input_schema:{type:'object',properties:{prompt:{type:'string'},duration:{type:'integer'},resolution:{type:'string'},aspect_ratio:{type:'string'},generate_audio:{type:'boolean'},...(i?{image_url:{type:'string'}}:{})},required:['prompt','duration','resolution']},source_url:'https://fal.ai/models/mock',checked_at:'2026-11-23'}));
 const w={production_version:2,voice_models:['eleven_v3'],voice_model:'eleven_v3',voice_usd_per_1000_characters:.08,voice_id:'verified-voice',eleven:true,fal:true};
 const send=(app:Hono,url:string,body:any,method='POST',more:Record<string,string>={})=>app.request(url,{method,headers:{...headers,'idempotency-key':randomUUID(),...more},body:JSON.stringify(body)});
@@ -97,4 +99,43 @@ test('auto continuity uses an eligible text endpoint when image routes fail; man
   const linked=structuredClone(p);linked.shots[1].production.reference_url='https://fal.media/ref.png';
   blocked=await prepareProduction(pool as any,input,linked,p,onlyText);assert.ok(blocked.shots[1].production.issues.length);
   blocked=await prepareProduction(pool as any,{...input,routing_mode:'manual',manual_endpoint:models[1].endpoint_id},plan,undefined,onlyText);assert.ok(blocked.shots[1].production.issues.length);
+});
+
+test('external SFX requires explicit design or an owner edit; silence, music and narration never become paid effects',()=>{
+  for(const audio of ['No special sound effects.','SFX: none','Voice-over only.','Music only.','ไม่ต้องใส่เสียงประกอบ','ไม่มีเสียงเอฟเฟกต์','เสียงบรรยายเท่านั้น','ดนตรีอย่างเดียว']) {
+    assert.equal(silentSoundEffect(audio),true,audio);
+    assert.equal(planSound({direction:{audio}},4,{audio:false},undefined,true).effect,null);
+    assert.equal(planSound({direction:{audio,sound_effect:{kind:'effect',text:audio,duration_seconds:2}}},4,{audio:false},undefined,true).effect,null);
+  }
+  const old={direction:{audio:'No special sound effects.'},production:{sfx:{text:'No special sound effects.',duration_seconds:4}}};
+  assert.equal(planSound(old,4,{audio:false,sfx:old.production.sfx},old,true).effect,null);
+  assert.equal(planSound({direction:{audio:'The soundtrack has a warm, comforting mood.'}},4,{audio:false},undefined,true).effect,null);
+  const door={text:'One wooden door rattles and clicks shut.',duration_seconds:2};
+  const chosen=planSound(old,4,{audio:false,sfx:door},old,true);assert.deepEqual(chosen,{effect:door,origin:'owner'});
+  assert.equal(planSound({direction:{sound_effect:{kind:'effect',...door}}},4,{audio:true},undefined,true).effect,null);
+});
+
+test('reopening a legacy v2 silence quote corrects its draft locally and old signed silent approvals cannot trigger any new paid call',async()=>{
+  const sfxWorker={...w,sfx_models:['eleven_text_to_sound_v3'],sfx_credits_per_second:40,sfx_usd_per_second:.002};
+  const setWorker=(settings:any)=>query("UPDATE integrations SET data=$1,updated_at=now() WHERE provider='text_video_worker'",[JSON.stringify(settings)]);
+  function oldSnapshot(row:any,q:any){
+    const plan=structuredClone(row.plan),quote=structuredClone(q);
+    for(const shot of plan.shots){shot.direction.audio='No special sound effects.';delete shot.direction.sound_effect;delete shot.production.sfx_origin;shot.production.sfx.text=shot.direction.audio;}
+    for(const i of quote.eleven) if(i.slot.startsWith('sfx:')) i.text='No special sound effects.';
+    quote.plan_hash=digest({input:row.request,plan});quote.payload_hash=digest({fal:quote.fal,eleven:quote.eleven});return {plan,quote};
+  }
+  try {
+    await setWorker(sfxWorker);
+    let draft=await newPlan();let q=await(await quote(draft)).json();assert.equal(q.sfx_usd,.016);
+    const initial=oldSnapshot(draft,q);await query('UPDATE text_video_plans SET plan=$2,quote=$3 WHERE id=$1',[draft.id,JSON.stringify(initial.plan),JSON.stringify(initial.quote)]);
+    const priorReads=lookups;const restored=await(await app.request(path+'/'+draft.id,{headers})).json();assert.notEqual(restored.revision,draft.revision);assert.equal(restored.quote,null);assert.ok(restored.plan.shots.every((s:any)=>!s.production.sfx));assert.equal(lookups,priorReads,'draft cleanup has no provider calls');
+    assert.equal((await approve(draft,q)).status,409);const corrected=await(await quote(restored)).json();assert.equal(corrected.sfx_usd,0);assert.ok(corrected.eleven.every((x:any)=>!x.slot.startsWith('sfx:')));
+    draft=await newPlan();q=await(await quote(draft)).json();const job=(await(await approve(draft,q)).json()).id;
+    const pack=(await query('SELECT package FROM jobs WHERE id=$1',[job])).rows[0].package;
+    const historical=oldSnapshot(draft,pack.text_video.approval);pack.text_video.plan=historical.plan;pack.text_video.approval=historical.quote;
+    await query('UPDATE jobs SET package=$2 WHERE id=$1',[job,JSON.stringify(pack)]);await query('UPDATE text_video_plans SET plan=$2,approval=$3,quote=$3 WHERE id=$1',[draft.id,JSON.stringify(historical.plan),JSON.stringify(historical.quote)]);
+    for(const slot of ['sfx:shot_01','fal:shot_01','eleven:shot_01']){const check=await send(app,internal,{job_id:job,slot},'POST',{'x-internal-token':'private-fixture'});assert.equal(check.status,409);assert.match((await check.json()).error,/เสียงประกอบเดิม/);}
+    const signed=(await query('SELECT approval FROM text_video_plans WHERE id=$1',[draft.id])).rows[0].approval;assert.equal(signed.id,historical.quote.id);assert.equal(signed.eleven.find((i:any)=>i.slot==='sfx:shot_01').text,'No special sound effects.');
+    await query("UPDATE jobs SET status='FAILED' WHERE id=$1",[job]);const repair=await(await quote(draft)).json();assert.equal(repair.sfx_usd,0);assert.ok(!repair.pending_slots.includes('sfx:shot_01'));
+  } finally {await setWorker(w);}
 });
