@@ -16,6 +16,9 @@ import { registerStudio, configured as studioConfigured } from './studio.js';
 import { registerTopicSuggestions } from './topic-suggestions.js';
 import { registerNarrationPreviews } from './narration-previews.js';
 import { registerTextVideo } from './text-video.js';
+import { registerVideoArena } from './video-arena.js';
+import { registerSceneRevisions } from './video-derivative.js';
+import { registerVideoBenchmarks } from './video-benchmarks.js';
 import { registerReverse } from './reverse.js';
 import { registerCommunity } from './community.js';
 import { retryCreativeJob } from './creative-retry.js';
@@ -72,6 +75,12 @@ async function requireAuth(c: Context, next: Next) {
   const h = c.req.header('authorization') || '';
   const tok = h.startsWith('Bearer ') ? h.slice(7) : '';
   if (!API_TOKEN || !tok || !safeEq(tok, API_TOKEN)) return c.json({ error: 'unauthorized' }, 401);
+  await next();
+}
+
+async function requireInternal(c: Context, next: Next) {
+  const t = c.req.header('x-internal-token') || '';
+  if (!INTERNAL_TOKEN || !safeEq(t, INTERNAL_TOKEN)) return c.json({ error: 'forbidden' }, 403);
   await next();
 }
 
@@ -396,9 +405,7 @@ app.get('/oauth/google/callback', async (c) => {
 });
 
 // worker-only: short-lived Drive access token (client secret never leaves motion-api)
-app.get('/internal/google/access-token', async (c) => {
-  const t = c.req.header('x-internal-token') || '';
-  if (!INTERNAL_TOKEN || !safeEq(t, INTERNAL_TOKEN)) return c.json({ error: 'forbidden' }, 403);
+app.get('/internal/google/access-token', requireInternal, async (c) => {
   const g = await pool.query("SELECT data FROM integrations WHERE provider='google_drive'");
   if (!g.rowCount) return c.json({ error: 'google drive not connected', connect_url: `${PUBLIC_URL}/oauth/google/start?key=<MOTION_API_TOKEN>` }, 409);
   const r = await fetch('https://oauth2.googleapis.com/token', {
@@ -415,7 +422,10 @@ const ui = registerUi(app, pool, { API_TOKEN, retryJob });
 registerReverse(app,pool,{guard:ui.requireUi});
 const suggestions = registerTopicSuggestions(app,pool,{guard:ui.requireUi});
 const narrationPreviews = registerNarrationPreviews(app,pool,{guard:ui.requireUi});
-const textVideo = registerTextVideo(app,pool,{guard:ui.requireUi});
+const textVideo = registerTextVideo(app,pool,{guard:ui.requireUi,workerGuard:requireInternal});
+const videoArena = registerVideoArena(app,pool,ui.requireUi);
+registerVideoBenchmarks(app,pool,ui.requireUi);
+registerSceneRevisions(app,pool,ui.requireUi);
 const studio = registerStudio(app, pool, { guard: ui.requireUi, signAsset:async key=>s3&&env.BUCKET?getSignedUrl(s3,new GetObjectCommand({Bucket:env.BUCKET,Key:key}),{expiresIn:3600}):null, createJob, estimateCredits: (p: unknown) => estimateCredits(Package.parse(p)), researchFreshness: (p: unknown) => researchFreshness(Package.parse(p)), validate: (p: unknown) => {
   const r = Package.safeParse(p);
   return r.success ? [] : r.error.issues.slice(0, 10).map((i) => `${i.path.join('.')}: ${i.message}`);
@@ -435,6 +445,7 @@ app.onError((err, c) => {
 });
 
 await migrate();
+videoArena.start();
 suggestions.start().catch(e=>console.error('topic suggestions startup', e instanceof Error ? e.message : 'failed'));
 narrationPreviews.start().catch(e=>console.error('narration previews startup', e instanceof Error ? e.message : 'failed'));
 textVideo.start().catch(e=>console.error('text video startup', e instanceof Error ? e.message : 'failed'));

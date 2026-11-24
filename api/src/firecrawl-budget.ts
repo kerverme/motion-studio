@@ -94,7 +94,7 @@ export class BudgetedFirecrawl {
 export class PgResearchBudget implements BudgetStore {
   private client?: pg.PoolClient;
   private queue: Promise<void> = Promise.resolve();
-  constructor(private pool: pg.Pool) {}
+  constructor(private pool: pg.Pool, private absoluteLimit?: number) {}
   private db() { return this.client || this.pool; }
   async ensure(job:string) { await this.db().query('INSERT INTO research_jobs (id) VALUES ($1) ON CONFLICT DO NOTHING',[job]); }
   async exclusive<T>(_job:string, fn:()=>Promise<T>):Promise<T> {
@@ -140,7 +140,7 @@ export class PgResearchBudget implements BudgetStore {
       if (pending.rows.length) throw new ResearchBudgetError('uncertain_charge','A previous request has an unresolved charge. Further Firecrawl calls are stopped.');
       const failed=await db.query("SELECT id FROM firecrawl_requests WHERE research_job_id=$1 AND cache_key=$2 AND state='failed' LIMIT 1",[job,req.key]);
       if (failed.rows.length) throw new ResearchBudgetError('no_evidence','This URL already failed extraction in this Research Job. Do not retry or fabricate its contents.');
-      const r = await db.query(`UPDATE research_jobs SET committed_credits=committed_credits+$2 WHERE id=$1 AND blocked_reason IS NULL AND committed_credits+$2<=credit_limit RETURNING id`,[job,req.maximum]);
+      const r = await db.query(`UPDATE research_jobs SET committed_credits=committed_credits+$2 WHERE id=$1 AND blocked_reason IS NULL AND committed_credits+$2<=LEAST(credit_limit,COALESCE($3::integer,credit_limit)) RETURNING id`,[job,req.maximum,this.absoluteLimit ?? null]);
       if (!r.rows.length) throw new ResearchBudgetError('budget_exceeded',`Firecrawl request needs up to ${req.maximum} credits and cannot fit this Research Job. Stop; explicit owner approval is required to increase its budget.`);
       await db.query("INSERT INTO firecrawl_requests (id,research_job_id,endpoint,cache_key,source_urls,reserved_credits,state) VALUES ($1,$2,$3,$4,$5,$6,'reserved')",[id,job,req.path,req.key,JSON.stringify(req.urls),req.maximum]);
       await db.query('COMMIT');

@@ -131,3 +131,13 @@ test('concurrent calls on one transport run sequentially and cannot race the bud
   const results=await Promise.allSettled(Array.from({length:10},(_,i)=>fc.request(job,'/v2/scrape',{url:`https://official.example/concurrent-${i}`},fallback)));
   assert.equal(maxInFlight,1);assert.equal(calls,8);assert.equal(results.filter(x=>x.status==='fulfilled').length,8);assert.equal((await store.snapshot(job)).committed,24);
 });
+
+test('an absolute director limit is enforced atomically even for a budget with a larger owner-approved limit',async()=>{
+  const {db,pool,store}=await database();
+  await store.ensure(job);
+  await db.query('UPDATE research_jobs SET credit_limit=100,approved_at=now(),committed_credits=24 WHERE id=$1',[job]);
+  let calls=0;
+  const director=api(new PgResearchBudget(pool,25),async()=>{calls++;return Response.json(page());});
+  await assert.rejects(director.request(job,'/v2/scrape',{url:'https://official.example/full'},fallback),/cannot fit/);
+  assert.equal(calls,0);
+});

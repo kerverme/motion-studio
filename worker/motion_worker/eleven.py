@@ -60,6 +60,17 @@ def validated_alignment(data, text):
     raise ElevenError('Missing or invalid narration alignment; accurate Thai timing is required')
 
 
+def validate_dialogue_segments(data, voice_id, align):
+    segments = data.get('voice_segments')
+    if not isinstance(segments, list) or not segments:
+        raise ElevenError('v4 response missing voice_segments')
+    for segment in segments:
+        a, b = segment.get('start_time_seconds'), segment.get('end_time_seconds')
+        lo, hi = segment.get('character_start_index'), segment.get('character_end_index')
+        if segment.get('voice_id') != voice_id or segment.get('dialogue_input_index') != 0 or not all(isinstance(t, (int,float)) and math.isfinite(t) for t in (a,b)) or not 0 <= a <= b or not isinstance(lo,int) or not isinstance(hi,int) or not 0 <= lo <= hi <= len(align['characters']):
+            raise ElevenError('Invalid v4 voice segment timing or speaker identity')
+
+
 def tts_with_timestamps(text, voice_id, model_id='eleven_v4', language_code='th', stability=0.4, similarity_boost=0.75,
                         previous_text=None, next_text=None, speed=None):
     if not voice_id:
@@ -88,14 +99,7 @@ def tts_with_timestamps(text, voice_id, model_id='eleven_v4', language_code='th'
     if not audio:
         raise ElevenError('Narration audio missing')
     if model_id == 'eleven_v4':
-        segments = data.get('voice_segments')
-        if not isinstance(segments, list) or not segments:
-            raise ElevenError('v4 response missing voice_segments')
-        for segment in segments:
-            a, b = segment.get('start_time_seconds'), segment.get('end_time_seconds')
-            lo, hi = segment.get('character_start_index'), segment.get('character_end_index')
-            if segment.get('voice_id') != voice_id or segment.get('dialogue_input_index') != 0 or not all(isinstance(t, (int,float)) and math.isfinite(t) for t in (a,b)) or not 0 <= a <= b or not isinstance(lo,int) or not isinstance(hi,int) or not 0 <= lo <= hi <= len(align['characters']):
-                raise ElevenError('Invalid v4 voice segment timing or speaker identity')
+        validate_dialogue_segments(data,voice_id,align)
     meta.update(model_id=model_id, alignment_source=origin, voice_segments=data.get('voice_segments', []),
                 speed_ignored=model_id == 'eleven_v4' and bool(speed and speed != 1))
     return audio, align, meta
