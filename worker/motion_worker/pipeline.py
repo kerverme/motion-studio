@@ -50,6 +50,8 @@ def cached_audio(ctx, kind, payload, est_credits, gen, ext='mp3'):
     hit = ctx.db.cache_get(key)
     if hit and ctx.store.exists(hit['storage_key']):
         return hit['storage_key'], hit['meta'], 0.0, True
+    from .text_video import check_active
+    check_active(ctx)
     ctx.spend_check(est_credits)
     data, meta = gen()
     skey = f"cache/{kind}/{key.split(':')[1]}.{ext}"
@@ -101,7 +103,9 @@ def stage_audio(ctx):
         ctx.spend_check(len(text) * 1.05)
         chunks = [text] if len(text) <= (2000 if v.get('model_id', 'eleven_v4') == 'eleven_v4' else 4500) else [s['text'] for s in segs]
         parts, chars, starts, ends, offset, metas = [], '', [], [], 0.0, []
+        from .text_video import check_active
         for i, chunk in enumerate(chunks):
+            check_active(ctx)
             a, al, m = eleven.tts_with_timestamps(chunk, v['voice_id'], v.get('model_id', 'eleven_v4'), v.get('language_code', 'th'),
                                                   v.get('stability', 0.4), v.get('similarity_boost', 0.75),
                                                   previous_text=chunks[i - 1] if i else None, next_text=chunks[i + 1] if i + 1 < len(chunks) else None,

@@ -48,11 +48,11 @@ class DB:
     def status(self, job, status, stage=None, progress=None, message=None, data=None, level='info'):
         updated = self.q("""UPDATE jobs SET status=%s, stage=COALESCE(%s, stage), progress=COALESCE(%s, progress), updated_at=now(),
                   finished_at=CASE WHEN %s IN ('READY_TO_POST','FAILED') THEN now() ELSE finished_at END WHERE id=%s
-                  AND (status<>'CANCELLED' OR (kind<>'text_video' AND NOT package ? 'creative')) RETURNING id""",
+                  AND status<>'CANCELLED' RETURNING id""",
                (status, stage, progress, status, job['id']))
-        if (job.get('kind') == 'text_video' or job.get('package', {}).get('creative')) and not updated:
+        if not updated:
             from .text_video import JobCancelled
-            raise JobCancelled('Text to Video was cancelled')
+            raise JobCancelled('Production job was cancelled')
         if job.get('episode_id'):
             self.q('UPDATE episodes SET status=%s, updated_at=now() WHERE id=%s', (status, job['episode_id']))
         if message:
@@ -90,9 +90,9 @@ class DB:
     def fail(self, job, error, final):
         if final:
             updated = self.q("""UPDATE jobs SET status='FAILED', error=%s, locked_by=NULL, locked_until=NULL, updated_at=now(), finished_at=now() WHERE id=%s
-                               AND (status<>'CANCELLED' OR (kind<>'text_video' AND NOT package ? 'creative')) RETURNING id""",
+                               AND status<>'CANCELLED' RETURNING id""",
                    (error[:4000], job['id']))
-            if (job.get('kind') == 'text_video' or job.get('package', {}).get('creative')) and not updated:
+            if not updated:
                 return
             if job.get('episode_id'):
                 self.q("UPDATE episodes SET status='FAILED', updated_at=now() WHERE id=%s", (job['episode_id'],))

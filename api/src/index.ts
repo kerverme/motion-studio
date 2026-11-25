@@ -247,6 +247,14 @@ async function createJob(body: any, idem: string | null): Promise<{ status: numb
   const cl = await pool.connect();
   try {
     await cl.query('BEGIN');
+    // Serialize legacy draft submission with removal, including the gap before job_id is linked.
+    if (idem && /^draft:[0-9a-f-]{36}$/i.test(idem)) {
+      const draft = await cl.query('SELECT removed_at FROM drafts WHERE id=$1 FOR UPDATE',[idem.slice(6)]);
+      if (draft.rows[0]?.removed_at) {
+        await cl.query('ROLLBACK');
+        return c.json({error:'ร่างถูกลบแล้ว'},409);
+      }
+    }
     let episodeId: string | null = null;
     if (kind === 'episode') {
       const p = pkg as Pkg;
@@ -331,6 +339,7 @@ app.get('/jobs/:id/assets', requireAuth, async (c) => {
 async function retryJob(id: string): Promise<{ ok: boolean; status?: string; error?: string }> {
   const j = await loadJob(id);
   if (!j) return { ok: false, error: 'not found' };
+  if (j.removed_at) return {ok:false,error:'งานถูกลบแล้ว'};
   if (!['FAILED', 'CANCELLED'].includes(j.status)) return { ok: false, error: `job is ${j.status}` };
   if(j.package?.creative)return retryCreativeJob(pool,id);
   if (j.kind === 'text_video') return {ok:false,error:'เปิด Text to Video แล้วตรวจราคาซ่อมเฉพาะส่วนและยืนยันใหม่ก่อนลองต่อ'};

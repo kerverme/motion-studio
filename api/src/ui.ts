@@ -11,6 +11,8 @@ import * as notion from './notion.js';
 import { analytics, syncPosts, reconcile } from './metrics.js';
 import {IS_STUDIO_DRAFT} from './studio-draft-queries.js';
 
+import {removalRequest, removeStudioItems} from './studio-removal.js';
+
 const env = process.env;
 const UI_PASSWORD = env.MOTION_UI_PASSWORD || '';
 const SESSION_SECRET = env.MOTION_SESSION_SECRET || createHash('sha256').update(`${env.MOTION_API_TOKEN || ''}|${UI_PASSWORD}|ui`).digest('hex');
@@ -188,6 +190,13 @@ export function registerUi(app: Hono, pool: pg.Pool, deps: { API_TOKEN: string; 
     return c.json({ok:true,ui_status:'deleted',notion:sync});
   });
 
+  app.post('/app/api/studio/remove', requireUi, async c => {
+    const input = removalRequest.safeParse(await c.req.json().catch(() => null));
+    if (!input.success) return c.json({error:'เลือกรายการและยืนยันการลบ'},422);
+    const result = await removeStudioItems(pool,input.data);
+    return result.ok ? c.json(result) : c.json(result,409);
+  });
+
   // ---- jobs in progress / failed
   app.get('/app/api/working', requireUi, async (c) => {
     const r = await pool.query(`SELECT j.id, j.kind, j.status, j.stage, j.progress, j.error, j.attempts, j.max_attempts, j.created_at, j.updated_at, j.locked_until,
@@ -197,7 +206,7 @@ export function registerUi(app: Hono, pool: pg.Pool, deps: { API_TOKEN: string; 
         COALESCE((SELECT json_agg(x ORDER BY x.id) FROM (SELECT id, status, level, message, created_at FROM job_events WHERE job_id=j.id ORDER BY id DESC LIMIT 8) x), '[]'::json) AS events,
         (SELECT max(created_at) FROM job_events WHERE job_id=j.id) AS last_event_at
       FROM jobs j LEFT JOIN episodes e ON e.id = j.episode_id LEFT JOIN drafts d ON d.job_id = j.id
-      WHERE j.kind IN ('episode','text_video','lemo') AND (j.status NOT IN ('READY_TO_POST','CANCELLED')
+      WHERE j.removed_at IS NULL AND j.kind IN ('episode','text_video','lemo') AND (j.status NOT IN ('READY_TO_POST','CANCELLED')
          OR (j.status='CANCELLED' AND j.updated_at > now() - interval '2 days'))
       ORDER BY j.created_at DESC LIMIT 30`);
     // drafts an LLM is writing right now (the only place an LLM runs)

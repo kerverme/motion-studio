@@ -296,6 +296,12 @@ details summary{cursor:pointer;color:var(--ink-2);font-size:14px;margin-top:10px
 .ideas button{all:unset;cursor:pointer;font-size:13px;color:var(--ink-2);border:1px dashed var(--line);border-radius:999px;padding:3px 11px}
 .ideas button:hover{color:var(--ink);border-color:var(--ink-3)}
 .drafts{margin-top:30px}
+.remove-bar,.remove-bar label,.job-remove{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.remove-bar{margin:10px 0 14px}.remove-bar[hidden]{display:none}
+.remove-bar input,.draft-row input,.job-remove input{width:18px;height:18px;accent-color:var(--accent);cursor:pointer}
+.remove-btn{color:var(--bad)}.draft-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:8px;align-items:center;border-bottom:1px solid var(--line)}
+.draft-row .draft{border:0;grid-template-columns:minmax(0,1fr) auto}.job-remove{grid-column:1/-1}
+@media(max-width:560px){.draft-row{gap:4px}.draft-row .draft{grid-template-columns:minmax(0,1fr)}.draft-row .chip{justify-self:start}.draft-row .sub{grid-column:1}.draft-row .remove-btn{padding:6px}}
 .drafts h2{font-size:16px;font-weight:600;margin:0 0 6px}
 .draft{all:unset;cursor:pointer;display:grid;grid-template-columns:1fr auto;gap:2px 16px;padding:14px 4px;border-bottom:1px solid var(--line);width:100%;box-sizing:border-box}
 .draft:hover{background:var(--line-2)}
@@ -434,7 +440,7 @@ function login(msg){
 const VIEWS = [['create','สร้าง'],['text_video','Text to Video'],['community','Community'],['ready','พร้อมใช้'],['used','เสร็จแล้ว'],['working','กำลังทำ'],['analytics','สถิติ']];
 let mainEl;
 function frame(){
-  const nav = h('nav',{class:'nav','aria-label':'หมวด'}, VIEWS.map(([k,l])=>h('button',{'aria-current':S.view===k?'page':false,on:{click:()=>go(k)}}, h('span',{},l), h('span',{class:'n'}, k!=='analytics' && S.counts[k]!=null ? S.counts[k] : '\u00a0'))));
+  const nav = h('nav',{class:'nav','aria-label':'หมวด'}, VIEWS.map(([k,l])=>h('button',{'data-view':k,'aria-current':S.view===k?'page':false,on:{click:()=>go(k)}}, h('span',{},l), h('span',{class:'n'}, k!=='analytics' && S.counts[k]!=null ? S.counts[k] : '\u00a0'))));
   nav.append(h('a',{href:'https://video.cloudbath.co/',class:'btn quiet'},'Reverse Video'));
   mainEl = h('main',{id:'main'});
   put(root, h('div',{class:'app'},
@@ -443,12 +449,15 @@ function frame(){
     h('div',{}, h('div',{class:'mobile-top'}, h('div',{class:'brand'},'Motion Studio'), h('button',{class:'btn quiet',on:{click:logout}},'ออก')), mainEl)));
 }
 async function logout(){ await api('/app/api/logout',{method:'POST'}); login(); }
-function go(v){ S.view=v; S.liveOn=false; try{ localStorage.setItem('ms.view',v); }catch{} load(); }
+function go(v){ if (v!==S.view) removalSelections[S.view]?.clear(); S.view=v; S.liveOn=false; try{ localStorage.setItem('ms.view',v); }catch{} load(); }
 
+let loadSeq=0;
 async function load(){
+  const seq=++loadSeq;
   try{
     if (S.view==='create'){
       const [st, dr, e, ch] = await Promise.all([api('/app/api/studio/status'), api('/app/api/studio/drafts'), api('/app/api/episodes?tab=ready'), api('/app/api/studio/characters')]);
+      if(seq!==loadSeq)return;
       CHARS = ch.characters||[]; S.formats=st.formats; S.counts={...e.counts, create: dr.drafts.filter(d=>d.status==='ready').length||null}; frame(); studio(st, dr.drafts);
     } else if (S.view==='text_video'){
       const [cfg, plans] = await Promise.all([api('/app/api/text-video/config'),api('/app/api/text-video/plans')]);frame();renderTextVideo(cfg,plans.plans);
@@ -458,8 +467,9 @@ async function load(){
     } else if (S.view==='ready' || S.view==='used'){
       const r = await api('/app/api/episodes?tab='+S.view); S.counts=r.counts; S.eps=r.episodes; frame(); clips();
     } else if (S.view==='working'){
-      const [w, e] = await Promise.all([api('/app/api/working'), api('/app/api/episodes?tab=ready')]); S.counts={...S.counts, ...e.counts, working: (w.jobs.length + (w.drafts||[]).length) || null};
-      if (!S.liveOn) liveShell(); working(w); if (!LIVE.raf) LIVE.raf = requestAnimationFrame(tick);
+      const [w, e] = await Promise.all([api('/app/api/working'), api('/app/api/episodes?tab=ready')]); if(seq!==loadSeq)return; S.counts={...S.counts, ...e.counts, working: (w.jobs.length + (w.drafts||[]).length) || null};
+      if (!S.liveOn) liveShell(); working(w);
+      const badge=document.querySelector('.nav [aria-current="page"] .n'); if(badge)badge.textContent=S.counts.working||''; if (!LIVE.raf) LIVE.raf = requestAnimationFrame(tick);
     } else {
       const [a, i, e] = await Promise.all([api('/app/api/analytics?days='+S.days), api('/app/api/integrations'), api('/app/api/episodes?tab=ready')]);
       S.counts=e.counts; frame(); analytics(a, i);
@@ -903,6 +913,92 @@ const NARRATION_PRESETS = [
 ];
 const narrationLabel=id=>(NARRATION_PRESETS.find(x=>x.id===id)||NARRATION_PRESETS[0]).label;
 
+const removalSelections = {create:new Set(), working:new Set()};
+let removing = false;
+function removalControls(view) {
+  const selected = removalSelections[view];
+  let visible = new Map();
+  const boxes = new Map();
+  const all = h('input',{type:'checkbox',on:{change:()=>{
+    for (const key of visible.keys()) all.checked ? selected.add(key) : selected.delete(key);
+    sync();
+  }}});
+  const bulk = h('button',{type:'button',class:'btn remove-btn',on:{click:()=>remove([...selected])}});
+  const bar = h('div',{class:'remove-bar'},h('label',{},all,'เลือกทั้งหมดที่แสดง'),bulk);
+  function sync() {
+    for (const key of selected) if (!visible.has(key)) selected.delete(key);
+    for (const [key,box] of boxes) {
+      if (!visible.has(key)) boxes.delete(key);
+      else box.checked = selected.has(key);
+    }
+    all.checked = visible.size>0 && selected.size===visible.size;
+    all.indeterminate = selected.size>0 && !all.checked;
+    bulk.textContent = selected.size ? 'ลบที่เลือก ('+selected.size+')' : 'ลบที่เลือก';
+    bulk.disabled = !selected.size || removing;
+    bar.hidden = !visible.size;
+  }
+  async function remove(keys) {
+    if (removing || !keys.length) return;
+    const what = keys.length===1 ? '“'+visible.get(keys[0])+'”' : keys.length+' รายการ';
+    if (!confirm('ลบ '+what+'?\nงานที่ยังผลิตไม่เสร็จจะถูกยกเลิก ค่าใช้จ่ายที่ส่งไปแล้วอาจยังเกิดขึ้น คลิปที่ผลิตเสร็จแล้วจะยังอยู่ในคลัง')) return;
+    removing = true; sync();
+    try {
+      const ids = prefix=>keys.filter(key=>key.startsWith(prefix)).map(key=>key.slice(1));
+      await api('/app/api/studio/remove',{method:'POST',body:JSON.stringify({confirm:true,draft_ids:ids('d'),job_ids:ids('j')})});
+      keys.forEach(key=>selected.delete(key));
+      toast('ลบแล้ว '+keys.length+' รายการ');
+      if (S.view===view) {
+        if (view==='working') await load();
+        else {
+          await refreshDraftRows();
+          const w=await api('/app/api/working');
+          if (S.view==='create') {
+            const badge=document.querySelector('.nav [data-view="working"] .n');
+            S.counts.working=w.jobs.length+w.drafts.length;
+            if(badge)badge.textContent=S.counts.working||'';
+          }
+        }
+      }
+    } catch (error) { toast(error.message); }
+    finally { removing=false; sync(); }
+  }
+  function row(key, title) {
+    const box=h('input',{type:'checkbox','aria-label':'เลือก '+title,on:{change:()=>{
+      box.checked ? selected.add(key) : selected.delete(key); sync();
+    }}});
+    boxes.set(key,box);box.checked=selected.has(key);
+    const del=h('button',{type:'button',class:'btn quiet remove-btn','aria-label':'ลบ '+title,on:{click:()=>remove([key])}},'ลบ');
+    return {box,del};
+  }
+  return {bar,row,show(items){visible=new Map(items);sync();}};
+}
+function draftList(drafts) {
+  const controls=removalControls('create');
+  const title=d=>d.title||d.topic;
+  controls.show(drafts.map(d=>['d'+d.id,title(d)]));
+  S.studioBusy=drafts.some(inProgress);
+  return drafts.length ? h('section',{class:'drafts',id:'recent-drafts'}, h('h2',{},'ร่างล่าสุด'),controls.bar,drafts.map(d=>{
+    const [cls,txt]=draftState(d), {box,del}=controls.row('d'+d.id,title(d));
+    const open=h('button',{class:'draft',on:{click:()=>openDraft(d.id)}},
+      h('b',{},d.source_type==='community'?'[Community] ':'',title(d)),h('span',{class:'chip '+cls},inProgress(d)?h('i',{class:'pulse','aria-hidden':'true'}):'',txt),
+      h('span',{class:'sub'},fmtD(d.created_at)+(d.last?' · '+d.last:'')));
+    return h('div',{class:'draft-row'},box,open,del);
+  })) : h('section',{class:'empty',id:'recent-drafts'},h('h2',{},'ยังไม่มีร่าง'),h('p',{},'พิมพ์หัวข้อด้านบน แล้วระบบจะเริ่มค้นข้อมูลให้'));
+}
+let draftRefresh=0;
+async function refreshDraftRows(){
+  const seq=++draftRefresh;
+  const {drafts}=await api('/app/api/studio/drafts');
+  if (seq!==draftRefresh || S.view!=='create') return;
+  const rows=document.getElementById('recent-drafts');
+  if (!rows) return;
+  const ready=drafts.filter(d=>d.status==='ready').length;
+  S.counts.create=ready||null;
+  const badge=document.querySelector('.nav [aria-current="page"] .n');
+  if(badge) badge.textContent=ready||'';
+  rows.replaceWith(draftList(drafts));
+}
+
 function studio(st, drafts){
   S.studioBusy = drafts.some(inProgress);
   const head = h('div',{class:'head'}, h('div',{}, h('h1',{},'สร้างคลิปใหม่'), h('p',{},'เลือกโหมด ใส่เรื่องหรือแหล่งข้อมูล แล้วให้ AI ตรวจข้อมูล เขียนบท และวาดฉากตามเนื้อหาก่อนผลิต')));
@@ -1209,12 +1305,7 @@ function studio(st, drafts){
     h('p',{class:'sub'},'ตรวจรายการและยืนยันก่อนเริ่มผลิต'),
     h('div',{class:'row'}, h('span',{class:'sub'}, 'วันนี้ใช้ไป '+st.drafts_today+' จาก '+st.daily_limit+' ร่าง · ค่าเสียงไม่เกิน '+fmtN(st.max_credits)+' เครดิต/คลิป'), go),
     err);
-  const list = drafts.length ? h('div',{class:'drafts'}, h('h2',{},'ร่างล่าสุด'), drafts.map(d=>{
-    const [cls, txt] = draftState(d);
-    return h('button',{class:'draft',on:{click:()=>openDraft(d.id)}},
-      h('b',{}, d.source_type==='community'?'[Community] ':'', d.title||d.topic), h('span',{class:'chip '+cls}, inProgress(d)?h('i',{class:'pulse','aria-hidden':'true'}):'', txt),
-      h('span',{class:'sub'}, fmtD(d.created_at)+(d.last?' · '+d.last:'')));
-  })) : h('div',{class:'empty'}, h('h2',{},'ยังไม่มีร่าง'), h('p',{},'พิมพ์หัวข้อด้านบน แล้วระบบจะเริ่มค้นข้อมูลให้'));
+  const list = draftList(drafts);
   put(mainEl, head, composer, list);
 }
 
@@ -1468,9 +1559,10 @@ const fmtDur = sec => { sec=Math.max(0,Math.round(sec)); const h=Math.floor(sec/
 
 function liveShell(){
   LIVE.cards.clear();
+  LIVE.controls=removalControls('working');
   frame();
   LIVE.box = h('div',{id:'live'});
-  put(mainEl, h('div',{class:'head'}, h('div',{}, h('h1',{},'กำลังทำ'), h('p',{},'อัปเดตสดทุก 2 วินาที: ใครกำลังทำอะไรอยู่ และคืบหน้าแค่ไหน'))), LIVE.box);
+  put(mainEl, h('div',{class:'head'}, h('div',{}, h('h1',{},'กำลังทำ'), h('p',{},'อัปเดตสดทุก 2 วินาที: ใครกำลังทำอะไรอยู่ และคืบหน้าแค่ไหน'))), LIVE.controls.bar, LIVE.box);
   S.liveOn = true;
   if (!LIVE.raf) LIVE.raf = requestAnimationFrame(tick);
 }
@@ -1523,13 +1615,19 @@ function patchDraft(c, d){
 function working(w){
   LIVE.off = w.now ? Date.parse(w.now)-Date.now() : 0;
   const items = [...(w.drafts||[]).map(d=>({key:'d'+d.id, kind:'d', v:d})), ...w.jobs.map(j=>({key:'j'+j.id+((j.status==='FAILED'||j.status==='CANCELLED')?'x':''), kind:'j', v:j}))];
+  const itemTitle=x=>x.v.topic||x.v.title||x.v.id.slice(0,8);
+  LIVE.controls.show(items.map(x=>[x.kind+x.v.id,itemTitle(x)]));
   const keep = new Set(items.map(x=>x.key));
   for (const [k,c] of LIVE.cards) if (!keep.has(k)){ c.el.remove(); LIVE.cards.delete(k); }
   const empty = LIVE.box.querySelector('.empty');
   if (!items.length){ if (!empty) LIVE.box.append(h('div',{class:'empty'}, h('h2',{},'ไม่มีงานค้าง'), h('p',{},'ทุกคลิปทำเสร็จแล้ว'))); return; }
   if (empty) empty.remove();
   items.forEach((x,i)=>{
-    let c = LIVE.cards.get(x.key); if (!c){ c = mkCard(x.key); LIVE.cards.set(x.key,c); }
+    let c = LIVE.cards.get(x.key); if (!c){
+      c=mkCard(x.key); LIVE.cards.set(x.key,c);
+      const {box,del}=LIVE.controls.row(x.kind+x.v.id,itemTitle(x));
+      c.el.append(h('div',{class:'job-remove'},h('label',{},box,' เลือกงานนี้'),del));
+    }
     x.kind==='d' ? patchDraft(c, x.v) : patchJob(c, x.v);
     if (LIVE.box.children[i] !== c.el) LIVE.box.insertBefore(c.el, LIVE.box.children[i]||null);
   });
@@ -1655,7 +1753,7 @@ async function start(){
 start();
 setInterval(()=>{ if (S.view==='working' && !document.querySelector('.drawer') && !document.hidden) load(); }, 2000);
 setInterval(()=>{ if (S.view==='community' && S.commBusy && !document.querySelector('.drawer') && !(document.activeElement && /TEXTAREA|INPUT/.test(document.activeElement.tagName))) load(); }, 5000);
-setInterval(()=>{ if (S.view==='create' && S.studioBusy && !document.querySelector('.drawer') && !(document.activeElement && /TEXTAREA|INPUT/.test(document.activeElement.tagName))) load(); }, 5000);
+setInterval(()=>{ if (S.view==='create' && S.studioBusy && !removing && !document.querySelector('.drawer')) refreshDraftRows().catch(x=>toast(x.message)); }, 5000);
 </script>
 </body>
 </html>

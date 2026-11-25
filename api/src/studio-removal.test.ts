@@ -1,0 +1,46 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {readFileSync,readdirSync} from 'node:fs';
+import {Hono} from 'hono';
+import {PGlite} from '@electric-sql/pglite';
+
+test('owner can remove mixed selections atomically, including stuck work, without reviving jobs or touching finished clips',async t=>{
+  process.env.MOTION_UI_PASSWORD='test-local';
+  const {registerUi}=await import('./ui.js');
+  const db=new PGlite();
+  t.after(()=>db.close());
+  const dir=new URL('../migrations/',import.meta.url);
+  for(const f of readdirSync(dir).filter(f=>f.endsWith('.sql')).sort()) await db.exec(readFileSync(new URL(f,dir),'utf8'));
+  const query=(sql:string,args:any[]=[])=>db.query<any>(sql,args);
+  const row=async(sql:string,args:any[]=[]) => (await query(sql,args)).rows[0];
+  const app=new Hono();
+  registerUi(app,{query,connect:async()=>({query,release(){}})} as any,{API_TOKEN:'owner',retryJob:async()=>({ok:false})});
+  const headers={authorization:'Bearer owner','content-type':'application/json'};
+  const remove=(draft_ids:string[],job_ids:string[],confirm=true)=>app.request('/app/api/studio/remove',{method:'POST',headers,body:JSON.stringify({draft_ids,job_ids,confirm})});
+  const draft=async(status:string,job_id:string|null=null)=>(await row('INSERT INTO drafts(topic,status,job_id) VALUES ($1,$2,$3) RETURNING id',['test',status,job_id])).id;
+  const job=async(status:string)=>(await row('INSERT INTO jobs(status) VALUES ($1) RETURNING id',[status])).id;
+  const stuck=await job('FAILED'), active=await job('RENDERING'), done=await job('READY_TO_POST');
+  const submitted=await draft('submitted',active), finishedDraft=await draft('submitted',done), writing=await draft('writing');
+  const ep=(await row("INSERT INTO episodes(topic,title_th,notion_page_id) VALUES('x','x','keep') RETURNING id")).id;
+  await query('INSERT INTO publication_handoffs(episode_id,job_id) VALUES($1,$2)',[ep,done]);
+  // A failed repair may have delivered an older version. Removing the stalled job keeps that clip.
+  await query('INSERT INTO publication_handoffs(episode_id,job_id) VALUES($1,$2)',[ep,stuck]);
+  assert.equal((await app.request('/app/api/studio/remove',{method:'POST'})).status,401);
+  assert.equal((await remove([],[])).status,422);
+  assert.equal((await remove([writing],[],false)).status,422);
+  assert.equal((await remove([writing],[done])).status,409);
+  assert.equal((await row('SELECT status FROM drafts WHERE id=$1',[writing])).status,'writing');
+  const hidden=(await row(`INSERT INTO drafts(topic,creative) VALUES('reserve','{"reverse_project":1,"quote_id":2}') RETURNING id`)).id;
+  assert.equal((await remove([writing,hidden],[])).status,409);
+  for(let attempt=0;attempt<2;attempt++) assert.equal((await remove([writing,submitted,finishedDraft],[stuck,stuck])).status,200);
+  assert.equal((await row("SELECT count(*)::int n FROM jobs WHERE removed_at IS NOT NULL AND status='CANCELLED'")).n,2);
+  assert.equal((await row("SELECT count(*)::int n FROM job_events WHERE status='CANCELLED'")).n,2);
+  assert.equal((await row('SELECT status FROM jobs WHERE id=$1',[done])).status,'READY_TO_POST');
+  assert.equal((await row('SELECT notion_page_id FROM episodes WHERE id=$1',[ep])).notion_page_id,'keep');
+  assert.equal((await row('SELECT count(*)::int n FROM publication_handoffs WHERE episode_id=$1',[ep])).n,2);
+  const live=await (await app.request('/app/api/working',{headers})).json();
+  assert.deepEqual(live.jobs,[]);assert.deepEqual(live.drafts,[]);
+  await assert.rejects(query("UPDATE jobs SET status='RENDERING' WHERE id=$1",[active]),/removed_job_terminal/);
+  await assert.rejects(query("UPDATE drafts SET status='ready' WHERE id=$1",[writing]),/removed_draft_terminal/);
+  await assert.rejects(query('INSERT INTO publication_handoffs(episode_id,job_id) VALUES($1,$2)',[ep,active]),/removed job/);
+});

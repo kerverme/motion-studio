@@ -37,6 +37,7 @@ for (const repair of [false,true]) test(repair ? 'missing source repair delivers
     sql.push(query);
     if (query.includes("WHERE status IN ('researching','writing')")) return { rows: [], rowCount: 0 };
     if (query.includes("SELECT id FROM drafts WHERE status='queued'")) return { rows: status === 'queued' ? [{ id: row.id }] : [] };
+    if (query.startsWith('SELECT removed_at FROM drafts')) return {rows:[{removed_at:null}]};
     if (query.startsWith('SELECT * FROM drafts WHERE id=')) return { rows: [{ ...row, status }] };
     if (query.startsWith('SELECT id, draft FROM drafts')) return { rows: [] };
     if (query.startsWith('SELECT reference_image, thumb')) return { rows: [{ reference_image: 'data:image/jpeg;base64,cmVmZXJlbmNl', thumb: null }] };

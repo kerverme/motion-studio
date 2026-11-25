@@ -12,6 +12,7 @@ test('general mode and source text persist with Sol and survive rewrite; old cli
   const inserts:{sql:string,args:any[]}[]=[];
   const row={id,status:'ready',topic:'รูทีนตอนเช้า',note:null,story_mode:'general',source_text:source,model:'gpt-6.1-sol',reasoning:'medium',characters:[],style:'classic',music_mode:'default',trend_context:{suggestion_id:'test-preserved',trend_ids:['source-preserved'],sources:[]}};
   const pool={query:async(sql:string,args:any[]=[])=>{
+    if(sql.startsWith('UPDATE drafts SET log'))return {rows:[],rowCount:1};
     if(sql.startsWith('SELECT count(*)'))return {rows:[{n:0}]};
     if(sql.startsWith('SELECT * FROM drafts WHERE id='))return {rows:[row]};
     if(sql.startsWith('INSERT INTO drafts')){inserts.push({sql,args});return {rows:[{id}]};}

@@ -1014,8 +1014,9 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
   }
 
   const log = async (id: string, msg: string, status?: string) => {
-    await pool.query(`UPDATE drafts SET log = log || $2::jsonb, status = COALESCE($3, status), updated_at = now() WHERE id = $1`,
+    const written = await pool.query(`UPDATE drafts SET log = log || $2::jsonb, status = COALESCE($3, status), updated_at = now() WHERE id = $1 AND removed_at IS NULL`,
       [id, JSON.stringify([{ at: new Date().toISOString(), msg }]), status ?? null]);
+    if (written.rowCount === 0) throw Error('ร่างถูกลบแล้ว');
   };
 
   function prepareCreative(row:any){
@@ -1233,6 +1234,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       }
       const results: any[] = [];
       for (const u of uses) {
+        if ((await pool.query('SELECT removed_at FROM drafts WHERE id=$1',[id])).rows[0]?.removed_at) return;
         try {
           if (ARTWORK_TOOLS.some(t => t.name === u.name)) {
             if (!storyboard) throw new Error('Call plan_story before drawing assets');
@@ -1434,9 +1436,9 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
           await generate(next.id);
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
+          if ((await pool.query('SELECT removed_at FROM drafts WHERE id=$1',[next.id])).rows[0]?.removed_at) continue;
           console.error('studio', next.id, msg);
-          await pool.query("UPDATE drafts SET status='failed', error=$2, updated_at=now() WHERE id=$1", [next.id, msg.slice(0, 500)]);
-          await log(next.id, `ล้มเหลว: ${msg.slice(0, 160)}`);
+          await pool.query("UPDATE drafts SET status='failed', error=$2, log=log || $3::jsonb, updated_at=now() WHERE id=$1 AND removed_at IS NULL", [next.id, msg.slice(0,500), JSON.stringify([{at:new Date().toISOString(),msg:`ล้มเหลว: ${msg.slice(0,160)}`}])]);
         }
       }
     } finally {
@@ -1643,7 +1645,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const id = c.req.param('id');
     if (!isId(id)) return c.json({ error: 'not found' }, 404);
     const r = (await pool.query(`SELECT d.*, j.status AS job_status, j.progress AS job_progress, j.error AS job_error, e.number AS episode_number FROM drafts d
-      LEFT JOIN jobs j ON j.id = d.job_id LEFT JOIN episodes e ON e.id = d.episode_id WHERE d.id=$1 AND ${IS_STUDIO_DRAFT}`, [id])).rows[0];
+      LEFT JOIN jobs j ON j.id = d.job_id LEFT JOIN episodes e ON e.id = d.episode_id WHERE d.id=$1 AND d.removed_at IS NULL AND ${IS_STUDIO_DRAFT}`, [id])).rows[0];
     if (!r) return c.json({ error: 'not found' }, 404);
     const dr = r.draft ? { ...r.draft } : null;
     if (dr) { delete dr.research_seen; if (Array.isArray(dr.cast)) dr.cast = dr.cast.map((x: any) => { const { backdrop, ...rest } = x; return { ...rest, has_backdrop: !!backdrop }; }); }
@@ -1669,7 +1671,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
   app.get('/app/api/studio/drafts/:id/diagnostics', g, async (c) => {
     const id = c.req.param('id');
     if (!isId(id)) return c.json({error:'not found'},404);
-    const row = (await pool.query(`SELECT log,storyboard,artwork,problems FROM drafts WHERE id=$1 AND ${IS_STUDIO_DRAFT}`,[id])).rows[0];
+    const row = (await pool.query(`SELECT log,storyboard,artwork,problems FROM drafts WHERE id=$1 AND removed_at IS NULL AND ${IS_STUDIO_DRAFT}`,[id])).rows[0];
     if (!row) return c.json({error:'not found'},404);
     const responseId = String(c.req.query('response_id') || '');
     const allowed = (row.log || []).flatMap((x:any)=>String(x.msg || '').match(/resp_[a-zA-Z0-9_-]+/g) || []);
