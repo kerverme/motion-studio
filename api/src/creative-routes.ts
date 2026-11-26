@@ -22,6 +22,7 @@ export function registerCreative(app:Hono,pool:pg.Pool,deps:{guard:(c:Context,n:
       await cl.query('BEGIN');const r=(await cl.query(STUDIO_DRAFT_BY_ID + ' FOR UPDATE',[c.req.param('id')])).rows[0];
       if(!r?.creative||r.status!=='ready')throw Error('Only ready drafts can be edited');
       const settings=CreativeSettings.parse({...r.creative.settings,...b.settings});
+      if(settings.mode==='auto')delete settings.manual_style;
       if(settings.locked){settings.mode='manual';settings.manual_style=b.settings?.manual_style||r.creative.selection.selected.id;}
       if(r.creative.settings.locked&&b.settings?.manual_style&&b.settings.manual_style!==r.creative.settings.manual_style)throw Error('Unlock the style first');
       const board=structuredClone(r.storyboard);

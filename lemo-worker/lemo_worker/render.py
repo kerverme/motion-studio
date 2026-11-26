@@ -71,7 +71,7 @@ def stage_render(ctx, render=remote_render, code=generate_scene):
         for attempt in range(2):
             source=code(ctx,scene,duration,attempt,error)
             html=Path(ctx.fetch(source['source_key'],ctx.path('source',identity+f'-{attempt}.html'))).read_text()
-            html=typography.prepare_source(html)
+            html=typography.prepare_source(html,text_version)
             rendered_source=ctx.path('source',identity+'-render.html');Path(rendered_source).write_text(html)
             rendered_source_key=ctx.save('lemo_render_source',rendered_source,meta={'seg':scene['seg'],'typography_version':text_version})
             try:
@@ -132,7 +132,8 @@ def stage_recompose(ctx):
 def stage_retype(ctx, render=remote_render):
     """Re-render saved source in the verified sandbox. Never regenerate code or audio."""
     repair=ctx.r.get('TYPOGRAPHY_REPAIR',{})
-    if repair.get('version') not in typography.REPAIR_VERSIONS:raise RuntimeError('Unsupported scene typography repair')
+    text_version=repair.get('version')
+    if text_version not in typography.REPAIR_VERSIONS:raise RuntimeError('Unsupported scene typography repair')
     original={s['seg']:s for s in repair['previous']['LEMO_RENDER']['scenes']}
     plan=ctx.pkg['creative']['selection']['plan']['scenes']
     if not all(s['seg'] in original and ctx.store.exists(original[s['seg']]['source_key']) for s in plan):
@@ -146,21 +147,21 @@ def stage_retype(ctx, render=remote_render):
         start=0 if i==0 else T['timeline'][i]['s']
         end=T['timeline'][i+1]['s'] if i+1<len(T['timeline']) else T['end']
         duration=end-start
-        identity=digest({'source':digest(clean),'duration':duration,'typography':typography.VERSION,'renderer':os.environ.get('LEMO_SANDBOX_IMAGE')})
+        identity=digest({'source':digest(clean),'duration':duration,'typography':text_version,'renderer':os.environ.get('LEMO_SANDBOX_IMAGE')})
         saved=done.get(scene['seg'])
         if saved and saved['identity']==identity:
             parts.append(ctx.fetch(saved['video_key'],ctx.path('renders',identity,'video.mp4')));continue
         source=ctx.path('source',identity+'.html');Path(source).write_text(clean)
         source_key=ctx.save('lemo_source',source,meta={'seg':scene['seg'],'original_source_key':old['source_key'],'repair':'typography'})
-        html=typography.prepare_source(clean)
+        html=typography.prepare_source(clean,text_version)
         source=ctx.path('source',identity+'-render.html');Path(source).write_text(html)
-        render_source_key=ctx.save('lemo_render_source',source,meta={'seg':scene['seg'],'typography_version':typography.VERSION})
+        render_source_key=ctx.save('lemo_render_source',source,meta={'seg':scene['seg'],'typography_version':text_version})
         folder=ctx.path('renders',identity)
         render({'html':html,'duration':duration,'width':1080,'height':1920,'fps':30},folder)
         artifacts={}
         for name,kind in [('video.mp4','scene_video'),('preview-0.png','preview'),('preview-1.png','preview'),('preview-2.png','preview'),('metadata.json','render_metadata')]:
             artifacts[name]=ctx.save(kind,str(Path(folder)/name),f'{ctx.prefix}/lemo/{identity}/{name}',meta={'seg':scene['seg']})
-        done[scene['seg']]={**old,'identity':identity,'source_key':source_key,'original_source_key':old['source_key'],'render_source_key':render_source_key,'typography_version':typography.VERSION,'video_key':artifacts['video.mp4'],'previews':[artifacts[f'preview-{j}.png'] for j in range(3)],'metadata':json.loads((Path(folder)/'metadata.json').read_text())}
+        done[scene['seg']]={**old,'identity':identity,'source_key':source_key,'original_source_key':old['source_key'],'render_source_key':render_source_key,'typography_version':text_version,'video_key':artifacts['video.mp4'],'previews':[artifacts[f'preview-{j}.png'] for j in range(3)],'metadata':json.loads((Path(folder)/'metadata.json').read_text())}
         ctx.db.save_stage(ctx.job,'LEMO_RENDER',{'scenes':list(done.values())})
         ctx.db.status(ctx.job,'RENDERING','RENDERING',.25+.5*(i+1)/len(plan),f"Updated all scene text {i+1}/{len(plan)} using saved source")
         parts.append(str(Path(folder)/'video.mp4'))

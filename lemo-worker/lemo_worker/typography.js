@@ -1,6 +1,9 @@
 // Trusted, offline typography runtime injected before the generated scene.
 (() => {
   const family = 'Motion Kanit';
+  const version = '__TEXT_VERSION__';
+  const words = new Intl.Segmenter('th',{granularity:'word'});
+  const graphemes = new Intl.Segmenter('th',{granularity:'grapheme'});
   const weights = {headline: 800, body: 700, label: 700};
   const proportions = {headline: .104, body: .07, label: .052};
   let fontsReady = false, sceneReady = false, renderScene;
@@ -28,6 +31,7 @@
   }
   proto.measureText = function (text) { font(this); return measure.call(this, text); };
   function paint(ctx, method, text, x, y, maxWidth) {
+    if (version==='all-text-kanit-v2') throw Error('Draw scene text with MotionText.drawRole so its role and safe area are known');
     ctx.save();
     try {
       font(ctx);
@@ -47,37 +51,73 @@
   }
   proto.fillText = function (text, x, y, maxWidth) { return paint(this, fill, text, x, y, maxWidth); };
   proto.strokeText = function (text, x, y, maxWidth) { return paint(this, stroke, text, x, y, maxWidth); };
-  window.MotionText = Object.freeze({ready, version: 'all-text-kanit-v2', drawRole(ctx, text, x, y, options = {}) {
+  window.MotionText = Object.freeze({ready, version, drawRole(ctx, text, x, y, options = {}) {
     const {role = 'label', size, color = '#193D4E', maxWidth, align = 'center'} = options;
     if (!Object.hasOwn(proportions, role) || !['left', 'center', 'right'].includes(align)) throw Error('Invalid text role or alignment');
-    const shortEdge = Math.min(innerWidth, innerHeight);
-    // Account for both canvas backing resolution and drawing transforms.
-    const transform = ctx.getTransform(), bounds = ctx.canvas.getBoundingClientRect();
-    const pixelScale = Math.min(Math.hypot(transform.a, transform.b) * bounds.width / ctx.canvas.width,
-      Math.hypot(transform.c, transform.d) * bounds.height / ctx.canvas.height);
-    if (!(pixelScale > 0)) throw Error('Draw readable text on a visible canvas');
-    const minimum = Math.ceil(shortEdge * proportions[role] / pixelScale);
-    const limit = maxWidth ?? Math.floor(innerWidth * .88 / pixelScale);
-    if (!Number.isFinite(limit) || limit <= 0) throw Error('Invalid text width');
+    const canvas = ctx.canvas, bounds = canvas.getBoundingClientRect();
+    const sx = bounds.width / canvas.width, sy = bounds.height / canvas.height;
+    const m = ctx.getTransform(), zoom = Math.min(Math.hypot(m.a*sx, m.b*sy), Math.hypot(m.c*sx, m.d*sy));
+    if (!(zoom > 0)) throw Error('Draw readable text on a visible canvas');
+    const edge = Math.min(innerWidth, innerHeight), margin = edge * .04;
+    const left = Math.max(0,-bounds.left)+margin, right = Math.min(bounds.width,innerWidth-bounds.left)-margin;
+    const top = Math.max(0,-bounds.top)+margin, bottom = Math.min(bounds.height,innerHeight*.8-bounds.top)-margin;
+    const limit = Math.min(right-left, maxWidth == null ? edge*.88 : maxWidth*Math.hypot(m.a*sx,m.b*sy));
+    if (!(limit > 0) || !Number.isFinite(limit)) throw Error('Invalid text width');
+    const minimum = Math.ceil(edge * proportions[role]);
+    let pixels = Math.max(minimum, Number.isFinite(size) ? Math.ceil(size*zoom) : minimum);
     ctx.save();
     try {
-      let fontSize = Math.max(minimum, Number.isFinite(size) ? Math.ceil(size) : minimum);
-      const apply = () => { ctx.font = `${weights[role]} ${fontSize}px "${family}"`; };
+      // The anchor follows the camera. Layout in display pixels keeps the letters upright and readable.
+      ctx.setTransform(1/sx,0,0,1/sy,0,0);
+      const apply=()=>{ctx.font=`${weights[role]} ${pixels}px "${family}"`;};
       apply();
-      const width = measure.call(ctx, text).width;
-      if (width > limit) {
-        fontSize = Math.max(minimum, Math.floor(fontSize * limit / width));
-        apply();
+      const paragraphs=String(text).split(/\r?\n/);
+      const width=s=>measure.call(ctx,s).width;
+      const widest=Math.max(...paragraphs.map(width));
+      if(widest>limit){pixels=Math.max(minimum,Math.floor(pixels*limit/widest));apply();}
+      const lines=[];
+      for(const paragraph of paragraphs){
+        let line='';
+        const append=part=>{
+          if(line && width(line+part)>limit){lines.push(line.trimEnd());line='';}
+          line+=line ? part : part.trimStart();
+        };
+        for(const {segment} of words.segment(paragraph)){
+          if(width(segment)<=limit) append(segment);
+          else for(const {segment:g} of graphemes.segment(segment)){
+            if(width(g)>limit) throw Error('A character cannot fit the text area');
+            append(g);
+          }
+        }
+        lines.push(line.trimEnd());
       }
-      if (measure.call(ctx, text).width > limit) throw Error(`The ${role} cannot fit at readable size. Shorten or wrap it.`);
-      ctx.textAlign = align;
-      ctx.textBaseline = 'middle';
-      ctx.shadowBlur = ctx.shadowOffsetX = ctx.shadowOffsetY = 0;
-      ctx.fillStyle = color;
-      fill.call(ctx, text, x, y);
-      return fontSize;
+      ctx.textAlign=align;ctx.textBaseline='middle';
+      const metrics=lines.map(line=>measure.call(ctx,line));
+      const leading=Math.ceil(pixels*1.5);
+      const ascent=Math.max(...metrics.map(v=>v.actualBoundingBoxAscent),pixels*.55);
+      const descent=Math.max(...metrics.map(v=>v.actualBoundingBoxDescent),pixels*.5);
+      const height=ascent+descent+(lines.length-1)*leading;
+      if(height>bottom-top)throw Error('Shorten the copy or split it across scenes');
+      const y0=Math.max(top+ascent,Math.min(bottom-height+ascent,(m.b*x+m.d*y+m.f)*sy-(lines.length-1)*leading/2));
+      ctx.shadowBlur=ctx.shadowOffsetX=ctx.shadowOffsetY=0;
+      ctx.fillStyle=color;
+      const hex=String(ctx.fillStyle).match(/^#([0-9a-f]{6})$/i);
+      if(!hex)throw Error('Use an opaque text color');
+      const rgb=hex[1].match(/../g).map(v=>parseInt(v,16)/255).map(v=>v<=.04045?v/12.92:((v+.055)/1.055)**2.4);
+      ctx.strokeStyle=rgb[0]*.2126+rgb[1]*.7152+rgb[2]*.0722>.179?'#000000':'#ffffff';
+      ctx.lineJoin='round';ctx.lineWidth=Math.max(2,pixels*.075);
+      for(const [i,line] of lines.entries()){
+        const ink=metrics[i],anchor=(m.a*x+m.c*y+m.e)*sx;
+        const xx=Math.max(left+ink.actualBoundingBoxLeft,Math.min(right-ink.actualBoundingBoxRight,anchor));
+        stroke.call(ctx,line,xx,y0+i*leading);
+        fill.call(ctx,line,xx,y0+i*leading);
+      }
+      return pixels/zoom;
     } finally { ctx.restore(); }
   }, draw(ctx, text, x, y, size = 74, color = '#193D4E', outline = null, maxWidth = 960) {
+    if (version==='all-text-kanit-v2') {
+      return this.drawRole(ctx,text,x,y,{role:size>=72?'headline':size>=50?'body':'label',size,color:outline||color,maxWidth});
+    }
     ctx.save();
     try {
       ctx.font = `${size >= 72 ? 800 : 700} ${Math.max(48, size)}px "${family}"`;

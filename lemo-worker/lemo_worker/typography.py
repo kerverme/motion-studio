@@ -28,11 +28,11 @@ def bind_motion_text_imports(html):
                   lambda m: m[1] + re.sub(pattern, bind, m[2]) + m[3], html, flags=re.I)
 
 
-def prepare_source(html):
+def prepare_source(html, version=LEGACY_VERSION):
     if MARKER in html:
         raise ValueError('Source already contains a typography runtime; use its original source')
     html = bind_motion_text_imports(html)
-    js = Path(__file__).with_suffix('.js').read_text()
+    js = Path(__file__).with_suffix('.js').read_text().replace('__TEXT_VERSION__', version)
     for weight in (700, 800):
         js = js.replace(f'__KANIT_{weight}__', base64.b64encode((Path(FD)/f'Kanit-{weight}.ttf').read_bytes()).decode())
     licence = (Path(FD)/'OFL-Kanit.txt').read_text().replace('--', '—')

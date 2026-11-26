@@ -51,16 +51,24 @@ def run(ctx):
     ctx.db.release(ctx.job)
 
 
+def claim_job(db, worker_id):
+    # The prepared result descriptor stays stable when migrations add job columns.
+    return db.one("""UPDATE jobs SET locked_by=%s,locked_until=now()+interval '10 minutes',attempts=attempts+1
+          WHERE id=(SELECT id FROM jobs WHERE kind='lemo' AND status NOT IN ('READY_TO_POST','FAILED','CANCELLED')
+          AND (locked_until IS NULL OR locked_until<now()) ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING id, episode_id, kind, status, stage, package, stage_results, budget_credits, used_credits, attempts, max_attempts""",(worker_id,))
+
+
 def main():
     signal.signal(signal.SIGTERM,lambda *_:STOP.set());signal.signal(signal.SIGINT,lambda *_:STOP.set())
     threading.Thread(target=HTTPServer(('0.0.0.0',int(os.environ.get('PORT','8080'))),Health).serve_forever,daemon=True).start()
-    db=None;store=None
+    db=None;store=None;queue_ready=False
     while not STOP.is_set():
         if not enabled():STOP.wait(5);continue
         if db is None:db=DB();store=get_storage()
-        job=db.one("""UPDATE jobs SET locked_by=%s,locked_until=now()+interval '10 minutes',attempts=attempts+1
-          WHERE id=(SELECT id FROM jobs WHERE kind='lemo' AND status NOT IN ('READY_TO_POST','FAILED','CANCELLED')
-          AND (locked_until IS NULL OR locked_until<now()) ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING *""",('lemo:'+config.WORKER_ID,))
+        job=claim_job(db,'lemo:'+config.WORKER_ID)
+        if not queue_ready:
+            print('Lemo queue poll succeeded',flush=True)
+            queue_ready=True
         if not job:STOP.wait(3);continue
         heartbeat=Heartbeat(db,job['id'],'lemo:'+config.WORKER_ID);heartbeat.start()
         try:run(pipeline.Ctx(db,store,job))
