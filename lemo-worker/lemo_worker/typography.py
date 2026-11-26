@@ -3,7 +3,9 @@ import base64, re
 from pathlib import Path
 from engine.core import FD
 
-VERSION = 'all-text-kanit-v1'
+VERSION = 'all-text-kanit-v2'
+LEGACY_VERSION = 'all-text-kanit-v1'
+REPAIR_VERSIONS = {LEGACY_VERSION, VERSION}
 MARKER = 'motion-trusted-typography'
 
 
@@ -26,11 +28,11 @@ def bind_motion_text_imports(html):
                   lambda m: m[1] + re.sub(pattern, bind, m[2]) + m[3], html, flags=re.I)
 
 
-def prepare_source(html):
+def prepare_source(html, version=LEGACY_VERSION):
     if MARKER in html:
         raise ValueError('Source already contains a typography runtime; use its original source')
     html = bind_motion_text_imports(html)
-    js = Path(__file__).with_suffix('.js').read_text()
+    js = Path(__file__).with_suffix('.js').read_text().replace('__TEXT_VERSION__', version)
     for weight in (700, 800):
         js = js.replace(f'__KANIT_{weight}__', base64.b64encode((Path(FD)/f'Kanit-{weight}.ttf').read_bytes()).decode())
     licence = (Path(FD)/'OFL-Kanit.txt').read_text().replace('--', '—')
@@ -51,7 +53,7 @@ def repair_source(html):
     replacement = 'function text(s,x,y,size,fill=I,stroke=null,max=1000){MotionText.draw(c,s,x,y,size>=72?Math.max(108,size):Math.max(48,size),stroke||fill,null,max)}'
     html, count = re.subn(pattern, replacement, html, flags=re.M)
     if count != 1:
-        if 'MotionText.draw(' not in html: raise ValueError('Unsupported scene text helper; review source before typography repair')
+        if 'MotionText.draw(' not in html and 'MotionText.drawRole(' not in html: raise ValueError('Unsupported scene text helper; review source before typography repair')
     # Remove the offset copy of a headline, preserving its actual text and final position.
     duplicate = r"text\((?P<text>'[^'\n]*'|\"[^\"\n]*\"),(?P<x1>\d+),(?P<y1>\d+),(?P<size>\d+),\w+,(?P<stroke>\w+),(?P<width>\d+)\);(?P<front>text\((?P=text),(?P<x2>\d+),(?P<y2>\d+),(?P=size),\w+,(?P=stroke),(?P=width)\);)"
     def clean(match):

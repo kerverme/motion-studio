@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync,readdirSync} from 'node:fs';
 import {PGlite} from '@electric-sql/pglite';
 import {Hono} from 'hono';
-import {CreativeSettings,CreativePlanToolSchema,creativeSourceEvidence,chooseStyle,estimateCreative,hash,releaseGates,creativePrompt} from './creative.js';
+import {CreativeSettings,CreativePlanToolSchema,creativeSourceEvidence,chooseStyle,estimateCreative,hash,releaseGates,creativePrompt,lemoStyles} from './creative.js';
 import {registerCreative} from './creative-routes.js';
 const fixtures=['nik','dream','cats'].map(k=>JSON.parse(readFileSync(new URL(`../../lemo-worker/tests/fixtures/${k}.json`,import.meta.url),'utf8')));
 test('planner receives nested sound constraints and fetched sources retain trusted retrieval evidence',()=>{
@@ -35,6 +35,30 @@ test('three mocked semantic analyses rank deterministically and reject unknown s
     const bad=structuredClone(story.creative);bad.candidates[0].id='made-up-style';assert.throws(()=>chooseStyle(bad,settings,story.script),/Unknown/);
     assert.match(creativePrompt(settings),/SAME planning call/);
   }
+});
+test('the permitted Lemo catalog is complete and allows a manual pick outside the AI shortlist',()=>{
+  const original = process.env;
+  try {
+    process.env={...original,LEMO_STYLE_LIBRARY:'owner-films',LEMO_FULL_STYLE_CATALOG:'true',LEMO_FILM_USE_APPROVED:'true',LEMO_PRIVATE_OWNER_MODE:'true'};
+    const styles = lemoStyles();
+    assert.equal(new Set(styles.map(style=>style.id)).size,99);
+    assert.equal(new Set(styles.map(style=>style.category)).size,15);
+    const manifest=JSON.parse(readFileSync(new URL('../../lemo-worker/upstream-catalog.lock.json',import.meta.url),'utf8'));
+    assert.deepEqual(styles.map(style=>style.id).sort(),Object.keys(manifest.styles).sort());
+    const story = fixtures[0];
+    const manual = CreativeSettings.parse({engine:'lemo',mode:'manual',manual_style:'glass-product'});
+    const manualSelection = chooseStyle(story.creative,manual,story.script);
+    assert.equal(manualSelection.selected.id,'glass-product');
+    assert.equal(manualSelection.selected.unassessed,true);
+    assert.equal(manualSelection.low_confidence,true);
+    const auto = CreativeSettings.parse({engine:'lemo'});
+    const glass = {...story.creative.candidates[0],id:'glass-product',suitable:true,scores:Object.fromEntries(Object.keys(story.creative.candidates[0].scores).map(key=>[key,1]))};
+    const plan = {...story.creative,candidates:[glass,...story.creative.candidates.slice(1)]};
+    assert.equal(chooseStyle(plan,auto,story.script).selected.id,'glass-product');
+    assert.match(creativePrompt(auto),/glass-product/);
+    assert.doesNotMatch(creativePrompt(CreativeSettings.parse({engine:'classic'})),/glass-product/);
+    assert.equal(lemoStyles({...process.env,LEMO_PRIVATE_OWNER_MODE:'false'}).length,3);
+  } finally { process.env=original; }
 });
 test('sound plans require real anchors; cache changes with story/settings and unknown cost stays unknown',()=>{
   const story=fixtures[0],settings=CreativeSettings.parse({}),choice=chooseStyle(story.creative,settings,story.script);
@@ -109,7 +133,7 @@ test('caption repair preserves the episode, paid assets and old delivery, and co
   const repairs=await Promise.all([full(),full()]);assert.deepEqual(repairs.map(r=>r.status).sort(),[200,202]);
   const textJob=(await query('SELECT * FROM jobs WHERE id=$1',[job])).rows[0];
   assert.equal(textJob.episode_id,episode);assert.deepEqual(textJob.package,pkg);
-  assert.equal(textJob.stage_results.TYPOGRAPHY_REPAIR.version,'all-text-kanit-v1');
+  assert.equal(textJob.stage_results.TYPOGRAPHY_REPAIR.version,'all-text-kanit-v2');
   assert.deepEqual(textJob.stage_results.TYPOGRAPHY_REPAIR.previous.LEMO_RENDER,stages.LEMO_RENDER);
   assert.deepEqual(textJob.stage_results.TYPOGRAPHY_REPAIR.previous.CAPTION_REPAIR,saved.stage_results.CAPTION_REPAIR);
   assert.equal(textJob.stage_results.LEMO_RENDER,undefined,'all scene text must be rendered again');

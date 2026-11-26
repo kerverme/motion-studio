@@ -26,6 +26,29 @@ class LedgerTests(unittest.TestCase):
         self.db.q('INSERT INTO creative_approvals(draft_id,revision,quote,allocations,max_usd,unknown_ack,job_id) VALUES(%s,%s,\'{}\',%s::jsonb,1,true,%s)',(draft['id'],str(uuid.uuid4()),json.dumps({'narration':1,'coding':1}),self.job['id']))
         self.ctx=SimpleNamespace(db=self.db,job=self.job)
     def tearDown(self):self.db.conn.close()
+    def test_claim_survives_column_migration_and_resumes_saved_stages(self):
+        from lemo_worker import main
+        # Force server-side preparation on a long-lived connection. Only the temp queue is altered.
+        self.db.conn.prepare_threshold = 0
+        self.db.q('CREATE TEMP TABLE jobs (LIKE public.jobs INCLUDING DEFAULTS)')
+        self.assertIsNone(main.claim_job(self.db,'test-worker'))
+        self.db.q('ALTER TABLE jobs ADD COLUMN migration_fixture text')
+        saved = {'GENERATING_AUDIO':{'narration_key':'immutable/audio.mp3'},
+                 'BUILDING_TIMELINE':{'timeline_key':'immutable/timeline.json'},
+                 'RENDERING':{'final_key':'immutable/final.mp4'}}
+        self.db.q("INSERT INTO jobs(id,kind,status,stage_results) VALUES(%s,'lemo','QUALITY_CHECK',%s::jsonb)",
+                  (self.job['id'],json.dumps(saved)))
+        job = main.claim_job(self.db,'test-worker')
+        self.assertEqual(job['stage_results'],saved)
+        self.assertEqual(job['attempts'],1)
+        self.assertIsNone(main.claim_job(self.db,'other-worker'))
+        with patch.object(main,'preflight'), patch.object(main.pipeline,'stage_audio') as audio, patch.object(main,'stage_render') as render:
+            with patch.object(main.pipeline,'stage_qa',side_effect=ValueError('reached QA')):
+                with self.assertRaisesRegex(ValueError,'reached QA'):
+                    main.run(SimpleNamespace(r=job['stage_results'],db=self.db,job=job))
+            audio.assert_not_called()
+            render.assert_not_called()
+
     def test_concurrent_duplicate_has_exactly_one_provider_call(self):
         count=0;lock=threading.Lock()
         def provider(_id):

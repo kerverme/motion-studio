@@ -1049,7 +1049,7 @@ function studio(st, drafts){
   const auto = h('input',{type:'checkbox',disabled:true});
   const engineSel=h('select',{class:'field','aria-label':'Rendering engine'},h('option',{value:'classic'},'Classic Motion Studio'),h('option',{value:'lemo',disabled:!st.creative?.enabled&&!st.creative?.development},'Lemo Creative Motion'+(!st.creative?.enabled?' · ทดลองพัฒนา':'')));
   const creativeMode=h('select',{class:'field','aria-label':'การเลือกสไตล์'},h('option',{value:'auto'},'Auto — AI Director'),h('option',{value:'manual'},'Manual — เลือกเอง'));
-  const creativeStyle=h('select',{class:'field','aria-label':'สไตล์ Lemo',hidden:true},(st.creative?.styles||[]).map(x=>h('option',{value:x.id},x.name)));
+  const creativeStyle=h('select',{class:'field','aria-label':'สไตล์ Lemo',hidden:true},lemoStyleOptions(st.creative?.styles||[]));
   creativeMode.addEventListener('change',()=>creativeStyle.hidden=creativeMode.value!=='manual');
   const voiceModel=h('select',{class:'field','aria-label':'โมเดลเสียง'},['eleven_v4','eleven_v3','eleven_multilingual_v2'].map(x=>h('option',{value:x},x)));
   const creativeBudget=h('input',{class:'field',type:'number',min:.01,max:1000,step:.01,value:10,'aria-label':'งบสูงสุด USD'});
@@ -1364,6 +1364,16 @@ async function classicCostDialog(target,id){
     !approval?.available?h('p',{class:'err',role:'alert'},approval?.reason||'ยังไม่มีรายการอนุมัติสำหรับ Classic กรุณาโหลดใหม่ภายหลัง'):'',confirm,error);
 }
 
+function lemoStyleOptions(catalog, assessments=[]){
+  const scores=new Map(assessments.filter(style=>!style.unassessed).map(style=>[style.id,style.score]));
+  const groups=new Map();
+  for(const style of catalog){
+    if(!groups.has(style.category))groups.set(style.category,[]);
+    const suffix=scores.has(style.id)?' · '+Math.round(scores.get(style.id)*100)+'%':'';
+    groups.get(style.category).push(h('option',{value:style.id},style.name+suffix+(style.mode==='adapted'?' · ดัดแปลง 2D':'')));
+  }
+  return Array.from(groups,([category,options])=>h('optgroup',{label:category},options));
+}
 let LEMO_PREVIEWS=null;
 async function creativeDraftView(body,d,refresh){
   if(d.creative.engine==='classic')return classicDraftView(body,d,refresh);
@@ -1371,11 +1381,31 @@ async function creativeDraftView(body,d,refresh){
   const err=h('div',{class:'err',role:'alert'}),status=h('div',{class:'sub',role:'status'});
   if(LEMO_PREVIEWS===null){try{LEMO_PREVIEWS=(await api('/app/api/creative/capabilities')).styles||[];}catch{LEMO_PREVIEWS=[];}}
   const editable=d.status==='ready';
-  const styleSel=h('select',{class:'field','aria-label':'สไตล์หลัก',disabled:settings.locked||!editable},[selection.selected,...selection.alternatives].map(x=>h('option',{value:x.id},x.id+' · '+Math.round(x.score*100)+'%')));styleSel.value=selection.selected.id;
-  const sample=h('img',{alt:'ตัวอย่างแนวภาพจาก fixture',style:'display:block;width:180px;max-width:100%;border-radius:14px;margin:12px 0'});const showSample=()=>{const st=LEMO_PREVIEWS.find(x=>x.id===styleSel.value);sample.hidden=!st?.preview;if(st?.preview)sample.src=st.preview;};styleSel.addEventListener('change',showSample);showSample();
-  const locked=h('input',{type:'checkbox',checked:settings.locked,disabled:!editable});locked.addEventListener('change',()=>{settings.locked=locked.checked;styleSel.disabled=locked.checked;});
-  const save=async()=>{if(styleSel.value!==selection.selected.id){settings.mode='manual';settings.manual_style=styleSel.value;}const r=await api('/app/api/creative/'+d.id,{method:'PATCH',body:JSON.stringify({settings,plan,...(creative.engine==='lemo'?{script}:{})})});return r;};
-  const identity=h('div',{class:'chars'},h('h3',{},creative.engine==='lemo'?'Lemo Creative Motion':'Classic Motion Studio'),h('label',{},'แนวภาพหลัก',styleSel),creative.engine==='lemo'?sample:'',h('div',{style:'display:flex;gap:8px;margin:12px 0'},plan.identity.palette.map(color=>h('span',{title:color,style:'display:block;border-radius:12px;width:45px;height:45px;background:'+color}))),h('p',{class:'sub'},'ตัวอย่างแนวภาพจาก fixture และพาเลต · เฟรมของเรื่องนี้จะปรากฏเมื่อเรนเดอร์ฉาก'),h('p',{},plan.identity.direction),h('ul',{},selection.selected.reasons.map(x=>h('li',{},x))),selection.low_confidence?h('p',{class:'warn'},'AI ยังไม่มั่นใจในสไตล์นี้ กรุณาตรวจทางเลือกและยืนยันก่อนผลิต'):'',h('label',{class:'check'},locked,' ล็อกสไตล์ทั้งเรื่อง'),h('p',{class:'sub'},'ทางเลือก: '+selection.alternatives.map(x=>x.id+' '+Math.round(x.score*100)+'%').join(' · ')));
+  const assessed=[selection.selected,...selection.alternatives];
+  const catalog=[...(LEMO_PREVIEWS||[])];
+  if(!catalog.some(style=>style.id===selection.selected.id))catalog.unshift({id:selection.selected.id,name:selection.selected.id,category:'สไตล์ที่บันทึกไว้'});
+  const styleSel=h('select',{class:'field','aria-label':'สไตล์หลัก',disabled:settings.locked||!editable},lemoStyleOptions(catalog,assessed));
+  const modeSel=h('select',{class:'field','aria-label':'การเลือกสไตล์ตอนตรวจบท',disabled:settings.locked||!editable},
+    h('option',{value:'auto'},'Auto — AI Director'),h('option',{value:'manual'},'เลือกสไตล์เอง'));
+  modeSel.value=settings.mode;
+  styleSel.value=selection.selected.id;
+  const sample=h('img',{alt:'ตัวอย่างแนวภาพจาก fixture',style:'display:block;width:180px;max-width:100%;border-radius:14px;margin:12px 0'});
+  const showSample=()=>{const st=catalog.find(x=>x.id===styleSel.value);sample.hidden=!st?.preview;if(st?.preview)sample.src=st.preview;};
+  styleSel.addEventListener('change',()=>{modeSel.value='manual';showSample();});showSample();
+  modeSel.addEventListener('change',()=>{
+    if(modeSel.value==='auto'){
+      const best=assessed.filter(x=>x.suitable).sort((a,b)=>b.score-a.score||a.id.localeCompare(b.id))[0];
+      if(best)styleSel.value=best.id;
+    }
+    showSample();
+  });
+  const locked=h('input',{type:'checkbox',checked:settings.locked,disabled:!editable});locked.addEventListener('change',()=>{settings.locked=locked.checked;styleSel.disabled=modeSel.disabled=locked.checked;});
+  const save=async()=>{
+    settings.mode=locked.checked?'manual':modeSel.value;
+    if(settings.mode==='manual')settings.manual_style=styleSel.value;else delete settings.manual_style;
+    return api('/app/api/creative/'+d.id,{method:'PATCH',body:JSON.stringify({settings,plan,...(creative.engine==='lemo'?{script}:{})})});
+  };
+  const identity=h('div',{class:'chars'},h('h3',{},creative.engine==='lemo'?'Lemo Creative Motion':'Classic Motion Studio'),h('label',{},'การเลือกสไตล์',modeSel),h('label',{},'แนวภาพหลัก',styleSel),creative.engine==='lemo'?sample:'',h('div',{style:'display:flex;gap:8px;margin:12px 0'},plan.identity.palette.map(color=>h('span',{title:color,style:'display:block;border-radius:12px;width:45px;height:45px;background:'+color}))),h('p',{class:'sub'},'ตัวอย่างแนวภาพจาก fixture และพาเลต · เฟรมของเรื่องนี้จะปรากฏเมื่อเรนเดอร์ฉาก'),h('p',{},plan.identity.direction),h('ul',{},selection.selected.reasons.map(x=>h('li',{},x))),selection.low_confidence?h('p',{class:'warn'},selection.selected.unassessed?'เลือกสไตล์เอง · กรุณาตรวจแผนฉากก่อนผลิต':'AI ยังไม่มั่นใจในสไตล์นี้ กรุณาตรวจทางเลือกและยืนยันก่อนผลิต'):'',h('label',{class:'check'},locked,' ล็อกสไตล์ทั้งเรื่อง'),h('p',{class:'sub'},'ทางเลือก: '+selection.alternatives.map(x=>x.id+' '+Math.round(x.score*100)+'%').join(' · ')));
   const scenes=plan.scenes.map((scene,i)=>{
     const text=h('textarea',{class:'field',value:script[i].text,disabled:!editable||creative.engine!=='lemo','aria-label':'บทฉาก '+scene.seg});text.value=script[i].text;text.addEventListener('input',()=>script[i].text=text.value);
     const fields=[['objective','จุดประสงค์'],['composition','องค์ประกอบภาพ'],['camera','กล้อง'],['location','สถานที่']].map(([key,label])=>{const el=h('textarea',{class:'field',value:scene[key],disabled:!editable||creative.engine!=='lemo','aria-label':label+' '+scene.seg});el.value=scene[key];el.addEventListener('input',()=>scene[key]=el.value);return h('label',{class:'sub'},label,el);});

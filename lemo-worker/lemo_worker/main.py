@@ -6,7 +6,7 @@ from motion_worker.storage import get_storage
 from .catalog import enabled, GATES
 from .render import stage_render, stage_recompose, stage_retype, preflight
 from .subtitles import VERSION as CAPTION_VERSION
-from .typography import VERSION as TYPOGRAPHY_VERSION
+from .typography import REPAIR_VERSIONS
 
 STOP=threading.Event()
 
@@ -22,10 +22,11 @@ def run(ctx):
     text_repair=getattr(ctx,'r',{}).get('TYPOGRAPHY_REPAIR')
     repair=text_repair or getattr(ctx,'r',{}).get('CAPTION_REPAIR')
     if text_repair:
-        if repair.get('version')!=TYPOGRAPHY_VERSION:raise RuntimeError('Unsupported typography repair version')
+        repair_version=repair.get('version')
+        if repair_version not in REPAIR_VERSIONS:raise RuntimeError('Unsupported typography repair version')
         preflight(ctx)
-        ctx.dir=os.path.join(ctx.dir,'revisions',TYPOGRAPHY_VERSION)
-        ctx.prefix+='/revisions/'+TYPOGRAPHY_VERSION
+        ctx.dir=os.path.join(ctx.dir,'revisions',repair_version)
+        ctx.prefix+='/revisions/'+repair_version
         os.makedirs(ctx.dir,exist_ok=True)
         stages=[('RENDERING',stage_retype)]
     elif repair:
@@ -50,16 +51,24 @@ def run(ctx):
     ctx.db.release(ctx.job)
 
 
+def claim_job(db, worker_id):
+    # The prepared result descriptor stays stable when migrations add job columns.
+    return db.one("""UPDATE jobs SET locked_by=%s,locked_until=now()+interval '10 minutes',attempts=attempts+1
+          WHERE id=(SELECT id FROM jobs WHERE kind='lemo' AND status NOT IN ('READY_TO_POST','FAILED','CANCELLED')
+          AND (locked_until IS NULL OR locked_until<now()) ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING id, episode_id, kind, status, stage, package, stage_results, budget_credits, used_credits, attempts, max_attempts""",(worker_id,))
+
+
 def main():
     signal.signal(signal.SIGTERM,lambda *_:STOP.set());signal.signal(signal.SIGINT,lambda *_:STOP.set())
     threading.Thread(target=HTTPServer(('0.0.0.0',int(os.environ.get('PORT','8080'))),Health).serve_forever,daemon=True).start()
-    db=None;store=None
+    db=None;store=None;queue_ready=False
     while not STOP.is_set():
         if not enabled():STOP.wait(5);continue
         if db is None:db=DB();store=get_storage()
-        job=db.one("""UPDATE jobs SET locked_by=%s,locked_until=now()+interval '10 minutes',attempts=attempts+1
-          WHERE id=(SELECT id FROM jobs WHERE kind='lemo' AND status NOT IN ('READY_TO_POST','FAILED','CANCELLED')
-          AND (locked_until IS NULL OR locked_until<now()) ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING *""",('lemo:'+config.WORKER_ID,))
+        job=claim_job(db,'lemo:'+config.WORKER_ID)
+        if not queue_ready:
+            print('Lemo queue poll succeeded',flush=True)
+            queue_ready=True
         if not job:STOP.wait(3);continue
         heartbeat=Heartbeat(db,job['id'],'lemo:'+config.WORKER_ID);heartbeat.start()
         try:run(pipeline.Ctx(db,store,job))

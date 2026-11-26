@@ -1,8 +1,8 @@
 import hashlib,json,os,sys,unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from lemo_worker.catalog import enabled,required_gates,style_spec
+from lemo_worker.catalog import CATALOG, LOCK, enabled, required_gates, style_spec, upstream_spec
 
 
 class FilmPermissionTests(unittest.TestCase):
@@ -34,6 +34,27 @@ class FilmPermissionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'pinned'):style_spec('dataviz')
             os.environ['LEMO_PRIVATE_STYLES_JSON']='{}'
             with self.assertRaisesRegex(ValueError,'missing'):style_spec('dataviz')
+
+    def test_full_catalog_fetch_is_pinned_authenticated_by_hash_and_credential_free(self):
+        spec=b'Test-only glass product style.'
+        response=MagicMock(status_code=200)
+        response.iter_content.return_value=[spec]
+        upstream={'upstream':LOCK['commit'],'styles':{'glass-product':hashlib.sha256(spec).hexdigest()}}
+        env={'LEMO_STYLE_LIBRARY':'owner-films','LEMO_FILM_USE_APPROVED':'true','LEMO_PRIVATE_OWNER_MODE':'true','LEMO_FULL_STYLE_CATALOG':'true'}
+        upstream_spec.cache_clear()
+        with patch.dict(os.environ,env,clear=True),patch('lemo_worker.catalog.CATALOG',upstream),patch('lemo_worker.catalog.requests.get') as get:
+            get.return_value.__enter__.return_value=response
+            self.assertEqual(style_spec('glass-product'),spec.decode())
+            self.assertEqual(style_spec('glass-product'),spec.decode())
+            self.assertEqual(get.call_count,1)
+            self.assertTrue(get.call_args.args[0].endswith(f"/{LOCK['commit']}/styles/glass-product/STYLE.md"))
+            self.assertFalse(get.call_args.kwargs['allow_redirects'])
+            self.assertNotIn('headers',get.call_args.kwargs)
+            with self.assertRaisesRegex(ValueError,'not installed'):style_spec('../glass-product')
+            upstream_spec.cache_clear()
+            response.iter_content.return_value=[b'changed content']
+            with self.assertRaisesRegex(ValueError,'pinned'):style_spec('glass-product')
+        self.assertEqual(len(CATALOG['styles']),99)
 
     def test_individual_railway_style_variables_keep_hash_and_size_checks(self):
         env={'LEMO_STYLE_LIBRARY':'owner-films','LEMO_FILM_USE_APPROVED':'true','LEMO_PRIVATE_OWNER_MODE':'true'}

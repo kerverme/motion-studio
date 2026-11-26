@@ -5,12 +5,30 @@ import {zodToJsonSchema} from 'zod-to-json-schema';
 import {sourceKey} from './source-evidence.js';
 
 // Registry contains identifiers/metadata only, never upstream style documents.
-export const LEMO_STYLES = [
+const BUILTIN_STYLES = [
   {id:'dataviz',name:'Data Storytelling',capabilities:['charts','labels','comparisons'],limits:['verified numeric data only','Canvas2D']},
   {id:'firefly-pointillism',name:'Firefly Pointillism',capabilities:['particles','atmosphere','metaphors'],limits:['avoid dense small labels','Canvas2D']},
   {id:'rubber-hose',name:'Rubber Hose',capabilities:['characters','expressions','comedy'],limits:['original characters only','Canvas2D']},
 ] as const;
-export function publicStyles(){const previews=JSON.parse(readFileSync(new URL('./lemo-style-previews.json',import.meta.url),'utf8'));return LEMO_STYLES.map(x=>({...x,preview:previews[x.id],preview_label:'ภาพตัวอย่างจาก fixture ไม่ใช่เฟรมของเรื่องนี้'}));}
+type LemoStyle = {id:string; name:string; category:string; uses:string[]; mode:'canvas2d'|'adapted'};
+const CATALOG: LemoStyle[] = JSON.parse(readFileSync(new URL('./lemo-styles.json',import.meta.url),'utf8'));
+const BASE_CATALOG = BUILTIN_STYLES.map(style=>({...CATALOG.find(item=>item.id===style.id)!,...style}));
+
+export function lemoStyles(env:NodeJS.ProcessEnv=process.env) {
+  const library=env.LEMO_STYLE_LIBRARY;
+  const full=env.LEMO_FULL_STYLE_CATALOG==='true' && (library==='owner-films'
+    ? env.LEMO_FILM_USE_APPROVED==='true' && env.LEMO_PRIVATE_OWNER_MODE==='true'
+    : library==='upstream-licensed' && env.LEMO_LICENSE_APPROVED==='true');
+  return full ? CATALOG : BASE_CATALOG;
+}
+
+const stylesFor = (engine:'classic'|'lemo') => engine==='lemo' ? lemoStyles() : BASE_CATALOG;
+
+export function publicStyles(){
+  const previews=JSON.parse(readFileSync(new URL('./lemo-style-previews.json',import.meta.url),'utf8'));
+  return lemoStyles().map(style=>({...style,preview:previews[style.id]}));
+}
+export const LEMO_TYPOGRAPHY_VERSION='all-text-kanit-v2';
 export const METRICS=['relevance','storytelling','emotion','characters','continuity','feasibility'] as const;
 export const WEIGHTS={relevance:.30,storytelling:.25,emotion:.15,characters:.10,continuity:.10,feasibility:.10};
 const S=z.string().trim().min(3).max(1200);
@@ -23,7 +41,7 @@ export const CreativeSettings=z.object({
   audience:z.string().max(300).default('Thai general audience'),max_usd:z.number().positive().max(1000).default(10),
   weights:z.object(Object.fromEntries(METRICS.map(k=>[k,z.number().min(0).max(1)])) as Record<typeof METRICS[number],z.ZodNumber>).default(WEIGHTS),
 }).strict().superRefine((s,c)=>{
-  if(s.mode==='manual'&&!LEMO_STYLES.some(x=>x.id===s.manual_style))c.addIssue({code:'custom',message:'Select an installed style'});
+  if(s.mode==='manual'&&!stylesFor(s.engine).some(x=>x.id===s.manual_style))c.addIssue({code:'custom',message:'Select an installed style'});
   if(Math.abs(Object.values(s.weights).reduce((a,b)=>a+b,0)-1)>.00001)c.addIssue({code:'custom',message:'Weights must sum to 1'});
 });
 export type CreativeSettingsT=z.infer<typeof CreativeSettings>;
@@ -54,7 +72,7 @@ export function hash(v:unknown):string {
   return createHash('sha256').update(JSON.stringify(canonical(v))).digest('hex');
 }
 export function chooseStyle(raw:unknown,settings:CreativeSettingsT,script:{id:string,text:string}[]){
-  const plan=CreativePlan.parse(raw),known=new Set<string>(LEMO_STYLES.map(x=>x.id));
+  const plan=CreativePlan.parse(raw),known=new Set(stylesFor(settings.engine).map(x=>x.id));
   if(plan.candidates.some(c=>!known.has(c.id))||new Set(plan.candidates.map(c=>c.id)).size!==plan.candidates.length)throw Error('Unknown or duplicate style');
   if(script.length!==plan.scenes.length||script.some((s,i)=>s.id!==plan.scenes[i].seg))throw Error('Creative scenes must match narration order');
   for(const scene of plan.scenes){
@@ -68,11 +86,18 @@ export function chooseStyle(raw:unknown,settings:CreativeSettingsT,script:{id:st
     if(new Set(scene.sound.cues.map(c=>c.id)).size!==scene.sound.cues.length)throw Error('Duplicate sound cue');
   }
   const ranked=plan.candidates.filter(c=>c.suitable).map(c=>({...c,score:METRICS.reduce((v,k)=>v+c.scores[k]*settings.weights[k],0)})).sort((a,b)=>b.score-a.score||a.id.localeCompare(b.id));
-  const selected=settings.mode==='manual'?ranked.find(c=>c.id===settings.manual_style):ranked[0];
+  const manual = settings.mode==='manual' ? settings.manual_style : undefined;
+  if (manual && !known.has(manual)) throw Error('Unknown manual style');
+  const assessed = manual ? ranked.find(candidate=>candidate.id===manual) : ranked[0];
+  const selected = assessed ? {...assessed,unassessed:false} : manual ? {
+    id:manual, scores:Object.fromEntries(METRICS.map(key=>[key,0])) as Record<typeof METRICS[number],number>,
+    score:0, confidence:0, suitable:false, unassessed:true,
+    reasons:['คุณเลือกแนวภาพนี้เอง ตรวจองค์ประกอบและการเคลื่อนไหวของแต่ละฉากก่อนผลิต'],
+  } : undefined;
   if(!selected)throw Error('No compatible installed style; adjust the plan');
   return {selected,alternatives:ranked.filter(c=>c.id!==selected.id),low_confidence:selected.confidence<.65,plan,cache_key:hash({script,settings,plan}),weights:settings.weights};
 }
-export function creativePrompt(settings:CreativeSettingsT){return `\nCREATIVE MOTION v1: Include a creative object in plan_story in the SAME planning call. No extra style request. Analyze the actual complete story, not keywords or randomness. Explain all user-facing reasons and scene directions in Thai. In each regular storyboard shot also include subjects [{id,description}] naming the concrete subjects. Schema: analysis {genre,arc,tone,audience,hook,factual_density,complexity,characters,locations,metaphors,pacing,identity,brand,budget,capabilities}, candidates [{id,scores:{relevance,storytelling,emotion,characters,continuity,feasibility},confidence,reasons:[text],suitable}], identity {direction,palette:[hex],typography,camera,motion,characters,locations,props,lighting,transitions}, scenes [{seg,objective,shot,camera,composition,elements:[text],emotion,location,characters:[name],transition,events:[{at:0..1,action}],sound:{decision:effects|ambience|silence,reason,cues:[{id,word:EXACT narration anchor,occurrence:0,offset:0,action,prompt,duration:0.5..30,gain:0..0.6}]}}]. Scores/confidence 0..1. Describe ALL analysis fields substantively. At least two motivated motion events per scene. One stable film identity. Every scene needs a sound decision, deliberate silence has empty cues. Every sound cue prompt must describe the actual audible event in English, never cache instructions or library identifiers; the worker handles reuse automatically. Avoid repetitive whooshes, no automatic music or image generation. No invented statistics, evidence or medical claims. Only installed styles: ${JSON.stringify(LEMO_STYLES)}. Settings: ${JSON.stringify(settings)}. ${settings.engine==='lemo'?'LEMO OVERRIDE: After plan_story, submit_episode with title_th, angle, sources, claims and captions only; do NOT call drawing tools or write Python. The separate isolated coding worker renders after owner approval.':''}`;}
+export function creativePrompt(settings:CreativeSettingsT){return `\nCREATIVE MOTION v1: Include a creative object in plan_story in the SAME planning call. No extra style request. Analyze the actual complete story, not keywords or randomness. Explain all user-facing reasons and scene directions in Thai. In each regular storyboard shot also include subjects [{id,description}] naming the concrete subjects. Schema: analysis {genre,arc,tone,audience,hook,factual_density,complexity,characters,locations,metaphors,pacing,identity,brand,budget,capabilities}, candidates [{id,scores:{relevance,storytelling,emotion,characters,continuity,feasibility},confidence,reasons:[text],suitable}], identity {direction,palette:[hex],typography,camera,motion,characters,locations,props,lighting,transitions}, scenes [{seg,objective,shot,camera,composition,elements:[text],emotion,location,characters:[name],transition,events:[{at:0..1,action}],sound:{decision:effects|ambience|silence,reason,cues:[{id,word:EXACT narration anchor,occurrence:0,offset:0,action,prompt,duration:0.5..30,gain:0..0.6}]}}]. Scores/confidence 0..1. Describe ALL analysis fields substantively. At least two motivated motion events per scene. One stable film identity. Every scene needs a sound decision, deliberate silence has empty cues. Every sound cue prompt must describe the actual audible event in English, never cache instructions or library identifiers; the worker handles reuse automatically. Avoid repetitive whooshes, no automatic music or image generation. No invented statistics, evidence or medical claims. Consider the whole catalog below against the actual story before returning up to three candidates. In manual mode include and plan the visual identity for the owner-selected style. Each row is ID | name | category | typical uses. Available styles:\n${stylesFor(settings.engine).map(style=>[style.id,style.name,style.category,style.uses.join(', ')].join(' | ')).join('\n')}\n Settings: ${JSON.stringify(settings)}. ${settings.engine==='lemo'?'LEMO OVERRIDE: After plan_story, submit_episode with title_th, angle, sources, claims and captions only; do NOT call drawing tools or write Python. The separate isolated coding worker renders after owner approval.':''}`;}
 export function releaseGates(env:NodeJS.ProcessEnv=process.env){
   const library=env.LEMO_STYLE_LIBRARY||'cloudbath-original-v1';
   const permission=library==='cloudbath-original-v1'?['LEMO_ORIGINAL_STYLE_VERIFIED']:library==='owner-films'?['LEMO_FILM_USE_APPROVED','LEMO_PRIVATE_OWNER_MODE']:['LEMO_LICENSE_APPROVED'];

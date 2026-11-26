@@ -2,7 +2,7 @@ import type {Hono,Context,Next} from 'hono';
 import type pg from 'pg';
 import {z} from 'zod';
 import {randomUUID} from 'node:crypto';
-import {CreativeSettings,CreativePlan,chooseStyle,estimateCreative,releaseGates,LEMO_STYLES,publicStyles,CATEGORIES,hash} from './creative.js';
+import {CreativeSettings,CreativePlan,chooseStyle,estimateCreative,releaseGates,publicStyles,CATEGORIES,LEMO_TYPOGRAPHY_VERSION,hash} from './creative.js';
 import {retryCreativeJob} from './creative-retry.js';
 import {STUDIO_DRAFT_BY_ID} from './studio-draft-queries.js';
 
@@ -22,6 +22,7 @@ export function registerCreative(app:Hono,pool:pg.Pool,deps:{guard:(c:Context,n:
       await cl.query('BEGIN');const r=(await cl.query(STUDIO_DRAFT_BY_ID + ' FOR UPDATE',[c.req.param('id')])).rows[0];
       if(!r?.creative||r.status!=='ready')throw Error('Only ready drafts can be edited');
       const settings=CreativeSettings.parse({...r.creative.settings,...b.settings});
+      if(settings.mode==='auto')delete settings.manual_style;
       if(settings.locked){settings.mode='manual';settings.manual_style=b.settings?.manual_style||r.creative.selection.selected.id;}
       if(r.creative.settings.locked&&b.settings?.manual_style&&b.settings.manual_style!==r.creative.settings.manual_style)throw Error('Unlock the style first');
       const board=structuredClone(r.storyboard);
@@ -72,6 +73,7 @@ export function registerCreative(app:Hono,pool:pg.Pool,deps:{guard:(c:Context,n:
       const episode=(await cl.query("INSERT INTO episodes(topic,title_th,status) VALUES($1,$2,'NEW') RETURNING id",[r.topic,pkg.title_th])).rows[0];
       const approval=(await cl.query('INSERT INTO creative_approvals(draft_id,revision,quote,allocations,max_usd,unknown_ack) VALUES($1,$2,$3,$4,$5,$6) RETURNING id',[r.id,q.revision,JSON.stringify(q),JSON.stringify(b.allocations),b.max_usd,b.unknown_ack])).rows[0];
       pkg.creative={...r.creative,approval_id:approval.id,revision:q.revision,allocations:b.allocations,max_usd:b.max_usd,rates:rates(),planning_usage:r.usage,model:r.model,reasoning:r.reasoning};
+      if(r.creative.engine==='lemo')pkg.creative.typography_version=LEMO_TYPOGRAPHY_VERSION;
       const job=(await cl.query("INSERT INTO jobs(episode_id,kind,status,package,package_sha256,idempotency_key) VALUES($1,$2,'NEW',$3,$4,$5) RETURNING id",[episode.id,r.creative.engine==='lemo'?'lemo':'episode',JSON.stringify(pkg),hash(pkg),'creative:'+r.id+':'+q.revision])).rows[0];
       if(r.creative.reference_job){
         await cl.query('INSERT INTO creative_job_references(job_id,reference_id,name,look,reference_image,image_hash) SELECT $1,reference_id,name,look,reference_image,image_hash FROM creative_job_references WHERE job_id=$2',[job.id,r.creative.reference_job]);
@@ -115,7 +117,7 @@ export function registerCreative(app:Hono,pool:pg.Pool,deps:{guard:(c:Context,n:
   });
   for(const [route,repairStage,version,versionField] of [
     ['repair-captions','CAPTION_REPAIR','kanit-portrait-v2','caption_version'],
-    ['repair-typography','TYPOGRAPHY_REPAIR','all-text-kanit-v1','typography_version'],
+    ['repair-typography','TYPOGRAPHY_REPAIR',LEMO_TYPOGRAPHY_VERSION,'typography_version'],
   ] as const) app.post('/app/api/creative/jobs/:id/'+route,g,async c=>{
     const fullText=route==='repair-typography',cl=await pool.connect();
     try{
