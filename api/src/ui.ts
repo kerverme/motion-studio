@@ -363,7 +363,7 @@ export function registerUi(app: Hono, pool: pg.Pool, deps: { API_TOKEN: string; 
       scripts: await q('SELECT * FROM scripts'),
       research_sources: await q('SELECT * FROM research_sources'),
       publication_handoffs: await q('SELECT * FROM publication_handoffs'),
-      drafts: await q('SELECT * FROM drafts'),
+      drafts: (await q("SELECT to_jsonb(d) - 'planner_checkpoint' AS record FROM drafts AS d")).map(row => row.record),
       publish_log: await q('SELECT * FROM publish_log'),
     };
     c.header('content-disposition', `attachment; filename="motion-studio-export-${new Date().toISOString().slice(0, 10)}.json"`);

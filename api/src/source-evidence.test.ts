@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { sourceKey, extractWebEvidence, verifySources, savedResearchEvidence } from './source-evidence.js';
+import { sourceKey, extractWebEvidence, verifySources, searchWeb, savedResearchEvidence } from './source-evidence.js';
+import { plannerCalls, type PlannerCheckpoint } from './planner-checkpoint.js';
 
 test('records exact page opens and in-page finds without a sources array', () => {
   const web = extractWebEvidence({ output: [
@@ -65,6 +66,35 @@ test('source repair never promotes requested URL when provider did not retrieve 
   assert.deepEqual(result.sources, []);
   await assert.rejects(() => verifySources(['file:///private'], { apiKey: 'mock', baseUrl: 'https://api.example.test', model: 'x' }), /one to four/);
 });
+
+for(const tool of ['openai_search','read_page']){
+  test(`${tool} uses the accepted OpenAI response after a restart and preserves the evidence timestamp`,async()=>{
+    const url='https://official.example/claim';
+    const callKey=tool+'-fixture';
+    let disk:PlannerCheckpoint['calls']={};
+    const methods:string[]=[];
+    async function run(interrupt:boolean){
+      const calls=structuredClone(disk);
+      const request=plannerCalls(calls,async()=>{
+        disk=structuredClone(calls);
+        if(interrupt&&disk[callKey].response_id)throw Error('worker stopped after durable receipt');
+      }).openai(callKey);
+      const options={request,model:'test-model',apiKey:'mock',baseUrl:'https://mock.test',fetch:async(target:unknown,init?:RequestInit)=>{
+        methods.push(String(init?.method));
+        if(init?.method==='GET')assert.equal(String(target),'https://mock.test/v1/responses/resp_observation');
+        return Response.json({id:'resp_observation',status:'completed',created_at:1777777777,output:[
+          {type:'web_search_call',status:'completed',action:{type:'open_page',url}},
+          {type:'message',content:[{type:'output_text',text:'Source text with its original limitations.'}]}
+        ],usage:{input_tokens:20,output_tokens:4}});
+      }};
+      return tool==='openai_search'?searchWeb('question',options):verifySources([url],options);
+    }
+    await assert.rejects(run(true));
+    const checked=await run(false);
+    assert.deepEqual(methods,['POST','GET']);assert.equal(checked.collected_at,new Date(1777777777*1000).toISOString());
+    assert.deepEqual(checked.sources,[{url,title:''}]);assert.equal(checked.usage.input_tokens,20);assert.match(checked.text,/limitations/);
+  });
+}
 
 test('saved evidence restores read aliases for metadata retries and preserves observation time',()=>{
   const at='2026-11-24T12:34:56.123Z',url='https://official.example/report';

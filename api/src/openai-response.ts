@@ -1,6 +1,8 @@
 // Long reasoning + hosted search must not hold a single HTTP request open.
 // Create once, then retry only reads of that response (never duplicate a paid POST).
-type Options = {
+export type OpenAIResponseOptions = {
+  onAccepted?: (responseId: string) => Promise<void>; // mandatory receipt persistence before any polling
+  keepAccepted?: boolean; // durable planners retain the response for a future GET
   apiKey: string;
   baseUrl: string;
   onProgress?: (message: string) => Promise<void>;
@@ -23,7 +25,7 @@ export function networkCode(error: unknown): string {
   return 'NETWORK_ERROR';
 }
 
-export async function openaiResponse(body: any, options: Options): Promise<any> {
+export async function openaiResponse(body: any, options: OpenAIResponseOptions): Promise<any> {
   const request = options.fetch ?? fetch;
   const sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   const now = options.now ?? Date.now;
@@ -53,6 +55,7 @@ export async function openaiResponse(body: any, options: Options): Promise<any> 
           await sleep(Math.min(2000 * (attempt + 1), Math.max(0, deadline - now())));
           continue;
         }
+        if (polling && options.keepAccepted) throw new OpenAIReadUnavailable('OpenAI ตรวจสถานะไม่สำเร็จ: '+networkCode(error)+idHint());
         throw new Error(`OpenAI ${polling ? 'ตรวจสถานะ' : 'ส่งคำขอ'}ไม่สำเร็จ: ${networkCode(error)}${idHint()}${polling ? '' : ' — ไม่ส่งซ้ำอัตโนมัติเพื่อป้องกันคิดเงินซ้ำ'}`);
       }
       const quota = j.error?.code === 'insufficient_quota' || j.error?.type === 'insufficient_quota';
@@ -67,6 +70,8 @@ export async function openaiResponse(body: any, options: Options): Promise<any> 
         await sleep(Math.min(retryAfter > 0 ? retryAfter : 5000 * (attempt + 1), 60_000, Math.max(0, deadline - now())));
         continue;
       }
+      if (polling && options.keepAccepted && !quota && (r.status === 408 || r.status === 429 || r.status >= 500))
+        throw new OpenAIReadUnavailable('OpenAI HTTP '+r.status+idHint());
       if (!r.ok) throw new Error(`OpenAI HTTP ${r.status}: ${quota ? 'insufficient_quota' : String(j.error?.code || j.error?.type || 'request_failed').replace(/[^a-zA-Z0-9_.-]/g, '').slice(0, 80)}${idHint()}`);
       return j;
     }
@@ -75,6 +80,11 @@ export async function openaiResponse(body: any, options: Options): Promise<any> 
   let response = responseId
     ? await readJson(`${base}/${responseId}`, {method:'GET'}, true)
     : await readJson(base, { method: 'POST', body: JSON.stringify({ ...body, background: true }) }, false);
+  if (responseId || options.onAccepted) {
+    if (typeof response.id !== 'string' || !/^resp_[a-zA-Z0-9_-]+$/.test(response.id) || (responseId && response.id !== responseId))
+      throw new Error('OpenAI ไม่ยืนยันรหัสคำขอเดิม');
+    if (!responseId) await options.onAccepted?.(response.id);
+  }
   if (options.pollOnce) {
     if (typeof response.id!=='string' || !/^resp_[a-zA-Z0-9_-]+$/.test(response.id) || (responseId && response.id!==responseId)) throw new Error('OpenAI ไม่ยืนยันรหัสคำขอเดิม');
     if (!['queued','in_progress','completed','incomplete','failed','cancelled'].includes(response.status)) throw new Error('OpenAI ส่งสถานะที่ไม่รู้จัก');
@@ -88,6 +98,7 @@ export async function openaiResponse(body: any, options: Options): Promise<any> 
   }
   while (['queued', 'in_progress'].includes(response.status)) {
     if (now() >= deadline) {
+      if (options.keepAccepted) throw new OpenAIReadUnavailable('OpenAI ยังประมวลผล เก็บรหัสไว้ตรวจงานเดิมต่อ'+idHint());
       // Best-effort cancellation stops an abandoned request accruing more work.
       let cancelled = false;
       try {
@@ -102,6 +113,7 @@ export async function openaiResponse(body: any, options: Options): Promise<any> 
     await sleep(Math.min(3000, Math.max(0, deadline - now())));
     if (now() >= deadline) continue;
     response = await readJson(`${base}/${responseId}`, { method: 'GET' }, true);
+    if (response.id !== responseId) throw new Error('OpenAI ไม่ยืนยันรหัสคำขอเดิม');
     if (now() - lastNotice >= 60_000 && ['queued', 'in_progress'].includes(response.status)) {
       await progress(`OpenAI ยังประมวลผลอยู่ (${Math.floor((now() - started) / 60_000)} นาที · ${response.status})`);
       lastNotice = now();

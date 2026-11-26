@@ -7,7 +7,7 @@ process.env.MOTION_LLM_PROVIDER = 'openai';
 process.env.OPENAI_API_KEY = 'mock-key';
 process.env.MOTION_OPENAI_WEB_SEARCH = 'true';
 delete process.env.FIRECRAWL_API_KEY;
-const { registerStudio, Draft } = await import('./studio.js');
+const { registerStudio, Draft } = await import('../tests/studio-fixture.js');
 
 for (const repair of [false,true]) test(repair ? 'missing source repair delivers evidence before metadata can become ready' : 'pump saves one actor and shot at a time, then requires a later preview review turn', async () => {
   const script = [
@@ -56,7 +56,7 @@ for (const repair of [false,true]) test(repair ? 'missing source repair delivers
     else if (query.startsWith("UPDATE drafts SET status='writing'")) status = 'writing';
     else if (query.startsWith('UPDATE drafts SET draft=')) { status = args[4]; finalDraft = JSON.parse(args[1]); finalAtCall = calls; resolveDone(); }
     else if (query.startsWith("UPDATE drafts SET status='failed'")) { status = 'failed'; resolveDone(); }
-    else if (!query.startsWith('UPDATE drafts SET log') && !query.startsWith('UPDATE drafts SET usage') && !query.startsWith('UPDATE drafts SET problems')) throw new Error('Unexpected SQL: ' + query);
+    else if (!query.startsWith('UPDATE drafts SET planner_checkpoint') && !query.startsWith('UPDATE drafts SET log') && !query.startsWith('UPDATE drafts SET usage') && !query.startsWith('UPDATE drafts SET problems')) throw new Error('Unexpected SQL: ' + query);
     return { rows: [], rowCount: 1 };
   } };
   const nativeFetch = globalThis.fetch, nativeTimeout = globalThis.setTimeout;
@@ -138,11 +138,11 @@ for (const repair of [false,true]) test(repair ? 'missing source repair delivers
   }
 });
 
-test('a provider timeout keeps completed scene checkpoints and retry copies them', async () => {
+test('a terminal provider refusal keeps completed scene checkpoints and an explicit rewrite copies them', async () => {
   const script = ['open','first','second','end'].map((id,i) => ({id,text:'เรื่องของเบลในประเทศไทย',beat:i===0?'hook':i===3?'cta':'info'}));
   const plan = {script,shots:script.map(s=>({seg:s.id,visual:'A newly drawn street scene',action:'Walks down the street',camera:'Medium shot',characters:['เบล']})),character_notes:'A long face with a distinctive hairline'};
   const portrait = {name:'เบล',portrait_description:'A long face',portrait_code:'def draw(c,t,p):\n  c.ellipse(0,0,80,110,"tan")'};
-  let status='queued', calls=0, cancelled=0, artwork:any, savedPlan:any, lastError='', copied:any;
+  let status='queued', calls=0, artwork:any, savedPlan:any, lastError='', copied:any;
   const row:any={id:'10000000-0000-0000-0000-000000000002',topic:'เรื่องเบล',model:'gpt-6-astra',reasoning:'high',characters:[],style:'classic',auto_produce:false};
   let resolveDone!:()=>void;
   const done=new Promise<void>(resolve=>{resolveDone=resolve;});
@@ -151,35 +151,33 @@ test('a provider timeout keeps completed scene checkpoints and retry copies them
     if(query.includes("SELECT id FROM drafts WHERE status='queued'"))return{rows:status==='queued'?[{id:row.id}]:[]};
     if(query.startsWith('SELECT * FROM drafts WHERE id='))return{rows:[{...row,status,storyboard:savedPlan,artwork}]};
     if(query.startsWith('SELECT id, draft FROM drafts'))return{rows:[]};
-    if(query.startsWith('INSERT INTO drafts'))return{rows:[{id:'10000000-0000-0000-0000-000000000003'}]};
-    if(query.startsWith('UPDATE drafts SET storyboard=$2, artwork=')){copied={plan:JSON.parse(args[1]),artwork:JSON.parse(args[2])};return{rows:[],rowCount:1};}
+    if(query.startsWith('WITH rewrite_source')){
+      copied={plan:JSON.parse(args[24]),artwork:JSON.parse(args[25])};return{rows:[{id:'10000000-0000-0000-0000-000000000003'}]};
+    }
     if(query.startsWith('UPDATE drafts SET artwork='))artwork=JSON.parse(args[1]);
     if(query.startsWith('UPDATE drafts SET storyboard=')){savedPlan=JSON.parse(args[1]);status='writing';}
     if(query.startsWith("UPDATE drafts SET status='researching'"))status='researching';
     if(query.startsWith("UPDATE drafts SET status='failed'")){status='failed';lastError=args[1];resolveDone();}
     return{rows:[],rowCount:1};
   }};
-  const nativeFetch=globalThis.fetch,nativeTimeout=globalThis.setTimeout,nativeNow=Date.now;
-  let fakeNow=nativeNow();
+  const nativeFetch=globalThis.fetch,nativeTimeout=globalThis.setTimeout;
   const timeout=nativeTimeout(resolveDone,5000);
   const tool=(name:string,input:unknown,id:string)=>({type:'function_call',name,call_id:id,arguments:JSON.stringify(input)});
   const app=new Hono();
   let fetchError:unknown;
   globalThis.fetch=async(url,init)=>{
     try{
-      if(String(url).endsWith('/cancel')){cancelled++;return new Response(JSON.stringify({status:'cancelled'}),{status:200});}
+      assert.equal(init?.method,'POST');
       calls++;
       const body=JSON.parse(String(init?.body));
       assert.equal(body.background,true);
       const output=calls===1?[tool('plan_story',plan,'plan')]:calls===2?[tool('draw_character',{character:portrait},'actor')]:
         calls===3||calls===4?[tool('draw_scene',{scene:{seg:script[calls-3].id,type:'custom',code:'def draw(c,t,p):\n  c.person("เบล",540,600,240)'}},'shot-'+calls)]:[];
-      if(calls===5)return new Response(JSON.stringify({id:'resp_timeout',status:'in_progress'}),{status:200});
+      if(calls===5)return new Response(JSON.stringify({id:'resp_rejected',status:'failed',error:{code:'content_policy'}}),{status:200});
       return new Response(JSON.stringify({id:'resp_'+calls,status:'completed',output,usage:{input_tokens:10,output_tokens:10}}),{status:200});
     }catch(e){fetchError=e;throw e;}
   };
-  Date.now=()=>fakeNow;
   globalThis.setTimeout=((callback:(...args:any[])=>void,ms?:number,...args:any[])=>{
-    if(ms===3000){fakeNow+=24*3600_000;return nativeTimeout(callback,0,...args);}
     return nativeTimeout(ms===8000?()=>{}:callback,ms===8000||ms===1500?0:ms,...args);
   }) as typeof setTimeout;
   try{
@@ -187,9 +185,8 @@ test('a provider timeout keeps completed scene checkpoints and retry copies them
     await done;
     if(fetchError)throw fetchError;
     assert.equal(status,'failed');
-    assert.equal(calls,5,'does not create a duplicate provider response after timeout');
-    assert.equal(cancelled,1);
-    assert.match(lastError,/เกินเวลารอต่อรอบ/);
+    assert.equal(calls,5,'does not create a duplicate provider response after failure');
+    assert.match(lastError,/content_policy/);
     assert.equal(artwork.scenes.length,2);
     assert.equal(artwork.cast[0].portrait_code,portrait.portrait_code);
     const response=await app.request('/app/api/studio/drafts/'+row.id+'/rewrite',{method:'POST',headers:{'content-type':'application/json'},body:'{}'});
@@ -197,6 +194,6 @@ test('a provider timeout keeps completed scene checkpoints and retry copies them
     assert.deepEqual(copied.plan,plan);
     assert.equal(copied.artwork.scenes.length,2,'retry resumes completed scenes');
   }finally{
-    clearTimeout(timeout);globalThis.fetch=nativeFetch;globalThis.setTimeout=nativeTimeout;Date.now=nativeNow;
+    clearTimeout(timeout);globalThis.fetch=nativeFetch;globalThis.setTimeout=nativeTimeout;
   }
 });

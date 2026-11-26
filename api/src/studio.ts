@@ -1,5 +1,7 @@
+import { drainStudioQueue, withStudioPlannerSession, type PlannerDb, type PlannerSession } from './studio-queue.js';
 import { DEFAULT_OPENAI_MODEL, DEFAULT_REASONING as REASONING, REASONING_LEVELS, openAIModelLabel, readModels, type ModelSource } from './openai-models.js';
 import {savedLemoDraft} from './lemo-recovery.js';
+import {needsFreshPlannerConsent,legacyPlannerReceipt, registerLegacyPlannerResume} from './legacy-planner-resume.js';
 import {CreativeSettings,CreativePlanToolSchema,creativeSourceEvidence,chooseStyle,creativePrompt,releaseGates,lemoStyles} from './creative.js';
 import {registerCreative} from './creative-routes.js';
 import {selectedContext,trendPrompt} from './trends/store.js';
@@ -15,10 +17,11 @@ import { communityBlock } from './community.js';
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { openaiResponse, networkCode } from './openai-response.js';
+import { plannerCalls, readPlannerCheckpoint, PlannerRecoveryError, type PlannerCheckpoint } from './planner-checkpoint.js';
+import { openaiResponse, networkCode, OpenAIReadUnavailable } from './openai-response.js';
 import { Artwork, emptyArtwork, reconcileArtwork, updateArtwork, mergeArtwork, artworkComplete, ARTWORK_TOOLS, type ArtworkState } from './art-batches.js';
 import { BudgetedFirecrawl, PgResearchBudget, ResearchBudgetError } from './firecrawl-budget.js';
-import { extractWebEvidence, verifySources, searchWeb, sourceKey, savedResearchEvidence, type Seen } from './source-evidence.js';
+import { extractWebEvidence, verifySources, searchWeb, sourceKey, savedResearchEvidence, webObservedAt, type Seen, type SourceVerification, type WebEvidence } from './source-evidence.js';
 import { Storyboard, reviseStoryboard, validateStoryboardDraft, personCalls, withDepictionPolicy, type StoryboardT } from './storyboard.js';
 import { draftRequest } from './draft-request.js';
 import { IS_STUDIO_DRAFT, STUDIO_DRAFT_BY_ID, DAILY_STUDIO_DRAFT_COUNT } from './studio-draft-queries.js';
@@ -187,7 +190,7 @@ async function claude(body: any) {
       signal: AbortSignal.timeout(600_000),
     });
     const j: any = await r.json().catch(() => ({}));
-    if ((r.status === 429 || r.status === 529 || r.status >= 500) && i < 4) {
+    if (r.status === 429 && i < 4) {
       const wait = Number(r.headers.get('retry-after') || 0) * 1000 || 5000 * (i + 1);
       await new Promise((res) => setTimeout(res, Math.min(wait, 60_000)));
       continue;
@@ -197,15 +200,15 @@ async function claude(body: any) {
   }
 }
 
-async function openai(body: any, onProgress?: (message: string) => Promise<void>) {
+async function openai(body: any, onProgress?: (message: string) => Promise<void>, request = openaiResponse) {
   if (!env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not set on motion-api');
-  return openaiResponse(body, { apiKey: env.OPENAI_API_KEY, baseUrl: OPENAI_URL, onProgress, timeoutMs: Math.min(45 * 60_000, Math.max(5 * 60_000, Number(env.MOTION_OPENAI_TIMEOUT_MS) || 30 * 60_000)) });
+  return request(body, { apiKey: env.OPENAI_API_KEY, baseUrl: OPENAI_URL, onProgress, timeoutMs: Math.min(45 * 60_000, Math.max(5 * 60_000, Number(env.MOTION_OPENAI_TIMEOUT_MS) || 30 * 60_000)) });
 }
 
 type ToolUse = { id: string; name: string; input: any };
 type ToolResult = { id: string; content: string; is_error?: boolean };
 type Usage = { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number };
-type WebFound = { searches: number; queries: string[]; sources: { url: string; title: string }[] };
+type WebFound = WebEvidence & {collected_at:string};
 // which research tools are usable right now (changes during a draft when Firecrawl runs out of credits or the web search budget is spent)
 type Active = { fc: boolean; ws: boolean; drawing?: boolean; searches?: number; source?: boolean; creative?: boolean; lemo?: boolean };
 const activeTools = (a: Active) => TOOLS.filter(t => t.name !== 'openai_search' || PROVIDER !== 'openai').filter(t => ['submit_episode','plan_story','revise_story',...ARTWORK_TOOLS.map(x=>x.name)].includes(t.name) || (t.name === 'read_source_material' ? !!a.source : t.name === 'read_page' ? !!env.OPENAI_API_KEY : t.name === 'openai_search' && !a.drawing && a.ws)).filter(t=>!a.lemo||!ARTWORK_TOOLS.some(x=>x.name===t.name)).map(t => {
@@ -234,8 +237,7 @@ interface Conversation {
 }
 
 // Anthropic Messages API; the conversation is cached so each turn re-reads it at the cache price.
-function anthropicConversation(system: string, first: string, model: string, active: Active): Conversation {
-  const messages: any[] = [{ role: 'user', content: first }];
+function anthropicConversation(system: string, messages: any[], model: string, active: Active, request: typeof claude): Conversation {
   const sys = [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }];
   return {
     async turn(force) {
@@ -243,7 +245,7 @@ function anthropicConversation(system: string, first: string, model: string, act
       const last = msgs[msgs.length - 1];
       if (typeof last.content === 'string') last.content = [{ type: 'text', text: last.content }];
       last.content[last.content.length - 1].cache_control = { type: 'ephemeral' };
-      const resp = await claude({ model, max_tokens: 16000, system: sys, tools: activeTools(active), messages: msgs,
+      const resp = await request({ model, max_tokens: 16000, system: sys, tools: activeTools(active), messages: msgs,
         ...(force ? { tool_choice: { type: 'tool', name: 'submit_episode' } } : {}) });
       messages.push({ role: 'assistant', content: resp.content });
       const u = resp.usage || {};
@@ -266,8 +268,7 @@ function anthropicConversation(system: string, first: string, model: string, act
 }
 
 // OpenAI Responses API (tool calling for current GPT models goes through it). Output items are fed back as input.
-function openaiConversation(system: string, first: string, model: string, effort: string, active: Active, onProgress?: (message: string) => Promise<void>): Conversation {
-  const input: any[] = [{ role: 'user', content: first }];
+function openaiConversation(system: string, input: any[], model: string, effort: string, active: Active, request: typeof openaiResponse, onProgress?: (message: string) => Promise<void>): Conversation {
   const fnTools = (a: Active) => activeTools(a).map((t) => ({ type: 'function', name: t.name, description: t.description, parameters: t.input_schema }));
   return {
     async turn(force) {
@@ -277,7 +278,7 @@ function openaiConversation(system: string, first: string, model: string, effort
       const resp = await openai({ model, instructions: system, input, tools, reasoning: { effort }, ...(active.ws && !active.drawing ? { include: ['web_search_call.action.sources'] } : {}),
         max_output_tokens: active.drawing ? 16000 : 24000,
         parallel_tool_calls: false, max_tool_calls: Math.max(1, Math.min(3, MAX_WEB_SEARCH - (active.searches || 0))),
-        tool_choice: force ? { type: 'function', name: 'submit_episode' } : 'auto' }, onProgress);
+        tool_choice: force ? { type: 'function', name: 'submit_episode' } : 'auto' }, onProgress, request);
       const out: any[] = resp.output || [];
       input.push(...out);
       const uses: ToolUse[] = out.filter((o) => o.type === 'function_call').map((o) => {
@@ -290,7 +291,7 @@ function openaiConversation(system: string, first: string, model: string, effort
       }
       const u = resp.usage || {};
       const cached = Number(u.input_tokens_details?.cached_tokens || 0);
-      const web = extractWebEvidence(out);
+      const web = {...extractWebEvidence(out),collected_at:webObservedAt(resp)};
       return { uses, web: web.searches || web.sources.length ? web : undefined, usage: { input_tokens: Math.max(0, Number(u.input_tokens || 0) - cached), output_tokens: Number(u.output_tokens || 0), cache_read_input_tokens: cached, cache_creation_input_tokens: 0 } };
     },
     results(rs, note) {
@@ -900,6 +901,7 @@ export function creativePackageProblems(pkg:any, board:StoryboardT, ownerNote=''
 
 // ---------------------------------------------------------------- the generator
 type Deps = {
+  plannerSession?: PlannerSession;
   models?: ModelSource;
   guard: (c: Context, next: Next) => Promise<any>;
   signAsset?: (key:string)=>Promise<string|null>;
@@ -1031,8 +1033,8 @@ function draftWithCharacterPolicy(d: Record<string, any>, enabled: boolean, pres
 }
 
 export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
-  async function recentEpisodes(excludeId?: string): Promise<Recent[]> {
-    const r = await pool.query(`SELECT id, draft FROM drafts WHERE draft IS NOT NULL AND status IN ('ready','submitted') AND id <> $1
+  async function recentEpisodes(db: PlannerDb, excludeId?: string): Promise<Recent[]> {
+    const r = await db.query(`SELECT id, draft FROM drafts WHERE draft IS NOT NULL AND status IN ('ready','submitted') AND id <> $1
       ORDER BY created_at DESC LIMIT 6`, [excludeId || '00000000-0000-0000-0000-000000000000']);
     return r.rows.map((x: any) => ({
       format: x.draft.format || '', title: x.draft.title_th || '', style: x.draft.style || 'classic', music: x.draft.music || '',
@@ -1040,11 +1042,13 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     }));
   }
 
-  const log = async (id: string, msg: string, status?: string) => {
-    const written = await pool.query(`UPDATE drafts SET log = log || $2::jsonb, status = COALESCE($3, status), updated_at = now() WHERE id = $1 AND removed_at IS NULL`,
+  const writeLog = async (db: PlannerDb, id: string, msg: string, status?: string) => {
+    const written = await db.query(`UPDATE drafts SET log = log || $2::jsonb, status = COALESCE($3, status), updated_at = now() WHERE id = $1 AND removed_at IS NULL`,
       [id, JSON.stringify([{ at: new Date().toISOString(), msg }]), status ?? null]);
     if (written.rowCount === 0) throw Error('ร่างถูกลบแล้ว');
   };
+
+  const log = (id: string, msg: string, status?: string) => writeLog(pool,id,msg,status);
 
   function prepareCreative(row:any){
     const settings=CreativeSettings.parse(row.creative.settings),board=Storyboard.parse(row.storyboard);
@@ -1089,15 +1093,15 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
   }
 
   // The worker compiles the model's scene art and renders preview frames (engine/artkit.py). Returns null when the worker is not answering.
-  async function artCheck(id: string, d: DraftT, style: string): Promise<{ errors: string[]; frames: { seg: string; images: string[]; motion?:Record<string,unknown>; motion_strip?:string }[] } | null> {
+  async function artCheck(db: PlannerDb, id: string, d: DraftT, style: string): Promise<{ errors: string[]; frames: { seg: string; images: string[]; motion?:Record<string,unknown>; motion_strip?:string }[] } | null> {
     const customs = d.scenes.filter((x: any) => x.type === 'custom');
     if (!customs.length) return { errors: [], frames: [] };
     const payload = { presentation_version:d.storyboard?.presentation_version || 0, ...(d.storyboard?.direction_version===1?{motion_review:true}:{}), opening_frame_cover: d.cover_mode === 'opening_frame', strict_art: !!d.storyboard, script: d.script.map((x) => ({ id: x.id, text: x.text })), cast: d.cast, art: d.art || '', scenes: customs, style: style || 'classic' };
-    const ins = await pool.query('INSERT INTO art_checks (draft_id, payload) VALUES ($1,$2) RETURNING id', [id, JSON.stringify(payload)]);
+    const ins = await db.query('INSERT INTO art_checks (draft_id, payload) VALUES ($1,$2) RETURNING id', [id, JSON.stringify(payload)]);
     const cid = ins.rows[0].id;
     for (let i = 0; i < 80; i++) {   // up to ~2 minutes
       await new Promise((r) => setTimeout(r, 1500));
-      const r = (await pool.query('SELECT status, result FROM art_checks WHERE id=$1', [cid])).rows[0];
+      const r = (await db.query('SELECT status, result FROM art_checks WHERE id=$1', [cid])).rows[0];
       if (r?.status === 'done' || r?.status === 'error') {
         const res = r.result || {};
         if (res.error) return { errors: [`the preview failed: ${String(res.error).slice(0, 300)}`], frames: [] };
@@ -1109,23 +1113,37 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
         return { errors, frames: (res.scenes || []).filter((sc: any) => sc.frames?.length).map((sc: any) => ({ seg: sc.seg, images: sc.frames, ...(sc.motion?{motion:sc.motion}:{}),...(sc.motion_strip?{motion_strip:sc.motion_strip}:{}) })) };
       }
     }
-    await pool.query("UPDATE art_checks SET status='error' WHERE id=$1 AND status='pending'", [cid]);
+    await db.query("UPDATE art_checks SET status='error' WHERE id=$1 AND status='pending'", [cid]);
     return null;
   }
 
-  async function generate(id: string) {
-    const row = (await pool.query(STUDIO_DRAFT_BY_ID, [id])).rows[0];
-    if (!row || row.status !== 'queued') return;
+  async function generate(id: string, db: PlannerDb) {
+    const log = (id: string, msg: string, status?: string) => writeLog(db,id,msg,status);
+    const row = (await db.query(STUDIO_DRAFT_BY_ID, [id])).rows[0];
+    if (!row || !['queued','researching','writing'].includes(row.status)) return;
+    const previous = readPlannerCheckpoint(row.planner_checkpoint, PROVIDER);
+    if (row.status !== 'queued' && !previous) throw new PlannerRecoveryError('ร่างที่ถูกขัดจังหวะไม่มีจุดบันทึกสำหรับกลับไปทำงานเดิม');
+    const saved = previous?.state;
+    let checkpoint: PlannerCheckpoint = previous ?? {version:1,provider:PROVIDER,turn:-1,calls:{}};
+    // The advisory lock holding this SQL connection fences every reservation and receipt.
+    const verifyWrite = (changed: {rowCount: number | null}) => {
+      if (changed.rowCount !== 1) throw new PlannerRecoveryError('ร่างถูกลบหรือหยุดแล้ว จึงหยุดก่อนส่งคำขอเพิ่ม');
+    };
+    const saveCalls = async () => {
+      verifyWrite(await db.query("UPDATE drafts SET planner_checkpoint=jsonb_set(planner_checkpoint,'{calls}',$2::jsonb), updated_at=now() WHERE id=$1 AND removed_at IS NULL AND status IN ('researching','writing') AND (planner_checkpoint->>'turn')::int=$3", [id,JSON.stringify(checkpoint.calls),checkpoint.turn]));
+    };
+    const plannerRequest = (key: string): typeof openaiResponse => (body, options) =>
+      plannerCalls(checkpoint.calls, saveCalls).openai(key)(body, options);
     const seen = new Map<string, Seen>();
     const research: any[] = Array.isArray(row.research) ? [...row.research] : [];
     let parent: any = null;
     if (row.parent_id) {
-      parent = (await pool.query('SELECT draft, research, storyboard, artwork FROM drafts WHERE id=$1', [row.parent_id])).rows[0] ?? null;
+      parent = (await db.query('SELECT draft, research, storyboard, artwork FROM drafts WHERE id=$1', [row.parent_id])).rows[0] ?? null;
       if (!research.length && Array.isArray(parent?.research)) research.push(...parent.research);
-      const cutoff = Date.now() - 25 * 86400_000;
-      for (const r of savedResearchEvidence([...(parent?.research || []), ...(row.research || [])],cutoff)) seen.set(normUrl(r.url),r);
       for (const r of parent?.draft?.research_seen || []) if (r.url && r.collected && Date.now() - new Date(r.collected).getTime() < 25 * 86400_000) seen.set(normUrl(r.url), r);
     }
+    const cutoff = Date.now() - 25 * 86400_000;
+    for (const r of savedResearchEvidence([...(parent?.research || []), ...(row.research || [])],cutoff)) seen.set(normUrl(r.url),r);
     const usage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, firecrawl_calls: 0, web_searches: 0, turns: 0 };
     const cfg0 = configured();
     const sourceText = String(row.source_text || '');
@@ -1133,17 +1151,16 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const researchJob = row.research_job_id || row.id;
     const fcStore = new PgResearchBudget(pool);
     const fc = new BudgetedFirecrawl(fcStore,{apiKey:env.FIRECRAWL_API_KEY || '',baseUrl:FIRECRAWL_URL});
-    const webCache = new Map<string,any>();
     let fcBudget = cfg0.firecrawl ? await fcStore.snapshot(researchJob) : null;
     if (fcBudget?.blocked_reason || fcBudget?.remaining === 0) active.fc=false;
     const syncFcBudget = async () => { if (cfg0.firecrawl) { fcBudget=await fcStore.snapshot(researchJob); usage.firecrawl_calls=fcBudget.calls; Object.assign(usage,{firecrawl_budget:fcBudget}); } };
     await syncFcBudget();
-    if (!active.ws) { await pool.query("UPDATE drafts SET status='failed', error=$2, updated_at=now() WHERE id=$1", [id, 'ต้องเปิด OpenAI Web Search เพื่อค้นข้อมูลก่อนใช้ Firecrawl']); return; }
-    const saveUsage = () => pool.query('UPDATE drafts SET usage=$2, research=$3, updated_at=now() WHERE id=$1', [id, JSON.stringify(usage), JSON.stringify(research)]);
+    if (!active.ws) { await db.query("UPDATE drafts SET status='failed', error=$2, updated_at=now() WHERE id=$1 AND removed_at IS NULL", [id, 'ต้องเปิด OpenAI Web Search เพื่อค้นข้อมูลก่อนใช้ Firecrawl']); return; }
+    const saveUsage = () => db.query('UPDATE drafts SET usage=$2, research=$3, updated_at=now() WHERE id=$1 AND removed_at IS NULL', [id, JSON.stringify(usage), JSON.stringify(research)]);
     const useModel = row.model && MODEL_RE.test(row.model) ? row.model : MODEL;
     const useEffort = PROVIDER === 'openai' ? (REASONING_LEVELS.includes(row.reasoning) ? row.reasoning : REASONING) : null;
-    await pool.query("UPDATE drafts SET status='researching', model=$2, reasoning=$3, updated_at=now() WHERE id=$1", [id, useModel, useEffort]);
-    await log(id, `เริ่มค้นข้อมูลด้วย OpenAI Web Search ก่อน · Firecrawl สำรองไม่เกิน ${fcBudget?.limit || 25} เครดิตต่อ Research Job (${useModel}${useEffort ? ' · reasoning ' + useEffort : ''})`);
+    if (previous) await log(id, `ทำต่อจากจุดบันทึก${previous.turn < 0 ? 'ก่อนวางบท' : 'รอบที่ '+(previous.turn+1)}`);
+    else await log(id, `เริ่มค้นข้อมูลด้วย OpenAI Web Search ก่อน · Firecrawl สำรองไม่เกิน ${fcBudget?.limit || 25} เครดิตต่อ Research Job (${useModel}${useEffort ? ' · reasoning ' + useEffort : ''})`);
 
     const storyMode = row.story_mode === 'general' ? 'general' as const : 'name_story' as const;
     const recurringCharacter = row.recurring_character === true;
@@ -1163,7 +1180,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
         `Apply the owner's direction; check for newer data where it matters.`;
     }
     if (row.source_type === 'community' && row.community_id) {
-      const cw = (await pool.query('SELECT payload FROM community_winners WHERE id=$1', [row.community_id])).rows[0];
+      const cw = (await db.query('SELECT payload FROM community_winners WHERE id=$1', [row.community_id])).rows[0];
       if (cw) userText += communityBlock(cw.payload);
     }
     const reqChars: ReqChar[] = Array.isArray(row.characters) ? row.characters : [];
@@ -1172,7 +1189,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
         (active.lemo ? 'Preserve their identity, look and clothing in the creative identity and in the appropriate shot descriptions. Ignore old backdrops; choose locations from the story.' :
           'Make these the first cast members in this order. Draw their actual visible features in portrait_code; every scene is custom. Show each in at least a third of the shots. Ignore any old backdrop; draw locations from the story.');
     }
-    const recent = await recentEpisodes(id);
+    const recent = await recentEpisodes(db,id);
     const fixedStyle = row.style && STYLES[row.style] ? row.style : recurringCharacter ? 'classic' : null;
     if(!active.lemo) userText += fixedStyle
       ? `\n\nVisual style: the owner chose "${fixedStyle}" (${STYLES[fixedStyle].en}); set "style": "${fixedStyle}" and let the music fit it.`
@@ -1186,7 +1203,11 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const system = systemPrompt(active, storyMode, directionVersion, visualVersion) + (row.creative?creativePrompt(CreativeSettings.parse(row.creative.settings)):'') + '\n\n## Owner-selected narration style\n' + narrationPrompt(narration) + '\n\n## Recurring character policy\n' + characterPolicyPrompt(recurringCharacter, reqChars[0]?.name, presenterKind) +
       (sourceText ? '\nThe complete owner source is supplied for planning. Identify the sections and claims relevant to the chosen topic and preserve their caveats in the angle, narration and source metadata. After plan_story succeeds the raw source is removed from repeated drawing requests; the full original remains available through read_source_material. Do not claim the entire pasted document has been verified.' : '');
     const depictionInstructions = presenterKind==='context' && !active.lemo ? '\n\n## Draw the storyboard examples\nEvery shot must list 1–8 concrete visual subjects in subjects [{id,description}]: include the people or animals, relevant objects, setting details, and the actual example or demonstration the narration describes. Give each a short unique ASCII id. Draw those subjects and actions visibly in the scene; labels, badges, a presenter pointing at a card, or a written description alone do not depict them. For a narrated example such as a child riding a bicycle, draw the child and bicycle in that situation. When draw_scene is complete, acknowledge only the subjects actually drawn in depicted_subjects using the exact planned ids. This acknowledgement is a checklist, not evidence: preview review must still confirm what the pictures show.' : '';
-    const conv = PROVIDER === 'openai' ? openaiConversation(system+depictionInstructions, userText, model, effort, active, (message) => log(id, message)) : anthropicConversation(system+depictionInstructions, userText, model, active);
+    const instructions = saved?.instructions ?? system+depictionInstructions;
+    const history: any[] = saved?.history ?? [{role:'user',content:userText}];
+    const conv = PROVIDER === 'openai'
+      ? openaiConversation(instructions, history, model, effort, active, plannerRequest('main'), message => log(id, message))
+      : anthropicConversation(instructions, history, model, active, body => plannerCalls(checkpoint.calls, saveCalls).foreground('main', () => claude(body)));
     let sourceCompacted = false;
     const compactSource = () => {
       if (!sourceBlock || sourceCompacted) return;
@@ -1194,19 +1215,19 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       sourceCompacted = true;
     };
     // Load originals only for the LLM, never include them in the public episode package.
-    for (const c of reqChars) {
-      const ref = c.id ? (await pool.query('SELECT reference_image, thumb FROM characters WHERE id=$1', [c.id])).rows[0] : null;
+    for (const c of saved ? [] : reqChars) {
+      const ref = c.id ? (await db.query('SELECT reference_image, thumb FROM characters WHERE id=$1', [c.id])).rows[0] : null;
       const photo = ref?.reference_image || ref?.thumb;
       if (photo) conv.show(`Reference for ${c.name}. Use only as visual reference for their bespoke face and body. ${ref.reference_image ? '' : 'Only a small legacy thumbnail is available: likeness is limited; do not invent hidden details.'}`, [photo]);
       else await log(id, `ไม่มีรูปอ้างอิงของ ${c.name} แล้ว ใช้รายละเอียดลักษณะที่บันทึกไว้`);
     }
-    let storyboard: StoryboardT | null = row.storyboard ? Storyboard.parse(withPresentationPolicy(withDepictionPolicy(withDirectionPolicy(withCharacterPolicy(row.storyboard, recurringCharacter), directionVersion, row.note || ''),presenterKind==='context'),visualVersion)) : null;
+    let storyboard: StoryboardT | null = saved ? saved.storyboard : row.storyboard ? Storyboard.parse(withPresentationPolicy(withDepictionPolicy(withDirectionPolicy(withCharacterPolicy(row.storyboard, recurringCharacter), directionVersion, row.note || ''),presenterKind==='context'),visualVersion)) : null;
     if (storyboard) { const problem = referencePresenterProblem(storyboard, recurringCharacter, reqChars[0]?.name); if (problem) throw new Error(problem); }
-    let artwork: ArtworkState = row.artwork || emptyArtwork();
+    let artwork: ArtworkState = saved?.artwork ?? row.artwork ?? emptyArtwork();
     active.drawing = !!storyboard;
-    if (storyboard) compactSource();
-    if (storyboard) conv.say((active.lemo?'Resume the saved Lemo storyboard. Submit metadata only; drawing happens after production approval. Fiction with only assumptions/opinions needs no external citation.':'Resume the saved storyboard and artwork. Only draw missing pieces.')+' Previously retrieved source metadata (open exact pages with read_page if you need the figures): ' + JSON.stringify([...seen.values()]) + '\nSaved plan: ' + JSON.stringify(storyboard) + '\nSaved artwork: ' + JSON.stringify(artwork));
-    const persistArtwork = () => pool.query('UPDATE drafts SET artwork=$2, updated_at=now() WHERE id=$1', [id, JSON.stringify(artwork)]);
+    if (storyboard && !saved) compactSource();
+    if (storyboard && !saved) conv.say((active.lemo?'Resume the saved Lemo storyboard. Submit metadata only; drawing happens after production approval. Fiction with only assumptions/opinions needs no external citation.':'Resume the saved storyboard and artwork. Only draw missing pieces.')+' Previously retrieved source metadata (open exact pages with read_page if you need the figures): ' + JSON.stringify([...seen.values()]) + '\nSaved plan: ' + JSON.stringify(storyboard) + '\nSaved artwork: ' + JSON.stringify(artwork));
+    const persistArtwork = () => db.query('UPDATE drafts SET artwork=$2, updated_at=now() WHERE id=$1 AND removed_at IS NULL', [id, JSON.stringify(artwork)]);
     const attemptedVerification = new Set<string>();
     let verificationCalls = 0;
     let sourceReviewTurn = -1;
@@ -1218,26 +1239,77 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const toolFailures = new Map<string, Map<string, { turn: number; count: number }>>();
     let pendingImages: { text: string; images: string[] } | null = null;
 
-    if(row.trend_context?.sources?.length){
+    if (saved) {
+      Object.assign(active, saved.active);
+      Object.assign(usage, saved.usage);
+      research.splice(0,research.length,...saved.research);
+      seen.clear();
+      for (const entry of saved.seen) seen.set(normUrl(entry.url),entry);
+      for (const url of saved.attemptedVerification) attemptedVerification.add(url);
+      for (const [key,entries] of saved.toolFailures) toolFailures.set(key,new Map(entries));
+      ({sourceCompacted,verificationCalls,sourceReviewTurn,sourceReviewEvidence,reviewedArt,submits,rejectedLemoSubmits}=saved);
+      row.creative=saved.creative;
+      row.trend_context=saved.trendContext;
+    } else if (previous?.legacy) {
+      Object.assign(usage,row.usage);
+      active.searches=usage.web_searches;
+      if (usage.web_searches>=MAX_WEB_SEARCH) active.ws=false;
+      verificationCalls=research.filter(event=>event.kind==='web' && !event.cache_hit &&
+        event.queries?.some((q:string)=>['Exact source read','Verify submitted sources','Recheck selected trend sources before drafting'].includes(q))).length;
+      conv.say('Continue from the recovered provider turn. Previously verified evidence: '+JSON.stringify(research));
+    }
+    async function beginRound(turn: number) {
+      const calls = previous?.turn === turn ? previous.calls : {};
+      const state = {instructions,history,active,usage,research,seen:[...seen.values()],storyboard,artwork,
+        creative:row.creative,trendContext:row.trend_context,sourceCompacted,verificationCalls,
+        attemptedVerification:[...attemptedVerification],sourceReviewTurn,sourceReviewEvidence,reviewedArt,
+        submits,rejectedLemoSubmits,toolFailures:[...toolFailures].map(([key,values])=>[key,[...values]])};
+      checkpoint={version:1,provider:PROVIDER,turn,state,calls};
+      if (row.status==='queued') {
+        verifyWrite(await db.query("UPDATE drafts SET status='researching', model=$2, reasoning=$3, planner_checkpoint=$4, updated_at=now() WHERE id=$1 AND removed_at IS NULL AND status='queued'",[id,useModel,useEffort,JSON.stringify(checkpoint)]));
+        row.status='researching';
+      } else {
+        verifyWrite(await db.query("UPDATE drafts SET planner_checkpoint=$2, updated_at=now() WHERE id=$1 AND removed_at IS NULL AND status IN ('researching','writing')",[id,JSON.stringify(checkpoint)]));
+      }
+    }
+
+    const researchOptions=(key:string)=>({apiKey:env.OPENAI_API_KEY!,baseUrl:OPENAI_URL,
+      model:PROVIDER==='openai'?model:DEFAULT_OPENAI_MODEL,onProgress:(message:string)=>log(id,message),request:plannerRequest(key)});
+    function recordWebRead(checked:SourceVerification,query:string,cacheHit=false){
+      for(const src of checked.sources)seen.set(normUrl(src.url),{...src,collected:checked.collected_at,via:'web'});
+      if(!cacheHit){
+        for(const k of ['input_tokens','output_tokens','cache_read_input_tokens','cache_creation_input_tokens'] as const)usage[k]+=checked.usage[k];
+        usage.web_searches+=checked.searches;
+        active.searches=usage.web_searches;
+        if(active.searches>=MAX_WEB_SEARCH)active.ws=false;
+      }
+      research.push({kind:'web',at:checked.collected_at,queries:[query],results:checked.sources,cache_hit:cacheHit});
+    }
+    if((previous?.turn ?? -1)<0 && row.trend_context?.sources?.length){
+      await beginRound(-1);
       // Re-open saved social evidence once before any script-planning turn. A saved
       // trend record is never inserted into the fetched-URL ledger by itself.
-      const urls=[...new Set<string>(row.trend_context.sources.flatMap((s:any)=>[s.url,...(s.supporting_sources||[]).map((p:any)=>p.url)]).filter((s:any)=>typeof s==='string'))].slice(0,6);
-      verificationCalls++;
+      const urls=[...new Set<string>(row.trend_context.sources.flatMap((s:any)=>[s.url,...(s.supporting_sources||[]).map((p:any)=>p.url)]).filter((url:any)=>typeof url==='string'&&sourceKey(url)))].slice(0,6);
       await log(id,'เปิดแหล่งเทรนด์ตรวจข้อมูลที่เปลี่ยนตามเวลาก่อนเขียนบท');
-      const checked=await verifySources(urls,{apiKey:env.OPENAI_API_KEY!,baseUrl:OPENAI_URL,model:PROVIDER==='openai'?model:DEFAULT_OPENAI_MODEL,onProgress:message=>log(id,message)});
-      for(const src of checked.sources)seen.set(normUrl(src.url),{...src,collected:todayIso(),via:'web'});
-      for(const k of ['input_tokens','output_tokens','cache_read_input_tokens','cache_creation_input_tokens'] as const)usage[k]+=checked.usage[k];
-      usage.web_searches+=checked.searches;
-      research.push({kind:'web',at:new Date().toISOString(),queries:['Recheck selected trend sources before drafting'],results:checked.sources});
-      const missing=urls.filter((url:string)=>!checked.sources.some(src=>normUrl(src.url)===normUrl(url)));
-      row.trend_context={...row.trend_context,rechecked_at:new Date().toISOString(),rechecked_urls:checked.sources.map(src=>src.url),warning:missing.length?'เปิดหลักฐานเทรนด์บางแหล่งไม่ได้ ห้ามอ้างตัวเลขหรือสถานะเทรนด์ที่ยังไม่ยืนยัน':row.trend_context.warning};
-      await pool.query('UPDATE drafts SET trend_context=$2 WHERE id=$1',[id,JSON.stringify(row.trend_context)]);
+      const checkedUrls=new Set<string>(),summaries:string[]=[];
+      for(let offset=0;offset<urls.length;offset+=4){
+        const checked=await verifySources(urls.slice(offset,offset+4),researchOptions('trend-verify-'+offset));
+        verificationCalls++;
+        recordWebRead(checked,'Recheck selected trend sources before drafting');
+        for(const src of checked.sources)checkedUrls.add(src.url);
+        if(checked.text)summaries.push(checked.text);
+      }
+      const verified=new Set([...checkedUrls].map(normUrl));
+      const missing=!urls.length || urls.some(url=>!verified.has(normUrl(url)));
+      row.trend_context={...row.trend_context,rechecked_at:new Date().toISOString(),rechecked_urls:[...checkedUrls],warning:missing?'เปิดหลักฐานเทรนด์บางแหล่งไม่ได้ ห้ามอ้างตัวเลขหรือสถานะเทรนด์ที่ยังไม่ยืนยัน':row.trend_context.warning};
+      await db.query('UPDATE drafts SET trend_context=$2 WHERE id=$1 AND removed_at IS NULL',[id,JSON.stringify(row.trend_context)]);
       await saveUsage();
-      conv.say('Fresh source check before scriptwriting. Read this evidence before planning; if unavailable, omit unsupported claims and retain only the creative question. Never cite saved metrics as current facts. '+(checked.text||'No source content could be verified.'));
+      conv.say('Fresh source check before scriptwriting. Read this evidence before planning; if unavailable, omit unsupported claims and retain only the creative question. Never cite saved metrics as current facts. '+(summaries.join('\n')||'No source content could be verified.'));
       if(row.trend_context.warning)await log(id,row.trend_context.warning);
     }
 
-    for (let turn = 0; turn < MAX_TURNS; turn++) {
+    for (let turn = Math.max(0,previous?.turn ?? 0); turn < MAX_TURNS; turn++) {
+      await beginRound(turn);
       usage.turns = turn + 1;
       const totalIn = usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens;
       if (totalIn > MAX_INPUT_TOKENS) throw new Error('ครบงบโทเค็นของร่างนี้แล้ว เก็บบทและภาพที่วาดสำเร็จไว้ สามารถลองใหม่เพื่อทำต่อได้');
@@ -1249,9 +1321,9 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
         usage.web_searches += web.searches;
         active.searches = usage.web_searches;
         const fresh = web.sources.filter((x, i, arr) => arr.findIndex((y) => normUrl(y.url) === normUrl(x.url)) === i);
-        for (const x of fresh) if (!seen.has(normUrl(x.url))) seen.set(normUrl(x.url), { url: x.url, title: x.title, published_hint: null, collected: todayIso(), via: 'web' });
+        for (const x of fresh) if (!seen.has(normUrl(x.url))) seen.set(normUrl(x.url), { url: x.url, title: x.title, published_hint: null, collected: web.collected_at, via: 'web' });
         if (web.queries.length) await log(id, `web search: ${web.queries.slice(0, 2).join(' | ').slice(0, 150)}`);
-        research.push({ kind: 'web', queries: web.queries, at: new Date().toISOString(), results: fresh.slice(0, 25).map((x) => ({ url: x.url, title: x.title, published: null })) });
+        research.push({ kind: 'web', queries: web.queries, at: web.collected_at, results: fresh.map((x) => ({ url: x.url, title: x.title, published: null })) });
         if (usage.web_searches >= MAX_WEB_SEARCH && active.ws) { active.ws = false; await log(id, 'ครบโควตา web search ของร่างนี้แล้ว'); }
       }
       for (const k of ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'] as const) usage[k] += u[k];
@@ -1262,7 +1334,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       }
       const results: any[] = [];
       for (const u of uses) {
-        if ((await pool.query('SELECT removed_at FROM drafts WHERE id=$1',[id])).rows[0]?.removed_at) return;
+        if ((await db.query('SELECT removed_at FROM drafts WHERE id=$1',[id])).rows[0]?.removed_at) return;
         try {
           if (!offeredTools.has(u.name)) throw new Error(`Tool unavailable for this step. Choose one of: ${[...offeredTools].join(', ')}`);
           if (!u.input || typeof u.input !== 'object' || Array.isArray(u.input) || u.input.__invalid_json !== undefined) {
@@ -1284,20 +1356,29 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
             const url=String(u.input?.url || ''), key=sourceKey(url);
             if (u.name === 'openai_search' || !u.input?.use_firecrawl) {
               if (u.name === 'read_page' && !key) throw new Error('A valid public source URL is required');
-              const cacheKey=u.name === 'openai_search' ? 'query:'+String(u.input?.query || '').trim().slice(0,500) : key;
-              let checked=cfg0.firecrawl ? await fcStore.webRead(researchJob,cacheKey) : webCache.get(cacheKey);
-              const cacheHit=!!checked;
-              if (!checked) {
-                if (verificationCalls>=4) throw new Error('Exact source read budget used; cite only verified evidence or state the information is unavailable.');
+              const query=String(u.input?.query || '').trim().slice(0,1000);
+              const isSearch=u.name==='openai_search';
+              const cacheKey=isSearch?'query:'+query:key;
+              const operation='research-'+u.id;
+              const origin=id+':'+turn+':'+u.id;
+              const cached=await fcStore.webReadEntry(researchJob,cacheKey);
+              const entry=Object.hasOwn(checkpoint.calls,operation) && cached?.result.origin!==origin ? null : cached;
+              // A cache write can survive a crash before this turn is committed. Account for
+              // its usage when replaying the originating call, but never charge later readers.
+              const cacheHit=!!entry && entry.result.origin!==origin;
+              if(!cacheHit){
+                if(verificationCalls>=4)throw new Error('Exact source read budget used; cite only verified evidence or state the information is unavailable.');
                 verificationCalls++;
-                const options={apiKey:env.OPENAI_API_KEY!,baseUrl:OPENAI_URL,model:PROVIDER === 'openai' ? model : DEFAULT_OPENAI_MODEL,onProgress:(message:string)=>log(id,message)};
-                checked=u.name === 'openai_search' ? await searchWeb(String(u.input?.query || ''),options) : await verifySources([url],options);
-                if (cfg0.firecrawl) await fcStore.saveWebRead(researchJob,cacheKey,checked); else webCache.set(cacheKey,checked);
-                for (const k of ['input_tokens','output_tokens','cache_read_input_tokens','cache_creation_input_tokens'] as const) usage[k]+=checked.usage[k];
-                usage.web_searches+=checked.searches;
               }
-              for (const src of checked.sources) seen.set(normUrl(src.url),{...src,collected:todayIso(),via:'web'});
-              research.push({kind:'web',at:new Date().toISOString(),queries:[u.name === 'openai_search' ? String(u.input.query) : 'Exact source read'],results:checked.sources,cache_hit:cacheHit});
+              let checked:SourceVerification;
+              if(entry)checked={...entry.result,collected_at:entry.result.collected_at || entry.collected_at};
+              else {
+                const options=researchOptions(operation);
+                checked=isSearch?await searchWeb(query,options):await verifySources([url],options);
+                try { await fcStore.saveWebRead(researchJob,cacheKey,{...checked,origin}); }
+                catch(cause) { throw new PlannerRecoveryError('บันทึกหลักฐานจากคำขอค้นหาที่รับแล้วไม่ได้ เก็บรหัสคำขอเดิมไว้และหยุดก่อนส่งซ้ำ',{cause}); }
+              }
+              recordWebRead(checked,isSearch?query:'Exact source read',cacheHit);
               sourceReviewTurn=turn; sourceReviewEvidence=checked.text;
               results.push({type:'tool_result',tool_use_id:u.id,is_error:!checked.sources.length,content:checked.text || 'No evidence returned. Do not cite or invent this source. If deeper extraction is needed, request this exact URL with use_firecrawl=true and a fallback_reason.'});
             } else {
@@ -1322,7 +1403,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
             if(row.creative){
               const selection=chooseStyle(plan.creative,row.creative.settings,plan.script);
               row.creative={...row.creative,settings:row.creative.settings.locked?{...row.creative.settings,mode:'manual',manual_style:selection.selected.id}:row.creative.settings,selection};
-              await pool.query('UPDATE drafts SET creative=$2 WHERE id=$1',[id,JSON.stringify(row.creative)]);
+              await db.query('UPDATE drafts SET creative=$2 WHERE id=$1 AND removed_at IS NULL',[id,JSON.stringify(row.creative)]);
             }
             artwork = reconcileArtwork(storyboard, plan, artwork);
             storyboard = plan;
@@ -1331,7 +1412,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
             reviewedArt = '';
             pendingReview = '';
             pendingImages = null;
-            await pool.query("UPDATE drafts SET storyboard=$2, status='writing', updated_at=now() WHERE id=$1", [id, JSON.stringify(storyboard)]);
+            await db.query("UPDATE drafts SET storyboard=$2, status='writing', updated_at=now() WHERE id=$1 AND removed_at IS NULL", [id, JSON.stringify(storyboard)]);
             compactSource();
             if (active.lemo) {
               await log(id, `บันทึกบทและแผนภาพ Lemo ${storyboard.shots.length} ฉากแล้ว · พร้อมตรวจข้อมูลประกอบบท`);
@@ -1351,16 +1432,16 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
             if(row.creative?.engine==='lemo'){
               const d={...u.input,script:storyboard.script,storyboard,research_seen:[...seen.values()]};
               prepareCreative({...row,storyboard,draft:d});
-              await pool.query("UPDATE drafts SET draft=$2,creative=$3,status='ready',research=$4,usage=$5,problems='[]',error=NULL,updated_at=now() WHERE id=$1",[id,JSON.stringify(d),JSON.stringify(row.creative),JSON.stringify(research),JSON.stringify(usage)]);
+              await db.query("UPDATE drafts SET draft=$2,creative=$3,status='ready',research=$4,usage=$5,problems='[]',error=NULL,planner_checkpoint=NULL,updated_at=now() WHERE id=$1 AND removed_at IS NULL",[id,JSON.stringify(d),JSON.stringify(row.creative),JSON.stringify(research),JSON.stringify(usage)]);
               await log(id,'บทและสไตล์ Lemo พร้อมตรวจ · ต้องอนุมัติค่าใช้จ่ายก่อนผลิต');return;
             }
             submits++;
-            await pool.query("UPDATE drafts SET status='writing', updated_at=now() WHERE id=$1", [id]);
+            await db.query("UPDATE drafts SET status='writing', updated_at=now() WHERE id=$1 AND removed_at IS NULL", [id]);
             await log(id, submits === 1 ? 'เขียนสคริปต์และวางฉากเสร็จ กำลังตรวจกฎ' : `แก้ตามที่ตรวจพบ (รอบ ${submits})`);
             const parsed = Draft.safeParse(draftWithCharacterPolicy({ ...mergeArtwork({script:storyboard.script,...u.input}, artwork), storyboard, ...(storyMode === 'general' ? {story_mode:storyMode} : {}) }, recurringCharacter, presenterKind, directionVersion, row.note || '', visualVersion));
             if (!parsed.success) {
               const issues = parsed.error.issues.slice(0, 15).map((i) => `${i.path.join('.')}: ${i.message}`);
-              await pool.query('UPDATE drafts SET problems=$2 WHERE id=$1', [id,JSON.stringify(issues)]);
+              await db.query('UPDATE drafts SET problems=$2 WHERE id=$1 AND removed_at IS NULL', [id,JSON.stringify(issues)]);
               await log(id, 'รูปแบบร่างต้องแก้: '+issues.slice(0,3).join(' · ').slice(0,300));
               results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: `Fix these metadata fields only; do NOT re-plan or redraw saved assets. Narration comes from the saved storyboard. If sources is empty, use read_page to retrieve a relevant real source and ground at least one factual claim; keep unknown name counts explicitly unknown and do not invent citations.\n- ${issues.join('\n- ')}` });
               continue;
@@ -1374,11 +1455,8 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
             if (missing.length && PROVIDER === 'openai' && verificationCalls < 4) {
               missing.forEach(src => attemptedVerification.add(normUrl(src.url))); verificationCalls++;
               await log(id, `กำลังเปิดแหล่งอ้างอิงที่ยังไม่มีหลักฐาน ${missing.length} หน้า`);
-              const checked = await verifySources(missing.map(src=>src.url), {apiKey:env.OPENAI_API_KEY!,baseUrl:OPENAI_URL,model,onProgress:message=>log(id,message)});
-              for (const src of checked.sources) seen.set(normUrl(src.url), {...src,collected:todayIso(),via:'web'});
-              for (const k of ['input_tokens','output_tokens','cache_read_input_tokens','cache_creation_input_tokens'] as const) usage[k] += checked.usage[k];
-              usage.web_searches += checked.searches;
-              research.push({kind:'web',at:new Date().toISOString(),queries:['Verify submitted sources'],results:checked.sources});
+              const checked=await verifySources(missing.map(src=>src.url),researchOptions('submit-verify-'+u.id));
+              recordWebRead(checked,'Verify submitted sources');
               sourceReviewTurn = turn; sourceReviewEvidence = checked.text;
               sourceReview = 'SOURCE REVIEW: the server opened missing sources. Read the evidence, correct any unsupported claims and submit metadata again. Do not redraw artwork. Evidence: ' + (checked.text || 'No readable content returned; remove unsupported claims.');
               await saveUsage();
@@ -1390,7 +1468,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
             let showImages: { text: string; images: string[] } | null = null;
             if (!problems.length && d.scenes.some((x: any) => x.type === 'custom')) {
               await log(id, 'ส่งภาพที่โมเดลเขียนโค้ดให้ worker ลองวาด');
-              const ac = await artCheck(id, d, (d as any).style || 'classic');
+              const ac = await artCheck(db,id, d, (d as any).style || 'classic');
               if (!ac) { throw new Error('worker ยังไม่ตอบการลองวาด ร่างยังไม่พร้อมผลิต กรุณาลองใหม่เมื่อ worker พร้อม'); }
               else if (ac.errors.length) { problems.push(...ac.errors); await log(id, `ลองวาดแล้วพบ ${ac.errors.length} จุดต้องแก้`); }
               else if (ac.frames.length !== d.scenes.length) { problems.push('preview must include every scene before approval'); }
@@ -1412,13 +1490,13 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
               est = f.est;
             }
             if (problems.length && submits < 7) {
-              await pool.query('UPDATE drafts SET problems=$2 WHERE id=$1', [id, JSON.stringify(problems)]);
+              await db.query('UPDATE drafts SET problems=$2 WHERE id=$1 AND removed_at IS NULL', [id, JSON.stringify(problems)]);
               await log(id, `ตรวจพบ ${problems.length} จุดต้องแก้`);
               results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: `Fix these and submit again:\n- ${problems.join('\n- ')}` });
               continue;
             }
             const researchSeen = [...seen.values()];
-            await pool.query(`UPDATE drafts SET draft=$2, problems=$3, estimated_credits=$4, status=$5, research=$6, usage=$7, error=$8, updated_at=now() WHERE id=$1`,
+            await db.query(`UPDATE drafts SET draft=$2, problems=$3, estimated_credits=$4, status=$5, research=$6, usage=$7, error=$8, planner_checkpoint=NULL, updated_at=now() WHERE id=$1 AND removed_at IS NULL`,
               [id, JSON.stringify({ ...d, warnings, research_seen: researchSeen }), JSON.stringify(problems), est, problems.length ? 'failed' : 'ready', JSON.stringify(research),
                 JSON.stringify(usage), problems.length ? 'ยังผ่านกฎไม่ครบหลังแก้หลายรอบ ดูรายการด้านล่าง' : null]);
             if (problems.length) { await log(id, 'ยังไม่ผ่านกฎ หยุดไว้ให้ตรวจ'); return; }
@@ -1429,6 +1507,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
             results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: `unknown tool ${u.name}` });
           }
         } catch (e) {
+          if (e instanceof PlannerRecoveryError || e instanceof OpenAIReadUnavailable) throw e;
           const msg = e instanceof z.ZodError
             ? e.issues.slice(0,8).map(issue => `${issue.path.join('.') || 'arguments'}: ${issue.message}`).join(' · ')
             : e instanceof Error ? `${e.message}${e.cause ? ` (${networkCode(e)})` : ''}` : String(e);
@@ -1470,7 +1549,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
         if (active.lemo && use.name === 'submit_episode') rejectedLemoSubmits++;
         if (count >= 3 || rejectedLemoSubmits >= 7) {
           const detail = `${use.name} · ${reason.slice(0, 900)}`;
-          await pool.query('UPDATE drafts SET problems=$2 WHERE id=$1 AND removed_at IS NULL',[id,JSON.stringify([detail])]);
+          await db.query('UPDATE drafts SET problems=$2 WHERE id=$1 AND removed_at IS NULL',[id,JSON.stringify([detail])]);
           const stop = count >= 3 ? 'พบข้อผิดพลาดเดิม 3 รอบ' : 'ส่งข้อมูลร่างแล้ว 7 ครั้งยังไม่ผ่าน';
           throw new Error(`${stop} จึงหยุดเรียกโมเดล: ${detail}`);
         }
@@ -1479,31 +1558,19 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
         !mustSubmit && !active.ws && (!active.fc || fcBudget?.remaining === 0) ? 'Research budget reached: write and submit now.' : undefined);
       if (pendingImages) { conv.show(pendingImages.text, pendingImages.images); pendingImages = null; reviewedArt = pendingReview; pendingReview = ''; }
     }
-    await pool.query("UPDATE drafts SET status='failed', error=$2, usage=$3, research=$4, updated_at=now() WHERE id=$1",
+    await db.query("UPDATE drafts SET status='failed', error=$2, usage=$3, research=$4, updated_at=now() WHERE id=$1 AND removed_at IS NULL",
       [id, 'เขียนไม่เสร็จภายในจำนวนรอบที่กำหนด', JSON.stringify(usage), JSON.stringify(research)]);
   }
 
-  // one generation at a time keeps cost and rate limits predictable
+  // The in-process flag avoids competing checkout attempts; Postgres serializes all replicas.
+  const runPlanner = deps.plannerSession ?? ((work) => withStudioPlannerSession(pool, work));
   let busy = false;
   async function pump() {
     if (busy) return;
     busy = true;
-    try {
-      for (;;) {
-        const next = (await pool.query(`SELECT id FROM drafts WHERE status='queued' AND ${IS_STUDIO_DRAFT} ORDER BY created_at LIMIT 1`)).rows[0];
-        if (!next) break;
-        try {
-          await generate(next.id);
-        } catch (e) {
-          const msg = e instanceof Error ? e.message : String(e);
-          if ((await pool.query('SELECT removed_at FROM drafts WHERE id=$1',[next.id])).rows[0]?.removed_at) continue;
-          console.error('studio', next.id, msg);
-          await pool.query("UPDATE drafts SET status='failed', error=$2, log=log || $3::jsonb, updated_at=now() WHERE id=$1 AND removed_at IS NULL", [next.id, msg.slice(0,500), JSON.stringify([{at:new Date().toISOString(),msg:`ล้มเหลว: ${msg.slice(0,160)}`}])]);
-        }
-      }
-    } finally {
-      busy = false;
-    }
+    try { await runPlanner(db => drainStudioQueue(db, generate)); }
+    catch (e) { console.error('studio queue', e instanceof Error ? e.message : String(e)); }
+    finally { busy = false; }
   }
 
   async function produce(id: string) {
@@ -1579,9 +1646,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
   }
   setTimeout(() => importInbox().catch(() => {}), 8000);
 
-  // drafts that were mid-generation when the process restarted cannot resume the conversation
-  pool.query(`UPDATE drafts SET status='failed', error='ระบบรีสตาร์ทระหว่างเขียน กด "เขียนใหม่" เพื่อเริ่มอีกครั้ง', updated_at=now()
-    WHERE status IN ('researching','writing') AND ${IS_STUDIO_DRAFT}`).then(() => pump()).catch(() => {});
+  void pump();
 
   // ---------------------------------------------------------------- routes
   const g = deps.guard;
@@ -1590,10 +1655,10 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     trend_context:r.trend_context||null,
     id: r.id, topic: r.topic, note: r.note, status: r.status, title: r.draft?.title_th ?? null, angle: r.draft?.angle ?? null, created_at: r.created_at,
     director_version:directorVersion(r.director_version), presentation_version:presentationVersion(r.presentation_version),
-    recurring_character: r.recurring_character === true, presenter_kind:parsePresenterKind(r.presenter_kind, 'legacy'), has_character_reference:Array.isArray(r.characters) && r.characters.length > 0,
+    recurring_character: r.recurring_character === true, presenter_kind:parsePresenterKind(r.presenter_kind, 'legacy'), has_character_reference:r.has_character_reference ?? (Array.isArray(r.characters) && r.characters.length > 0),
     narration_style: r.narration_style || 'standard', narration_custom: r.narration_custom || '', source_text_characters: String(r.source_text || '').length,
     updated_at: r.updated_at, estimated_credits: r.estimated_credits, job_id: r.job_id, job_status: r.job_status ?? null, job_progress: r.job_progress ?? null,
-    episode_number: r.episode_number ?? null, last: (r.log || []).slice(-1)[0]?.msg ?? null, error: r.error, auto_produce: r.auto_produce, source_type: r.source_type ?? 'studio', community_id: r.community_id ?? null,
+    episode_number: r.episode_number ?? null, last: r.last ?? (r.log || []).slice(-1)[0]?.msg ?? null, error: r.error, auto_produce: r.auto_produce, source_type: r.source_type ?? 'studio', community_id: r.community_id ?? null,
   });
 
   async function openAIBrainOptions(refreshNow = false) {
@@ -1695,7 +1760,14 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
   });
 
   app.get('/app/api/studio/drafts', g, async (c) => {
-    const r = await pool.query(`SELECT d.*, j.status AS job_status, j.progress AS job_progress, e.number AS episode_number FROM drafts d
+    // This polled list must not load private planner transcripts or reference images.
+    const r = await pool.query(`SELECT d.id, d.topic, d.note, d.status, d.trend_context, d.created_at, d.updated_at,
+      d.director_version, d.presentation_version, d.recurring_character, d.presenter_kind, d.narration_style,
+      d.narration_custom, d.source_text, d.estimated_credits, d.job_id, d.error, d.auto_produce, d.source_type, d.community_id,
+      jsonb_build_object('title_th', d.draft->'title_th', 'angle', d.draft->'angle') AS draft,
+      (d.log->-1)->>'msg' AS last,
+      (jsonb_typeof(d.characters)='array' AND d.characters <> '[]'::jsonb) AS has_character_reference,
+      j.status AS job_status, j.progress AS job_progress, e.number AS episode_number FROM drafts d
       LEFT JOIN jobs j ON j.id = d.job_id LEFT JOIN episodes e ON e.id = d.episode_id
       WHERE d.status <> 'discarded' AND ${IS_STUDIO_DRAFT} ORDER BY d.created_at DESC LIMIT 40`);
     return c.json({ drafts: r.rows.map(summary) });
@@ -1709,7 +1781,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     if (!r) return c.json({ error: 'not found' }, 404);
     const dr = r.draft ? { ...r.draft } : null;
     if (dr) { delete dr.research_seen; if (Array.isArray(dr.cast)) dr.cast = dr.cast.map((x: any) => { const { backdrop, ...rest } = x; return { ...rest, has_backdrop: !!backdrop }; }); }
-    return c.json({ ...summary(r),creative:r.creative,storyboard:r.storyboard, log: r.log, draft: dr, problems: r.problems, usage: r.usage, model: r.model, reasoning: r.reasoning, job_error: r.job_error ?? null,
+    return c.json({ ...summary(r),uncertain_planner_charge:needsFreshPlannerConsent(r),legacy_resume:PROVIDER==='openai'?legacyPlannerReceipt(r):null,creative:r.creative,storyboard:r.storyboard, log: r.log, draft: dr, problems: r.problems, usage: r.usage, model: r.model, reasoning: r.reasoning, job_error: r.job_error ?? null,
       research_budget: env.FIRECRAWL_API_KEY ? await new PgResearchBudget(pool).snapshot(r.research_job_id || r.id) : null, research: r.research, story_mode: r.story_mode || 'name_story', source_text:r.source_text || '' });
   });
 
@@ -1725,6 +1797,14 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       await log(id,`เจ้าของอนุมัติงบ Firecrawl รวม ${budget.limit} เครดิตสำหรับ Research Job นี้`);
       return c.json({research_budget:budget});
     } catch(e) {return c.json({error:e instanceof Error ? e.message : 'Budget approval failed'},409);}
+  });
+
+  registerLegacyPlannerResume(app,pool,{
+    guard:g, wake:()=>{void pump().catch(e=>console.error('studio resume queue',e));},
+    readResponse:async responseId=>{
+      if(PROVIDER!=='openai' || !env.OPENAI_API_KEY) throw Error('OpenAI unavailable');
+      return openaiResponse({}, {responseId,pollOnce:true,apiKey:env.OPENAI_API_KEY,baseUrl:OPENAI_URL});
+    },
   });
 
   // Owner-only diagnostics for responses already associated with this draft. Never returns keys or reference images.
@@ -1899,6 +1979,9 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     }
     const cf = configured();
     if (!researchReady(cf)) return c.json({ error: 'ยังไม่ได้ตั้งค่า API key ใน Railway' }, 503);
+    if (needsFreshPlannerConsent(row) && b.confirm_new_planning !== true) {
+      return c.json({error:'ยังยืนยันยอดของคำขอก่อนไม่ได้ การเริ่มร่างใหม่อาจใช้เครดิตซ้ำ กรุณายืนยันก่อนเริ่ม'},409);
+    }
     // a rewrite keeps the owner's style and music choice (the review may have changed them on the draft itself)
     const keepStyle = row.draft?.style && STYLES[row.draft.style] && row.style !== 'auto' ? row.draft.style : row.style || 'auto';
     const keepMusic = row.draft?.music_mode || row.music_mode || 'default';
@@ -1910,25 +1993,40 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
         (model !== row.model && PROVIDER === 'openai' && !(await readModels(deps.models)).ids.includes(model)))) {
       return c.json({error:'เลือกสมองที่ใช้ได้จากรายชื่อโมเดลล่าสุด'}, 422);
     }
+    if (['queued','researching','writing'].includes(row.status)) {
+      return c.json({error:'ร่างนี้อยู่ระหว่างทำงาน โปรดรอผลของร่างเดิมก่อนเขียนใหม่'},409);
+    }
     const previousNarration = parseNarration(row);
     const sameNarration = narration.narration_style === previousNarration.narration_style && narration.narration_custom === previousNarration.narration_custom;
     const reuseCheckpoints = !!(row.status === 'failed' && row.storyboard && sameNarration && recurringCharacter === (row.recurring_character === true) && presenterKind === parsePresenterKind(row.presenter_kind, 'legacy') && (b.note === undefined || String(b.note).trim() === String(row.note || '').trim()));
     const directionVersion = reuseCheckpoints ? directorVersion(row.director_version) : 1;
     const visualVersion = reuseCheckpoints ? presentationVersion(row.presentation_version) : 1;
-    const r = await pool.query('INSERT INTO drafts (topic, note, parent_id, auto_produce, model, reasoning, characters, source_type, community_id, style, music_mode, story_mode, source_text, research_job_id, request_key, request_hash, narration_style, narration_custom, recurring_character, presenter_kind, director_version, presentation_version, creative, trend_context) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24) ON CONFLICT (request_key) DO NOTHING RETURNING id',
+    // Publish the child and all reusable assets together, while the parent is still in the state reviewed.
+    const r = await pool.query(`WITH rewrite_source AS (
+      SELECT id FROM drafts WHERE id=$3 AND status=$28 AND status<>'discarded' AND removed_at IS NULL FOR UPDATE
+    ), child AS (
+      INSERT INTO drafts (topic,note,parent_id,auto_produce,model,reasoning,characters,source_type,community_id,style,music_mode,
+        story_mode,source_text,research_job_id,request_key,request_hash,narration_style,narration_custom,recurring_character,
+        presenter_kind,director_version,presentation_version,creative,trend_context,storyboard,artwork,research,log)
+      SELECT $1,$2,id,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$29
+      FROM rewrite_source ON CONFLICT (request_key) DO NOTHING RETURNING id
+    ), retired AS (
+      UPDATE drafts SET status='discarded',updated_at=now() WHERE id=$3 AND status IN ('ready','failed') AND EXISTS(SELECT 1 FROM child)
+    ), relinked AS (
+      UPDATE community_winners SET draft_id=child.id,updated_at=now() FROM child WHERE community_winners.id=$9 AND community_winners.draft_id=$3
+    ) SELECT id FROM child`,
       [row.topic, String(b.note ?? row.note ?? '').trim().slice(0, 1000) || null, row.id, row.source_type === 'community'||row.creative ? false : !!b.auto_produce,
         model, REASONING_LEVELS.includes(b.reasoning) ? b.reasoning : row.reasoning,
-        JSON.stringify(row.characters ?? []), row.source_type || 'studio', row.community_id ?? null, keepStyle, keepMusic, row.story_mode || 'name_story', row.source_text || null, row.research_job_id || row.id, request.key, request.hash, narration.narration_style, narration.narration_custom, recurringCharacter, presenterKind, directionVersion, visualVersion, row.creative?JSON.stringify(b.creative?{engine:row.creative.engine,settings:CreativeSettings.parse({...row.creative.settings,...b.creative})}:row.creative):null,row.trend_context?JSON.stringify(row.trend_context):null]);
+        JSON.stringify(row.characters ?? []), row.source_type || 'studio', row.community_id ?? null, keepStyle, keepMusic, row.story_mode || 'name_story', row.source_text || null, row.research_job_id || row.id, request.key, request.hash, narration.narration_style, narration.narration_custom, recurringCharacter, presenterKind, directionVersion, visualVersion, row.creative?JSON.stringify(b.creative?{engine:row.creative.engine,settings:CreativeSettings.parse({...row.creative.settings,...b.creative})}:row.creative):null,row.trend_context?JSON.stringify(row.trend_context):null,
+        reuseCheckpoints ? JSON.stringify(row.storyboard) : null,
+        reuseCheckpoints ? JSON.stringify(row.artwork || emptyArtwork()) : null,
+        JSON.stringify(reuseCheckpoints ? row.research || [] : []), row.status,
+        JSON.stringify([{at:new Date().toISOString(), msg:row.draft ? 'เขียนใหม่จากร่างเดิม รอคิว' : 'ลองใหม่ รอคิว'}])]);
     if (!r.rows.length) {
-      const old = (await pool.query('SELECT id, request_hash FROM drafts WHERE request_key=$1',[request.key])).rows[0];
-      return old?.request_hash === request.hash ? c.json({id:old.id},201) : c.json({error:'idempotency-key already used for different input'},409);
+      const old = request.key && (await pool.query('SELECT id, request_hash FROM drafts WHERE request_key=$1',[request.key])).rows[0];
+      if (old) return old.request_hash===request.hash ? c.json({id:old.id},201) : c.json({error:'idempotency-key already used for different input'},409);
+      return c.json({error:'สถานะร่างเปลี่ยนแล้ว กรุณาเปิดร่างล่าสุดก่อนเขียนใหม่'},409);
     }
-    if (reuseCheckpoints) {
-      await pool.query('UPDATE drafts SET storyboard=$2, artwork=$3, research=$4 WHERE id=$1', [r.rows[0].id,JSON.stringify(row.storyboard),JSON.stringify(row.artwork || emptyArtwork()),JSON.stringify(row.research || [])]);
-    }
-    if (row.community_id) await pool.query('UPDATE community_winners SET draft_id=$2, updated_at=now() WHERE id=$1 AND draft_id=$3', [row.community_id, r.rows[0].id, id]);
-    if (['ready', 'failed'].includes(row.status)) await pool.query("UPDATE drafts SET status='discarded', updated_at=now() WHERE id=$1", [id]);
-    await log(r.rows[0].id, row.draft ? 'เขียนใหม่จากร่างเดิม รอคิว' : 'ลองใหม่ รอคิว');
     pump();
     return c.json({ id: r.rows[0].id }, 201);
   });

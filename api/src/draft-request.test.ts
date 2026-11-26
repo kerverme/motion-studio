@@ -6,7 +6,7 @@ import {PGlite} from '@electric-sql/pglite';
 import {Hono} from 'hono';
 import {draftRequest} from './draft-request.js';
 process.env.MOTION_LLM_PROVIDER='openai';process.env.OPENAI_API_KEY='mock-key';
-const {registerStudio}=await import('./studio.js');
+const {registerStudio}=await import('../tests/studio-fixture.js');
 const db=new PGlite();
 after(()=>db.close());
 
@@ -48,8 +48,18 @@ test('Postgres prevents concurrent duplicate drafts and rewrites, and replays su
     const child:any=(await db.query('SELECT * FROM drafts WHERE id=$1',[children[0].id])).rows[0];
     assert.equal(child.story_mode,'general');assert.equal(child.source_text,body.source_text);assert.equal(child.model,body.model);assert.deepEqual(child.characters,[]);assert.equal(child.research_job_id,(await db.query<{research_job_id:string}>('SELECT research_job_id FROM drafts WHERE id=$1',[one.id])).rows[0].research_job_id);assert.equal(child.storyboard.story_mode,'general');
     assert.equal((await db.query<{n:number}>('SELECT count(*)::int AS n FROM drafts')).rows[0].n,2);
+    assert.equal((await send(app,path+'/'+child.id+'/rewrite','still-running-rewrite',{})).status,409);
+    await db.query("UPDATE drafts SET status='failed',planner_checkpoint=$2 WHERE id=$1",[child.id,JSON.stringify({version:1,calls:{main:{}}})]);
+    const rewritePath=path+'/'+child.id+'/rewrite';
+    assert.equal((await send(app,rewritePath,'uncertain-rewrite-001',{})).status,409);
+    assert.equal((await send(app,rewritePath,'uncertain-rewrite-001',{confirm_new_planning:true})).status,201);
     // Null keys preserve compatibility and allow deliberate new drafts.
     for(let i=0;i<2;i++)assert.equal((await app.request(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)})).status,201);
-    assert.equal((await db.query<{n:number}>('SELECT count(*)::int AS n FROM drafts')).rows[0].n,4);
+    assert.equal((await db.query<{n:number}>('SELECT count(*)::int AS n FROM drafts')).rows[0].n,5);
+    const available=(await db.query<{id:string}>("SELECT id FROM drafts WHERE status='queued' LIMIT 1")).rows[0].id;
+    await db.query("UPDATE drafts SET status='failed' WHERE id=$1",[available]);
+    const racing=await Promise.all(['tab-one-rewrite-001','tab-two-rewrite-002'].map(key=>send(app,path+'/'+available+'/rewrite',key,{})));
+    assert.deepEqual(racing.map(r=>r.status).sort(),[201,409]);
+    assert.equal((await db.query<{n:number}>('SELECT count(*)::int AS n FROM drafts WHERE parent_id=$1',[available])).rows[0].n,1);
   }finally{globalThis.setTimeout=originalTimeout;}
 });

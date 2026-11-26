@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {Hono} from 'hono';
 process.env.MOTION_LLM_PROVIDER='openai';process.env.OPENAI_API_KEY='mock-key';
 process.env.MOTION_OPENAI_WEB_SEARCH='true';delete process.env.FIRECRAWL_API_KEY;
-const {registerStudio}=await import('./studio.js');
+const {registerStudio}=await import('../tests/studio-fixture.js');
 
 const script=[{id:'hook',beat:'hook',text:'ทำไมตื่นแล้ว ยังรู้สึกไม่สดชื่น'},...['water','light','routine'].map(id=>({id,beat:'rehook',text:'ลองดูสิ่งที่เกิดขึ้นในตอนเช้า เราจะอธิบายทีละขั้นด้วยภาพแก้วน้ำและนาฬิกา โดยแยกคำแนะนำของผู้ให้สัมภาษณ์ออกจากหลักฐานที่ตรวจสอบได้ ข้อมูลบางส่วนอาจแตกต่างกันในแต่ละคน'})),{id:'end',beat:'cta',text:'คุณอยากเริ่มจากข้อไหน ลองเล่าในคอมเมนต์ให้ฟังหน่อย'}];
 const basePlan={story_mode:'general',script,shots:script.map(s=>({seg:s.id,visual:'A clock beside a window makes a sequence of daily events visible',action:'A light ray reaches the clock and moves its schedule marker',camera:'A readable close view of the clock and moving marker',characters:[]})),character_notes:'Use clocks, light rays and diagrams; no human or animal characters.'};

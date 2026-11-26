@@ -164,7 +164,12 @@ export class PgResearchBudget implements BudgetStore {
       await db.query('COMMIT');
     } catch(e) { await db.query('ROLLBACK'); throw e; }
   }
-  async webRead(job:string,key:string) { await this.ensure(job); return (await this.db().query("SELECT result FROM research_web_reads WHERE research_job_id=$1 AND source_key=$2 AND collected_at>now()-interval '24 hours'",[job,key])).rows[0]?.result || null; }
+  async webReadEntry(job:string,key:string) {
+    await this.ensure(job);
+    const entry=(await this.db().query("SELECT result,collected_at FROM research_web_reads WHERE research_job_id=$1 AND source_key=$2 AND collected_at>now()-interval '24 hours'",[job,key])).rows[0];
+    return entry?{result:entry.result,collected_at:new Date(entry.collected_at).toISOString()}:null;
+  }
+  async webRead(job:string,key:string) { return (await this.webReadEntry(job,key))?.result || null; }
   async saveWebRead(job:string,key:string,result:unknown) { await this.ensure(job); await this.db().query('INSERT INTO research_web_reads(research_job_id,source_key,result) VALUES ($1,$2,$3) ON CONFLICT(research_job_id,source_key) DO UPDATE SET result=excluded.result,collected_at=now()',[job,key,JSON.stringify(result)]); }
   async approve(job:string,limit:number) {
     if (!Number.isSafeInteger(limit) || limit<=25 || limit>1000) throw new Error('Explicit new total must be an integer from 26 to 1000.');

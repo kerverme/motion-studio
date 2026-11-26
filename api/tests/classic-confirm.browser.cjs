@@ -206,6 +206,38 @@ const quote={revision:'revision-1',quote_hash:'quote-1',known_total_usd:0,unknow
   await confirm.evaluate(button=>button.click());
   assert.equal(await p.evaluate(()=>approvalCount),0);
  });
+ await test('Legacy research draft opens without spending and resumes the same receipt exactly once per click',async p=>{
+  await p.evaluate(()=>{
+   window.resumeWrites=[];
+   const d={...fixture,topic:'ทดสอบร่างเก่า',status:'failed',draft:null,storyboard:null,creative:null,legacy_resume:{turn:4,response_id:'resp_main4'},log:[],usage:{turns:3}};
+   api=async(path,opts={})=>{
+    if(!opts.method && path.endsWith('/drafts/'+d.id)) return d;
+    if(path.endsWith('/resume') && opts.method==='POST'){
+     resumeWrites.push({path,body:JSON.parse(opts.body)});
+     await new Promise(resolve=>{window.answerResume=resolve;});
+     if(resumeWrites.length===1)throw Error('ยืนยันจุดที่ร่างหยุดไม่ได้');
+     d.status='queued';return {id:d.id,status:d.status};
+    }
+    throw Error('Unexpected path '+path);
+   };
+   openStudioDraft(d.id);
+  });
+  const drawer=p.getByRole('dialog'),btn=drawer.getByRole('button',{name:'ทำร่างเดิมต่อ',exact:true});
+  await btn.waitFor();
+  assert.match(await drawer.textContent(),/อาจใช้เครดิตเพิ่ม/);
+  assert.deepEqual(await p.evaluate(()=>resumeWrites),[]);
+  await btn.evaluate(el=>{el.click();el.click();});
+  assert.ok(await btn.isDisabled());
+  const expected={path:'/app/api/studio/drafts/classic-test/resume',body:{response_id:'resp_main4',confirm:true}};
+  assert.deepEqual(await p.evaluate(()=>resumeWrites),[expected]);
+  await p.evaluate(()=>answerResume());
+  await drawer.getByRole('alert').filter({hasText:'ยืนยันจุดที่ร่างหยุดไม่ได้'}).waitFor();
+  assert.ok(await btn.isEnabled());
+  await btn.click();await p.evaluate(()=>answerResume());
+  await btn.waitFor({state:'detached'});
+  assert.equal(await drawer.getByRole('button',{name:'ลองใหม่'}).count(),0);
+  assert.deepEqual(await p.evaluate(()=>resumeWrites),[expected,expected]);
+ });
  await test('A scrolled Lemo research log returns to the production confirmation when the draft is ready',async p=>{
   await p.setViewportSize({width:390,height:600});
   await p.clock.install();

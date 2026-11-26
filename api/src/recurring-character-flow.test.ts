@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {Hono} from 'hono';
 process.env.MOTION_LLM_PROVIDER='openai';process.env.OPENAI_API_KEY='mock-key';
 process.env.MOTION_OPENAI_WEB_SEARCH='true';delete process.env.FIRECRAWL_API_KEY;
-const {registerStudio}=await import('./studio.js');
+const {registerStudio}=await import('../tests/studio-fixture.js');
 
 for(const scenario of [
   {reference:false,kind:undefined,suffix:'091',title:'stored recurring draft without presenter kind keeps its legacy human presenter'},

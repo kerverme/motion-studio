@@ -8,7 +8,7 @@ import {CreativeSettings,chooseStyle} from './creative.js';
 process.env.MOTION_LLM_PROVIDER='openai';
 process.env.OPENAI_API_KEY='mock-only';
 delete process.env.FIRECRAWL_API_KEY;
-const {registerStudio}=await import('./studio.js');
+const {registerStudio}=await import('../tests/studio-fixture.js');
 
 test('saved Lemo plan rejects unavailable and malformed calls, then stops a repeating schema error before paying for another turn',async t=>{
   const db=new PGlite();

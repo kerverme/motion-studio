@@ -7,7 +7,7 @@ import {Hono} from 'hono';
 import {parseRecurringCharacter,parsePresenterKind,withCharacterPolicy,referencePresenterProblem,characterPolicyPrompt} from './character-policy.js';
 process.env.MOTION_LLM_PROVIDER='openai';process.env.OPENAI_API_KEY='mock-key';
 process.env.MOTION_OPENAI_WEB_SEARCH='true';delete process.env.FIRECRAWL_API_KEY;
-const {registerStudio,Draft,checkDraft,systemPrompt}=await import('./studio.js');
+const {registerStudio,Draft,checkDraft,systemPrompt}=await import('../tests/studio-fixture.js');
 const db=new PGlite();after(()=>db.close());
 
 function generalDraft(recurring=false){

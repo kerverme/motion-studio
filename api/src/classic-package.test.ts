@@ -4,7 +4,7 @@ import {readFileSync} from 'node:fs';
 import {Hono} from 'hono';
 import {CreativeSettings,chooseStyle} from './creative.js';
 import {Storyboard} from './storyboard.js';
-import {Draft,registerStudio,creativePackageProblems} from './studio.js';
+import {Draft,registerStudio,creativePackageProblems} from '../tests/studio-fixture.js';
 const sample=JSON.parse(readFileSync(new URL('../../lemo-worker/tests/fixtures/nik.json',import.meta.url),'utf8'));
 function fixture(){
   const script=[{id:'hook',beat:'hook',text:'ทำไมแก้วใบนี้ ย้ายแล้วเงาเปลี่ยน'},...['water','light','routine'].map(id=>({id,beat:'rehook',text:'ลองดูแก้วใบเดิม เราเลื่อนแก้ว แล้วเลื่อนแก้วอีกครั้ง ให้แสงผ่านไปยังโต๊ะ ตัวอย่างนี้ช่วยให้เราเห็น ว่าตำแหน่งของสิ่งของ ทำให้ภาพที่เห็นต่างออกไป เราจะลองทีละอย่าง แล้วสังเกตผลที่เกิดขึ้น เพื่อหาคำตอบจากสิ่งตรงหน้า'})),{id:'end',beat:'cta',text:'ตอนนี้เงาเปลี่ยนตามแก้วแล้ว คุณอยากลองย้ายอะไร เล่าในคอมเมนต์ให้ฟังหน่อย'}];

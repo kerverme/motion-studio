@@ -7,7 +7,7 @@ import {Hono} from 'hono';
 import {parseNarration,narrationPrompt,parseSourceText,sourceMaterialBlock,readSourceMaterial,SOURCE_TEXT_LIMIT} from './narration.js';
 process.env.MOTION_LLM_PROVIDER='openai';process.env.OPENAI_API_KEY='mock-key';
 process.env.MOTION_OPENAI_WEB_SEARCH='true';delete process.env.FIRECRAWL_API_KEY;
-const {registerStudio}=await import('./studio.js');
+const {registerStudio}=await import('../tests/studio-fixture.js');
 const db=new PGlite();after(()=>db.close());
 
 test('narration choices validate custom direction and preserve medical uncertainty independently of reading level',()=>{

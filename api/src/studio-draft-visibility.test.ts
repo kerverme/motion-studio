@@ -8,7 +8,7 @@ import {FALLBACK_MODELS} from './openai-models.js';
 test('legacy Reverse approvals stay in history without occupying Studio draft slots, detail routes or quota',async t=>{
   process.env.MOTION_LLM_PROVIDER='openai';
   process.env.OPENAI_API_KEY='test-only';
-  const {registerStudio}=await import('./studio.js');
+  const {registerStudio}=await import('../tests/studio-fixture.js');
   const db=new PGlite();
   t.after(()=>db.close());
   const dir=new URL('../migrations/',import.meta.url);

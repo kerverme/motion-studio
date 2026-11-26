@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {Hono} from 'hono';
 process.env.MOTION_LLM_PROVIDER='openai';
 process.env.OPENAI_API_KEY='mock-key';
-const {registerStudio}=await import('./studio.js');
+const {registerStudio}=await import('../tests/studio-fixture.js');
 
 test('general mode and source text persist with Sol and survive rewrite; old clients retain name-series',async()=>{
   const id='10000000-0000-0000-0000-000000000020';
@@ -15,7 +15,7 @@ test('general mode and source text persist with Sol and survive rewrite; old cli
     if(sql.startsWith('UPDATE drafts SET log'))return {rows:[],rowCount:1};
     if(sql.startsWith('SELECT count(*)'))return {rows:[{n:0}]};
     if(sql.startsWith('SELECT * FROM drafts WHERE id='))return {rows:[row]};
-    if(sql.startsWith('INSERT INTO drafts')){inserts.push({sql,args});return {rows:[{id}]};}
+    if(sql.startsWith('INSERT INTO drafts')||sql.startsWith('WITH rewrite_source')){inserts.push({sql,args});return {rows:[{id}]};}
     return {rows:[],rowCount:0};
   }};
   const nativeTimeout=globalThis.setTimeout;

@@ -6,7 +6,7 @@ import {PGlite} from '@electric-sql/pglite';
 process.env.MOTION_LLM_PROVIDER='openai';
 process.env.OPENAI_API_KEY='mock-key';
 process.env.FIRECRAWL_API_KEY='mock-firecrawl';
-const {registerStudio}=await import('./studio.js');
+const {registerStudio}=await import('../tests/studio-fixture.js');
 
 test('studio enforces exact OpenAI read before fallback, caches deeper extraction and protects budget approval',async()=>{
   const db=new PGlite();
@@ -22,7 +22,8 @@ test('studio enforces exact OpenAI read before fallback, caches deeper extractio
     if(sql.startsWith('SELECT removed_at FROM drafts'))return {rows:[{removed_at:null}]};
     if(sql.startsWith('SELECT * FROM drafts WHERE id='))return {rows:[{...row,status}]};
     if(sql.startsWith('SELECT id, draft FROM drafts'))return {rows:[]};
-    if(sql.startsWith("UPDATE drafts SET status='researching'")){status='researching';return {rows:[]};}
+    if(sql.startsWith("UPDATE drafts SET status='researching'")){status='researching';return {rows:[],rowCount:1};}
+    if(sql.startsWith('UPDATE drafts SET planner_checkpoint='))return {rows:[],rowCount:1};
     if(sql.startsWith('UPDATE drafts SET usage=')){finalUsage=JSON.parse(args[1]);return {rows:[]};}
     if(sql.startsWith('UPDATE drafts SET log'))return {rows:[]};
     if(sql.startsWith("UPDATE drafts SET status='failed'")){status='failed';done();return {rows:[]};}

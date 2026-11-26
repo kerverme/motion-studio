@@ -427,6 +427,7 @@ app.get('/internal/google/access-token', requireInternal, async (c) => {
   return c.json({ access_token: tok.access_token, expires_in: tok.expires_in });
 });
 
+await migrate();
 const ui = registerUi(app, pool, { API_TOKEN, retryJob });
 registerReverse(app,pool,{guard:ui.requireUi});
 const suggestions = registerTopicSuggestions(app,pool,{guard:ui.requireUi});
@@ -439,6 +440,7 @@ const studio = registerStudio(app, pool, { guard: ui.requireUi, signAsset:async 
   const r = Package.safeParse(p);
   return r.success ? [] : r.error.issues.slice(0, 10).map((i) => `${i.path.join('.')}: ${i.message}`);
 } });
+setInterval(() => void studio.pump(), 10_000).unref();
 registerCommunity(app, pool, { guard: ui.requireUi, newDraft: studio.newCommunityDraft });
 
 // ---------------------------------------------------------------- operations
@@ -453,7 +455,6 @@ app.onError((err, c) => {
   return c.json({ error: 'internal error' }, 500);
 });
 
-await migrate();
 videoArena.start();
 suggestions.start().catch(e=>console.error('topic suggestions startup', e instanceof Error ? e.message : 'failed'));
 narrationPreviews.start().catch(e=>console.error('narration previews startup', e instanceof Error ? e.message : 'failed'));

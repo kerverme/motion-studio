@@ -5,7 +5,7 @@ import {readFileSync,readdirSync} from 'node:fs';
 import {PGlite} from '@electric-sql/pglite';
 import {Hono} from 'hono';
 process.env.OPENAI_API_KEY='test-key';process.env.MOTION_LLM_PROVIDER='openai';process.env.LEMO_DEVELOPMENT='true';process.env.MOTION_LLM_MAX_INPUT_TOKENS='1000';
-const {registerStudio}=await import('./studio.js');
+const {registerStudio}=await import('../tests/studio-fixture.js');
 test('Lemo reuses the research planner, persists direction and stops before drawing or paid production',async()=>{
   const db=new PGlite();
   const query=async(sql:string,args:any[]=[])=>{const r=await db.query<any>(sql,args);return {...r,rowCount:r.affectedRows??r.rows.length};};

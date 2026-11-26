@@ -1562,11 +1562,25 @@ function openDraft(id){
       const presenterLabel=d.has_character_reference?'ตัวละครจากรูปที่เลือก':d.presenter_kind==='context'?'ตัวละครตามเนื้อเรื่อง':d.presenter_kind==='cat'?'แมวการ์ตูน':'ตัวละครตามร่างเดิม';
       const head = [h('p',{class:'sub',style:'margin:0'},'หัวข้อ: '+d.topic+(d.note?' · แนวทาง: '+d.note:'')),h('p',{class:'sub',style:'margin:0'},'สไตล์การเล่า: '+narrationLabel(d.narration_style||'standard')+(d.narration_style==='custom'&&d.narration_custom?' · '+d.narration_custom:'')),d.story_mode==='general'?h('p',{class:'sub',style:'margin:0'},d.recurring_character?'ตัวละครหลักเดียวกันทุกฉาก: เปิด · '+presenterLabel:'ตัวละคร: '+(d.has_character_reference?'ใช้รูปที่เลือกเป็นอ้างอิงตามบท':'ตามเนื้อเรื่อง · วาดตัวอย่างตาม storyboard')):'',d.source_text?h('details',{},h('summary',{},'เนื้อหาต้นทางที่เก็บไว้ ('+d.source_text.length.toLocaleString('th-TH')+' ตัวอักษร)'),h('pre',{style:'white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto;font:inherit;font-size:13px'},d.source_text)):'' ];
       if (!dr || ['failed','queued','researching','writing'].includes(d.status)){
-        put(body, head, h('h2',{class:'d-title'}, d.status==='failed'?'เขียนไม่สำเร็จ':draftState(d)[1]),
-          d.error?h('div',{class:'err'},d.error):'', d.problems&&d.problems.length&&d.status==='failed'?h('ul',{class:'probl'},d.problems.map(p=>h('li',{},p))):'',
+        const receipt=d.status==='failed' && d.legacy_resume;
+        const resumeError=h('div',{class:'err',role:'alert'});
+        const resumeButton=receipt?h('button',{class:'btn primary',on:{click:async function(){
+          if(this.disabled)return;
+          this.disabled=true;resumeError.textContent='';
+          try{
+            await api('/app/api/studio/drafts/'+d.id+'/resume',{method:'POST',body:JSON.stringify({response_id:receipt.response_id,confirm:true})});
+            await refresh();
+          }catch(e){resumeError.textContent=e.message;this.disabled=false;}
+        }}},'ทำร่างเดิมต่อ'):'';
+        put(body, head, h('h2',{class:'d-title'}, receipt?'ร่างหยุดระหว่างค้นข้อมูล':d.status==='failed'?'เขียนไม่สำเร็จ':draftState(d)[1]),
+          receipt?h('p',{},'พบรหัสคำขอ OpenAI รอบที่ '+receipt.turn+' ระบบจะอ่านคำตอบเดิมและใช้ผลค้นหาที่เก็บไว้ การค้นหรือเขียนขั้นถัดไปอาจใช้เครดิตเพิ่ม เมื่อร่างพร้อมคุณจะได้ตรวจอีกครั้ง'):(d.error?h('div',{class:'err'},d.error):''),
+          resumeButton,resumeError, d.problems&&d.problems.length&&d.status==='failed'?h('ul',{class:'probl'},d.problems.map(p=>h('li',{},p))):'',
           logList(d), usage(d),
           d.status==='failed'||d.status==='queued' ? h('div',{class:'actions'},
-            d.status==='failed'?h('button',{class:'btn primary',on:{click:()=>rewrite(d,d.note||'')}},'ลองใหม่'):'',
+            d.status==='failed'&&!receipt?(d.uncertain_planner_charge
+              ? h('div',{},h('p',{class:'sub'},'ยอดค่าใช้จ่ายของคำขอก่อนหน้ายังไม่ยืนยัน หากเริ่มร่างใหม่ อาจเสียเครดิตซ้ำ'),
+                  h('button',{class:'btn',on:{click:()=>rewrite(d,d.note||'',{confirm_new_planning:true})}},'อนุมัติใช้เครดิตเริ่มร่างใหม่'))
+              : h('button',{class:'btn primary',on:{click:()=>rewrite(d,d.note||'')}},'ลองใหม่')):'',
             h('button',{class:'btn quiet',on:{click:()=>discard(d)}},'ทิ้ง')) : '');
         return;
       }

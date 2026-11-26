@@ -8,7 +8,7 @@ import {directionProblems,directionPrompt,soundPolicy,withDirectionPolicy} from 
 import {Storyboard} from './storyboard.js';
 process.env.MOTION_LLM_PROVIDER='openai';process.env.OPENAI_API_KEY='mock-key';
 process.env.MOTION_OPENAI_WEB_SEARCH='true';delete process.env.FIRECRAWL_API_KEY;
-const {registerStudio,Draft,checkDraft,buildPackage,systemPrompt}=await import('./studio.js');
+const {registerStudio,Draft,checkDraft,buildPackage,systemPrompt}=await import('../tests/studio-fixture.js');
 const db=new PGlite();after(()=>db.close());
 function directedDraft(){
   const script=[{id:'hook',beat:'hook',text:'ทำไมแก้วใบนี้ ย้ายแล้วเงาเปลี่ยน'},...['water','light','routine'].map(id=>({id,beat:'rehook',text:'ลองดูแก้วใบเดิม เราเลื่อนแก้ว แล้วเลื่อนแก้วอีกครั้ง ให้แสงผ่านไปยังโต๊ะ ตัวอย่างนี้ช่วยให้เราเห็น ว่าตำแหน่งของสิ่งของ ทำให้ภาพที่เห็นต่างออกไป เราจะลองทีละอย่าง แล้วสังเกตผลที่เกิดขึ้น เพื่อหาคำตอบจากสิ่งตรงหน้า'})),{id:'end',beat:'cta',text:'ตอนนี้เงาเปลี่ยนตามแก้วแล้ว คุณอยากลองย้ายอะไร เล่าในคอมเมนต์ให้ฟังหน่อย'}];
