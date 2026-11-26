@@ -86,18 +86,47 @@ class CodingTests(unittest.TestCase):
         ctx=SimpleNamespace(pkg={'creative':{'selection':{'selected':{'id':'dataviz'}}}})
         env={'OPENAI_API_KEY':'mock-only','ELEVENLABS_API_KEY':'mock-only','LEMO_EXECUTOR_URL':'https://executor.invalid','LEMO_EXECUTOR_TOKEN':'mock-only','LEMO_SANDBOX_IMAGE':'sha256:fixture'}
         with patch.dict('os.environ',env,clear=True),patch('lemo_worker.render.style_spec'),patch('lemo_worker.render.requests.get') as get:
-            get.return_value=SimpleNamespace(status_code=503)
-            with self.assertRaisesRegex(RuntimeError,'security readiness'):preflight(ctx)
+            get.return_value=SimpleNamespace(status_code=503,json=lambda:{'error':'Executor not configured'})
+            with self.assertRaisesRegex(RuntimeError,'HTTP 503, executor_config'):preflight(ctx)
             get.return_value=SimpleNamespace(status_code=200,json=lambda:{'ready':True,'image':'sha256:wrong'})
-            with self.assertRaisesRegex(RuntimeError,'does not match'):preflight(ctx)
+            with self.assertRaisesRegex(RuntimeError,'renderer_image_mismatch'):preflight(ctx)
             get.return_value=SimpleNamespace(status_code=200,json=lambda:{'ready':True,'image':'sha256:fixture'})
             preflight(ctx)
             self.assertEqual(get.call_args.args[0],'https://executor.invalid/ready')
             self.assertEqual(get.call_args.kwargs['headers']['Authorization'],'Bearer mock-only')
+            self.assertFalse(get.call_args.kwargs['allow_redirects'])
+            self.assertTrue(get.call_args.kwargs['verify'])
             get.reset_mock()
             with patch.dict('os.environ',{'LEMO_EXECUTOR_URL':'http://executor.invalid'}):
                 with self.assertRaisesRegex(RuntimeError,'TLS'):preflight(ctx)
             get.assert_not_called()
+
+    def test_only_temporary_readiness_errors_can_reenter_the_queue(self):
+        from lemo_worker.render import preflight, ExecutorTemporarilyUnavailable
+        ctx=SimpleNamespace(pkg={'creative':{'selection':{'selected':{'id':'dataviz'}}}})
+        env={'OPENAI_API_KEY':'fixture','ELEVENLABS_API_KEY':'fixture','LEMO_EXECUTOR_URL':'https://executor.invalid',
+             'LEMO_EXECUTOR_TOKEN':'fixture','LEMO_SANDBOX_IMAGE':'sha256:fixture'}
+        with patch.dict('os.environ',env,clear=True),patch('lemo_worker.render.style_spec'),patch('lemo_worker.render.requests.get') as get:
+            for status,body,expected in [
+                (409,{'code':'executor_busy'},ExecutorTemporarilyUnavailable),
+                (503,{'code':'runtime_unavailable'},ExecutorTemporarilyUnavailable),
+                (502,{'error':'Bad gateway'},ExecutorTemporarilyUnavailable),
+                (403,{},RuntimeError),(503,{'code':'executor_config'},RuntimeError),
+                (422,{'code':'runtime_limits_unverified'},RuntimeError),
+                (422,{'code':'runtime_unavailable'},RuntimeError),
+                (307,{},RuntimeError),(200,['invalid response'],RuntimeError),
+                (503,{'code':['invalid'],'error':'private upstream details'},RuntimeError)
+            ]:
+                with self.subTest(status=status, body=body):
+                    get.return_value=SimpleNamespace(status_code=status,json=lambda:body)
+                    with self.assertRaises(RuntimeError) as caught:preflight(ctx)
+                    self.assertIs(type(caught.exception),expected)
+                    self.assertNotIn('private upstream details',str(caught.exception))
+            for failure,expected in [(requests.Timeout(),ExecutorTemporarilyUnavailable),
+                                     (requests.exceptions.SSLError(),RuntimeError)]:
+                get.side_effect=failure
+                with self.assertRaises(RuntimeError) as caught:preflight(ctx)
+                self.assertIs(type(caught.exception),expected)
 
 
 if __name__=='__main__':unittest.main()

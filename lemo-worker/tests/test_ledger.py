@@ -26,6 +26,66 @@ class LedgerTests(unittest.TestCase):
         self.db.q('INSERT INTO creative_approvals(draft_id,revision,quote,allocations,max_usd,unknown_ack,job_id) VALUES(%s,%s,\'{}\',%s::jsonb,1,true,%s)',(draft['id'],str(uuid.uuid4()),json.dumps({'narration':1,'coding':1}),self.job['id']))
         self.ctx=SimpleNamespace(db=self.db,job=self.job)
     def tearDown(self):self.db.conn.close()
+    def test_busy_then_ready_reuses_audio_and_finishes_same_job(self):
+        from lemo_worker import main
+        self.db.q('CREATE TEMP TABLE jobs (LIKE public.jobs INCLUDING DEFAULTS)')
+        saved={'GENERATING_AUDIO':{'narration_key':'fixture.mp3'},'BUILDING_TIMELINE':{'timeline_key':'fixture.json'}}
+        package={'creative':{'selection':{'selected':{'id':'dataviz'}}}}
+        self.db.q("""INSERT INTO jobs(id,kind,status,stage_results,package) VALUES(%s,'lemo','NEW',%s,%s)""",
+                  (self.job['id'],json.dumps(saved),json.dumps(package)))
+        env={'LEMO_STYLE_LIBRARY':'cloudbath-original-v1','LEMO_ORIGINAL_STYLE_VERIFIED':'true',
+             'LEMO_EXECUTOR_URL':'https://executor.invalid','LEMO_EXECUTOR_TOKEN':'fixture','LEMO_SANDBOX_IMAGE':'fixture',
+             'OPENAI_API_KEY':'fixture','ELEVENLABS_API_KEY':'fixture'}
+        answers=[SimpleNamespace(status_code=409,json=lambda:{'code':'executor_busy'}),
+                 SimpleNamespace(status_code=200,json=lambda:{'ready':True,'image':'fixture'})]
+        with tempfile.TemporaryDirectory() as workdir, patch.object(config,'WORKDIR',workdir),patch.dict(os.environ,env), \
+             patch('lemo_worker.render.requests.get',side_effect=answers) as checks, \
+             patch.object(main.pipeline,'stage_audio') as audio,patch.object(main.pipeline,'stage_timeline') as timeline, \
+             patch.object(main,'stage_render',return_value={'final_key':'fixture.mp4'}) as render, \
+             patch.object(main.pipeline,'stage_qa',return_value={'ok':True}),patch.object(main.pipeline,'stage_upload',return_value={'ok':True}):
+            first=main.claim_job(self.db,'worker')
+            main.run_claimed_job(self.db,None,first)
+            render.assert_not_called()
+            self.assertIsNone(main.claim_job(self.db,'worker'))
+            self.db.q("UPDATE jobs SET locked_until=now()-interval '1 second'")
+            second=main.claim_job(self.db,'worker')
+            self.assertIsNotNone(second)
+            main.run_claimed_job(self.db,None,second)
+            self.assertEqual(first['id'],second['id'])
+            self.assertEqual(checks.call_count,2)
+            self.assertEqual(self.db.one('SELECT status FROM jobs WHERE id=%s',(second['id'],))['status'],'READY_TO_POST')
+            audio.assert_not_called()
+            timeline.assert_not_called()
+            render.assert_called_once()
+            self.assertEqual(second['stage_results']['GENERATING_AUDIO'],saved['GENERATING_AUDIO'])
+
+    def test_readiness_backoff_keeps_approval_and_stops_at_attempt_limit(self):
+        from lemo_worker import main
+        self.db.q('CREATE TEMP TABLE jobs (LIKE public.jobs INCLUDING DEFAULTS)')
+        checkpoint={'GENERATING_AUDIO':{'narration_key':'saved/audio.mp3'}}
+        self.db.q("""INSERT INTO jobs(id,kind,status,stage_results,max_attempts)
+            VALUES(%s,'lemo','NEW',%s::jsonb,2)""",(self.job['id'],json.dumps(checkpoint)))
+        with patch.object(main.pipeline,'Ctx',return_value=self.ctx), \
+             patch.object(main,'preflight',side_effect=main.ExecutorTemporarilyUnavailable('runtime unavailable')), \
+             patch.object(main.pipeline,'stage_audio') as audio, patch.object(main,'stage_render') as render:
+            job=main.claim_job(self.db,'fixture')
+            main.run_claimed_job(self.db,None,job)
+            paused=self.db.one('SELECT status,locked_until>now() AS delayed FROM jobs WHERE id=%s',(job['id'],))
+            self.assertEqual(paused,{'status':'NEW','delayed':True})
+            self.assertIsNone(main.claim_job(self.db,'second-worker'))
+            self.db.q("UPDATE jobs SET locked_until=now()-interval '1 second'")
+            again=main.claim_job(self.db,'second-worker')
+            self.assertEqual(again['id'],job['id'])
+            self.assertEqual(again['stage_results'],checkpoint)
+            self.assertEqual(again['attempts'],2)
+            main.run_claimed_job(self.db,None,again)
+            self.assertEqual(self.db.one('SELECT status FROM jobs WHERE id=%s',(job['id'],))['status'],'FAILED')
+            self.assertIsNone(main.claim_job(self.db,'fixture'))
+            audio.assert_not_called()
+            render.assert_not_called()
+        self.assertEqual(self.db.one('SELECT count(*) AS n FROM creative_approvals WHERE job_id=%s',(job['id'],))['n'],1)
+        self.assertEqual(self.db.one('SELECT count(*) AS n FROM creative_calls WHERE job_id=%s',(job['id'],))['n'],0)
+
     def test_claim_survives_column_migration_and_resumes_saved_stages(self):
         from lemo_worker import main
         # Force server-side preparation on a long-lived connection. Only the temp queue is altered.

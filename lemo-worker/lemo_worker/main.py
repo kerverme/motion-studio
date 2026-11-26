@@ -4,7 +4,7 @@ from motion_worker import config, pipeline
 from motion_worker.db import DB, Heartbeat
 from motion_worker.storage import get_storage
 from .catalog import enabled, GATES
-from .render import stage_render, stage_recompose, stage_retype, preflight
+from .render import ExecutorTemporarilyUnavailable, stage_render, stage_recompose, stage_retype, preflight
 from .subtitles import VERSION as CAPTION_VERSION
 from .typography import REPAIR_VERSIONS
 
@@ -53,9 +53,19 @@ def run(ctx):
 
 def claim_job(db, worker_id):
     # The prepared result descriptor stays stable when migrations add job columns.
-    return db.one("""UPDATE jobs SET locked_by=%s,locked_until=now()+interval '10 minutes',attempts=attempts+1
+    return db.one("""UPDATE jobs SET locked_by=%s,locked_until=now()+interval '10 minutes',attempts=attempts+1,error=NULL
           WHERE id=(SELECT id FROM jobs WHERE kind='lemo' AND status NOT IN ('READY_TO_POST','FAILED','CANCELLED')
           AND (locked_until IS NULL OR locked_until<now()) ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING id, episode_id, kind, status, stage, package, stage_results, budget_credits, used_credits, attempts, max_attempts""",(worker_id,))
+
+
+def run_claimed_job(db, store, job):
+    try:
+        run(pipeline.Ctx(db,store,job))
+    except ExecutorTemporarilyUnavailable as error:
+        # Defer this same approval. Only the readiness GET is eligible for backoff.
+        db.fail(job,str(error),job['attempts'] >= job['max_attempts'])
+    except Exception as error:
+        db.fail(job,str(error),True)
 
 
 def main():
@@ -71,8 +81,7 @@ def main():
             queue_ready=True
         if not job:STOP.wait(3);continue
         heartbeat=Heartbeat(db,job['id'],'lemo:'+config.WORKER_ID);heartbeat.start()
-        try:run(pipeline.Ctx(db,store,job))
-        except Exception as error:db.fail(job,str(error),True)
+        try:run_claimed_job(db,store,job)
         finally:heartbeat.stop.set();heartbeat.join(timeout=2)
 
 

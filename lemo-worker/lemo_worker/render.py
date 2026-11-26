@@ -19,18 +19,72 @@ def executor_tls():
     return str(path)
 
 
+class ExecutorTemporarilyUnavailable(RuntimeError):
+    """Only an executor readiness check, before this attempt sends provider work."""
+
+
+_READINESS_REASONS = {
+    'executor_auth': 'executor ปฏิเสธข้อมูลยืนยันตัวตนของ worker',
+    'executor_config': 'ตั้งค่า executor ไม่ครบ',
+    'executor_busy': 'executor กำลังตรวจหรือเรนเดอร์งานอื่น',
+    'gateway_unavailable': 'เกตเวย์ของ executor ยังไม่พร้อม',
+    'executor_rate_limited': 'executor จำกัดจำนวนคำขอชั่วคราว',
+    'sandbox_unavailable': 'Railway Sandbox ยังไม่พร้อมหรือขาดการเชื่อมต่อ',
+    'runtime_unavailable': 'Docker ใน Sandbox ที่เพิ่งเปิดยังไม่พร้อม',
+    'runtime_timeout': 'ตรวจ runtime ของ Sandbox เกินเวลารอ',
+    'sandbox_authorization': 'Railway ปฏิเสธสิทธิ์ใช้งาน Sandbox',
+    'checkpoint_restore_failed': 'เปิด Sandbox จาก checkpoint ไม่สำเร็จ',
+    'sandbox_network_policy': 'Sandbox ไม่ผ่านเงื่อนไขแยกเครือข่าย',
+    'renderer_image_mismatch': 'อิมเมจของ renderer ไม่ตรงกับที่อนุมัติ',
+    'runtime_limits_unverified': 'ยืนยันขีดจำกัดทรัพยากรของ Sandbox ไม่สำเร็จ',
+    'runtime_probe_failed': 'executor ยืนยันความพร้อมของ runtime ไม่สำเร็จ',
+}
+_RETRYABLE_READINESS = {
+    'executor_busy': {409}, 'gateway_unavailable': {502, 504}, 'executor_rate_limited': {429},
+    'runtime_unavailable': {503}, 'runtime_timeout': {503}, 'sandbox_unavailable': {503},
+}
+
+
 def preflight(ctx):
     """Configuration/security checks happen before any paid narration or coding."""
     style_spec(ctx.pkg['creative']['selection']['selected']['id'])
     if not os.environ.get('OPENAI_API_KEY') or not os.environ.get('ELEVENLABS_API_KEY'):
         raise RuntimeError('Configure the coding and voice providers before production')
-    url=os.environ['LEMO_EXECUTOR_URL'].rstrip('/')
+    url=os.environ.get('LEMO_EXECUTOR_URL','').rstrip('/')
+    image=os.environ.get('LEMO_SANDBOX_IMAGE')
+    token=os.environ.get('LEMO_EXECUTOR_TOKEN')
+    if not (url and image and token):raise RuntimeError('ตั้งค่า URL, token และอิมเมจของ executor ให้ครบก่อนผลิต')
     if not url.startswith('https://') and os.environ.get('LEMO_DEVELOPMENT')!='true':raise RuntimeError('Executor requires authenticated TLS')
-    response=requests.get(url+'/ready',headers={'Authorization':'Bearer '+os.environ['LEMO_EXECUTOR_TOKEN']},timeout=60,verify=executor_tls())
-    if response.status_code!=200:raise RuntimeError('Executor security readiness failed; no provider requests submitted')
-    ready=response.json()
-    if ready.get('ready') is not True or ready.get('image')!=os.environ.get('LEMO_SANDBOX_IMAGE'):
-        raise RuntimeError('Executor image/readiness does not match the approved configuration')
+    try:
+        response=requests.get(url+'/ready',headers={'Authorization':'Bearer '+token},
+                              timeout=(10,150),verify=executor_tls(),allow_redirects=False)
+    except requests.exceptions.SSLError:
+        raise RuntimeError('ยืนยัน TLS ของ executor ไม่สำเร็จ ตรวจใบรับรองและชื่อโฮสต์ · รอบนี้ยังไม่เรียกผู้ให้บริการผลิต') from None
+    except (requests.Timeout, requests.ConnectionError):
+        raise ExecutorTemporarilyUnavailable('เชื่อมต่อ executor เพื่อตรวจความพร้อมไม่สำเร็จ · รอบนี้ยังไม่เรียกผู้ให้บริการผลิต') from None
+    try:
+        body=response.json()
+    except ValueError:
+        body=None
+    ready=body if isinstance(body,dict) else {}
+    status=response.status_code
+    if status==200:
+        if ready.get('ready') is True and ready.get('image')==image:return
+        code='renderer_image_mismatch' if ready.get('ready') is True else 'runtime_probe_failed'
+    else:
+        code=ready.get('code')
+        # A proxy can supply its own error body for gateway or rate-limit responses.
+        if status in (401,403):code='executor_auth'
+        elif status in (502,504):code='gateway_unavailable'
+        elif status==429:code='executor_rate_limited'
+        elif code is None:
+            # Also handle the original executor before its structured codes.
+            if status==409 and ready.get('error')=='Renderer busy; retain job checkpoint':code='executor_busy'
+            elif status==503 and ready.get('error')=='Executor not configured':code='executor_config'
+    if not isinstance(code,str) or code not in _READINESS_REASONS:code='runtime_probe_failed'
+    message=f'ตรวจความพร้อม executor ไม่ผ่าน (HTTP {status}, {code}) · {_READINESS_REASONS[code]} · รอบนี้ยังไม่เรียกผู้ให้บริการผลิต'
+    if status in _RETRYABLE_READINESS.get(code,()):raise ExecutorTemporarilyUnavailable(message)
+    raise RuntimeError(message)
 
 
 def extract(data, folder):
