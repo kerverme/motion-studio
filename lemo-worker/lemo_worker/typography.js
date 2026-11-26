@@ -1,6 +1,8 @@
 // Trusted, offline typography runtime injected before the generated scene.
 (() => {
   const family = 'Motion Kanit';
+  const weights = {headline: 800, body: 700, label: 700};
+  const proportions = {headline: .104, body: .07, label: .052};
   let fontsReady = false, sceneReady = false, renderScene;
   const faces = [[700, '__KANIT_700__'], [800, '__KANIT_800__']].map(([weight, data]) => {
     const bytes = Uint8Array.from(atob(data), c => c.charCodeAt(0));
@@ -18,8 +20,10 @@
   function font(ctx) {
     if (!fontsReady) throw Error('Draw text in window.render after MotionText.ready');
     const match = ctx.font.match(/(\d+(?:\.\d+)?)px/);
-    const size = Math.max(48, Number(match?.[1] || 48));
-    ctx.font = `${size >= 72 ? 800 : 700} ${size}px "${family}"`;
+    const floor = Math.ceil(Math.min(innerWidth, innerHeight) * 48 / 1080);
+    const size = Math.max(floor, Number(match?.[1] || floor));
+    const weight = /\b(700|800)\b/.exec(ctx.font)?.[1] || (size >= floor * 1.5 ? 800 : 700);
+    ctx.font = `${weight} ${size}px "${family}"`;
     return size;
   }
   proto.measureText = function (text) { font(this); return measure.call(this, text); };
@@ -32,8 +36,9 @@
       // Canvas maxWidth squeezes glyphs horizontally. Fit the font uniformly instead.
       if (Number.isFinite(maxWidth) && maxWidth > 0) {
         let size = font(ctx);
-        while (measure.call(ctx, text).width > maxWidth && size > 48) {
-          ctx.font = `${size >= 72 ? 800 : 700} ${--size}px "${family}"`;
+        const floor = Math.ceil(Math.min(innerWidth, innerHeight) * 48 / 1080);
+        while (measure.call(ctx, text).width > maxWidth && size > floor) {
+          ctx.font = `${size >= floor * 1.5 ? 800 : 700} ${--size}px "${family}"`;
         }
         if (measure.call(ctx, text).width > maxWidth) throw Error('Text does not fit: shorten it or wrap at Thai word boundaries');
       }
@@ -42,7 +47,37 @@
   }
   proto.fillText = function (text, x, y, maxWidth) { return paint(this, fill, text, x, y, maxWidth); };
   proto.strokeText = function (text, x, y, maxWidth) { return paint(this, stroke, text, x, y, maxWidth); };
-  window.MotionText = Object.freeze({ready, version: 'all-text-kanit-v1', draw(ctx, text, x, y, size = 74, color = '#193D4E', outline = null, maxWidth = 960) {
+  window.MotionText = Object.freeze({ready, version: 'all-text-kanit-v2', drawRole(ctx, text, x, y, options = {}) {
+    const {role = 'label', size, color = '#193D4E', maxWidth, align = 'center'} = options;
+    if (!Object.hasOwn(proportions, role) || !['left', 'center', 'right'].includes(align)) throw Error('Invalid text role or alignment');
+    const shortEdge = Math.min(innerWidth, innerHeight);
+    // Account for both canvas backing resolution and drawing transforms.
+    const transform = ctx.getTransform(), bounds = ctx.canvas.getBoundingClientRect();
+    const pixelScale = Math.min(Math.hypot(transform.a, transform.b) * bounds.width / ctx.canvas.width,
+      Math.hypot(transform.c, transform.d) * bounds.height / ctx.canvas.height);
+    if (!(pixelScale > 0)) throw Error('Draw readable text on a visible canvas');
+    const minimum = Math.ceil(shortEdge * proportions[role] / pixelScale);
+    const limit = maxWidth ?? Math.floor(innerWidth * .88 / pixelScale);
+    if (!Number.isFinite(limit) || limit <= 0) throw Error('Invalid text width');
+    ctx.save();
+    try {
+      let fontSize = Math.max(minimum, Number.isFinite(size) ? Math.ceil(size) : minimum);
+      const apply = () => { ctx.font = `${weights[role]} ${fontSize}px "${family}"`; };
+      apply();
+      const width = measure.call(ctx, text).width;
+      if (width > limit) {
+        fontSize = Math.max(minimum, Math.floor(fontSize * limit / width));
+        apply();
+      }
+      if (measure.call(ctx, text).width > limit) throw Error(`The ${role} cannot fit at readable size. Shorten or wrap it.`);
+      ctx.textAlign = align;
+      ctx.textBaseline = 'middle';
+      ctx.shadowBlur = ctx.shadowOffsetX = ctx.shadowOffsetY = 0;
+      ctx.fillStyle = color;
+      fill.call(ctx, text, x, y);
+      return fontSize;
+    } finally { ctx.restore(); }
+  }, draw(ctx, text, x, y, size = 74, color = '#193D4E', outline = null, maxWidth = 960) {
     ctx.save();
     try {
       ctx.font = `${size >= 72 ? 800 : 700} ${Math.max(48, size)}px "${family}"`;

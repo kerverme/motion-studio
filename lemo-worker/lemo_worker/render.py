@@ -57,10 +57,13 @@ def remote_render(spec, folder):
 
 def stage_render(ctx, render=remote_render, code=generate_scene):
     T=pipeline.load_timeline(ctx);creative=ctx.pkg['creative']
+    text_version=creative.get('typography_version',typography.LEGACY_VERSION)
     partial=ctx.r.get('LEMO_RENDER',{'scenes':[]});done={s['seg']:s for s in partial['scenes']};parts=[]
     for i,scene in enumerate(creative['selection']['plan']['scenes']):
         seg=T['timeline'][i];start=0 if i==0 else seg['s'];end=T['timeline'][i+1]['s'] if i+1<len(T['timeline']) else T['end'];duration=end-start
-        identity=digest({'scene':scene,'identity':creative['selection']['plan']['identity'],'script':ctx.pkg['script'][i],'duration':duration,'nonce':creative.get('scene_nonces',{}).get(scene['seg']),'typography':typography.VERSION})
+        identity_data={'scene':scene,'identity':creative['selection']['plan']['identity'],'script':ctx.pkg['script'][i],'duration':duration,'nonce':creative.get('scene_nonces',{}).get(scene['seg']),'typography':text_version}
+        if text_version != typography.LEGACY_VERSION:identity_data['style']=creative['selection']['selected']['id']
+        identity=digest(identity_data)
         previous=done.get(scene['seg'])
         if previous and previous['identity']==identity:
             parts.append(ctx.fetch(previous['video_key'],ctx.path('renders',identity,'video.mp4')));continue
@@ -70,7 +73,7 @@ def stage_render(ctx, render=remote_render, code=generate_scene):
             html=Path(ctx.fetch(source['source_key'],ctx.path('source',identity+f'-{attempt}.html'))).read_text()
             html=typography.prepare_source(html)
             rendered_source=ctx.path('source',identity+'-render.html');Path(rendered_source).write_text(html)
-            rendered_source_key=ctx.save('lemo_render_source',rendered_source,meta={'seg':scene['seg'],'typography_version':typography.VERSION})
+            rendered_source_key=ctx.save('lemo_render_source',rendered_source,meta={'seg':scene['seg'],'typography_version':text_version})
             try:
                 cap=creative['allocations']['compute']/(len(T['timeline'])*2)
                 def run(_reservation):
@@ -86,7 +89,7 @@ def stage_render(ctx, render=remote_render, code=generate_scene):
                 # Never silently spend a second code attempt after a render failure.
                 # Preserve source/paid assets; owner can inspect and explicitly regenerate.
                 raise RuntimeError(f"Scene {scene['seg']} failed ({type(exc).__name__}): {str(exc)[:1800]}; source retained for targeted repair") from exc
-        item={'seg':scene['seg'],'identity':identity,'source_key':source['source_key'],'render_source_key':rendered_source_key,'typography_version':typography.VERSION,'video_key':rendered['artifacts']['video.mp4'],'previews':[rendered['artifacts'][f'preview-{j}.png'] for j in range(3)],'metadata':rendered['usage'],'provenance':source.get('provenance',{})}
+        item={'seg':scene['seg'],'identity':identity,'source_key':source['source_key'],'render_source_key':rendered_source_key,'typography_version':text_version,'video_key':rendered['artifacts']['video.mp4'],'previews':[rendered['artifacts'][f'preview-{j}.png'] for j in range(3)],'metadata':rendered['usage'],'provenance':source.get('provenance',{})}
         done[scene['seg']]=item;partial={'scenes':list(done.values())};ctx.db.save_stage(ctx.job,'LEMO_RENDER',partial)
         ctx.db.status(ctx.job,'RENDERING','RENDERING',.25+.5*(i+1)/len(T['timeline']),f"Lemo rendered {i+1}/{len(T['timeline'])}")
         parts.append(str(Path(folder)/'video.mp4'))
@@ -102,7 +105,8 @@ def compose_video(ctx,T,parts):
     captions_key=ctx.save('captions',ctx.path('subtitles.ass'),ctype='text/x-ssa')
     mix,*_=pipeline.do_mix(ctx,T);final=rendering.mux(silent,mix,ctx.path('final.mp4'))
     scenes=ctx.r.get('LEMO_RENDER',{}).get('scenes',[])
-    text_version=typography.VERSION if scenes and all(s.get('typography_version')==typography.VERSION for s in scenes) else None
+    text_versions={scene.get('typography_version') for scene in scenes}
+    text_version=next(iter(text_versions)) if len(text_versions)==1 else None
     return {'silent_key':ctx.save('video_silent',silent),'final_key':ctx.save('video',final),'captions_key':captions_key,'caption_version':subtitles.VERSION,'typography_version':text_version,'missing_words':[],'frames':round(T['end']*30),'usage':{'wall_seconds':time.monotonic()-started}}
 
 
@@ -128,7 +132,7 @@ def stage_recompose(ctx):
 def stage_retype(ctx, render=remote_render):
     """Re-render saved source in the verified sandbox. Never regenerate code or audio."""
     repair=ctx.r.get('TYPOGRAPHY_REPAIR',{})
-    if repair.get('version')!=typography.VERSION:raise RuntimeError('Unsupported scene typography repair')
+    if repair.get('version') not in typography.REPAIR_VERSIONS:raise RuntimeError('Unsupported scene typography repair')
     original={s['seg']:s for s in repair['previous']['LEMO_RENDER']['scenes']}
     plan=ctx.pkg['creative']['selection']['plan']['scenes']
     if not all(s['seg'] in original and ctx.store.exists(original[s['seg']]['source_key']) for s in plan):

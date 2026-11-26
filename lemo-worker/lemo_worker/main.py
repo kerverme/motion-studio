@@ -6,7 +6,7 @@ from motion_worker.storage import get_storage
 from .catalog import enabled, GATES
 from .render import stage_render, stage_recompose, stage_retype, preflight
 from .subtitles import VERSION as CAPTION_VERSION
-from .typography import VERSION as TYPOGRAPHY_VERSION
+from .typography import REPAIR_VERSIONS
 
 STOP=threading.Event()
 
@@ -22,10 +22,11 @@ def run(ctx):
     text_repair=getattr(ctx,'r',{}).get('TYPOGRAPHY_REPAIR')
     repair=text_repair or getattr(ctx,'r',{}).get('CAPTION_REPAIR')
     if text_repair:
-        if repair.get('version')!=TYPOGRAPHY_VERSION:raise RuntimeError('Unsupported typography repair version')
+        repair_version=repair.get('version')
+        if repair_version not in REPAIR_VERSIONS:raise RuntimeError('Unsupported typography repair version')
         preflight(ctx)
-        ctx.dir=os.path.join(ctx.dir,'revisions',TYPOGRAPHY_VERSION)
-        ctx.prefix+='/revisions/'+TYPOGRAPHY_VERSION
+        ctx.dir=os.path.join(ctx.dir,'revisions',repair_version)
+        ctx.prefix+='/revisions/'+repair_version
         os.makedirs(ctx.dir,exist_ok=True)
         stages=[('RENDERING',stage_retype)]
     elif repair:

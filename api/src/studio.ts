@@ -1,5 +1,5 @@
 import { DEFAULT_OPENAI_MODEL, DEFAULT_REASONING as REASONING, REASONING_LEVELS, openAIModelLabel, readModels, type ModelSource } from './openai-models.js';
-import {CreativeSettings,CreativePlanToolSchema,creativeSourceEvidence,chooseStyle,creativePrompt,releaseGates,LEMO_STYLES} from './creative.js';
+import {CreativeSettings,CreativePlanToolSchema,creativeSourceEvidence,chooseStyle,creativePrompt,releaseGates,lemoStyles} from './creative.js';
 import {registerCreative} from './creative-routes.js';
 import {selectedContext,trendPrompt} from './trends/store.js';
 import {trendSettings} from './trends/routes.js';
@@ -1550,7 +1550,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const trends = trendSettings();
     const openAI = PROVIDER === 'openai' || trends.enabled ? await openAIBrainOptions() : null;
     const brainOptions = PROVIDER === 'openai' ? openAI : {models:ANTHROPIC_MODELS, model_catalog:null};
-    return c.json({ ...configured(), creative:{...releaseGates(),styles:LEMO_STYLES}, presentation:{version:1,label:'โมชั่นกราฟิกแบบเดิม (EP004)',default_style:'classic'}, formats: Object.fromEntries(Object.entries(FORMATS).map(([k, f]) => [k, f.th])), model: MODEL,
+    return c.json({ ...configured(), creative:{...releaseGates(),styles:lemoStyles()}, presentation:{version:1,label:'โมชั่นกราฟิกแบบเดิม (EP004)',default_style:'classic'}, formats: Object.fromEntries(Object.entries(FORMATS).map(([k, f]) => [k, f.th])), model: MODEL,
       ...brainOptions, reasoning: PROVIDER === 'openai' ? REASONING : null, reasoning_levels: PROVIDER === 'openai' ? REASONING_LEVELS : [], ai_suggestions:!!env.OPENAI_API_KEY, trend_research:{...trends,...openAI}, narration_previews:!!env.OPENAI_API_KEY, narration_styles:NARRATION_STYLES.map(({prompt,...style})=>style), source_text_limit:SOURCE_TEXT_LIMIT, drafts_today: n, daily_limit: DAILY_LIMIT, busy, max_credits: DRAFT_MAX_CREDITS });
   });
 
