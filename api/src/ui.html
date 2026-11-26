@@ -1089,7 +1089,7 @@ function studio(st, drafts){
   trendPlatform.value=readIdeaStore('ms.trend_platform','both');trendPlatform.addEventListener('change',()=>saveIdeaStore('ms.trend_platform',trendPlatform.value));
   const topicCount=h('select',{class:'field','aria-label':'จำนวนหัวข้อ'},[5,10,15].map(n=>h('option',{value:n},n+' หัวข้อ')));topicCount.value='10';
   const researchStatus=h('div',{class:'sub',role:'status','aria-live':'polite'}),researchResults=h('div',{'aria-label':'ผลค้นหาเทรนด์'});
-  const researchQuery=h('input',{class:'field','aria-label':'หัวข้อค้นหาเทรนด์',placeholder:'อยากค้นหาเรื่องอะไร เช่น วิทยาศาสตร์ใกล้ตัว กระแสอาหารไทย',maxlength:400});
+  const researchQuery=h('input',{class:'field','aria-label':'หัวข้อค้นหาเทรนด์',placeholder:'หัวข้อกว้างที่อยากสำรวจ เช่น ภาษากาย หรือกระแสอาหารไทย',maxlength:400});
   const researchAudience=h('input',{class:'field','aria-label':'กลุ่มผู้ชม',placeholder:'กลุ่มผู้ชม',value:'คนไทยทั่วไป',maxlength:200});
   const researchSettings=st.trend_research||{};
   const {modelSel:trendModel,notice:trendNotice,refreshBtn:refreshTrendModels}=brainControls(
@@ -1126,13 +1126,19 @@ function studio(st, drafts){
     const runModel=latest?.request?.model||latest?.details?.model||latest?.model;
     const shownTrends=(viewedRun?viewedRun.trends:data.trends)||[];
     const pendingStage=['queued','running'].includes(latest?.status)?({planner:'OpenAI กำลังวางแผนค้นเว็บ',score:'OpenAI กำลังวิเคราะห์ข้อมูลโซเชียล'}[latest?.details?.openai_stage]):null;
-    researchStatus.textContent=latest?'ผลการค้นหา'+(runModel?'ด้วย '+generationModelLabel(runModel):'')+' · '+(pendingStage||{queued:'รอคิว',running:'กำลังค้นคว้า',done:'เสร็จแล้ว',partial:'หลักฐานยังไม่ครบ',blocked:'ติดข้อจำกัด',failed:'ไม่สำเร็จ'}[latest.status]||latest.status)+' · ผ่านเกณฑ์ '+(latest.eligible_count??0)+' เรื่อง'+(latest.created_at?' · '+trendDate(latest.created_at)+' (กรุงเทพฯ)':'')+(b?' · Firecrawl ใช้จริง '+(b.actual==null?'ยังยืนยันไม่ได้':b.actual+' เครดิต'):''):'ยังไม่มีผลค้นหาเทรนด์';
+    researchStatus.textContent=latest?'ผลการค้นหา'+(runModel?'ด้วย '+generationModelLabel(runModel):'')+' · '+(pendingStage||{queued:'รอคิว',running:'กำลังค้นคว้า',done:'เสร็จแล้ว',partial:latest.eligible_count?'ผลค้นหาบางส่วน':'หลักฐานยังไม่ครบ',blocked:'ติดข้อจำกัด',failed:'ไม่สำเร็จ'}[latest.status]||latest.status)+' · ผ่านเกณฑ์ '+(latest.eligible_count??0)+' เรื่อง'+(latest.created_at?' · '+trendDate(latest.created_at)+' (กรุงเทพฯ)':'')+(b?' · Firecrawl ใช้จริง '+(b.actual==null?'ยังยืนยันไม่ได้':b.actual+' เครดิต'):''):'ยังไม่มีผลค้นหาเทรนด์';
     const knownUSD=Number(latest?.known_estimated_usd)||0;
+    const coverageLabels={complete:'ค้นสำเร็จ',partial:'ดึงข้อมูลได้บางส่วน',no_results:'ยังไม่พบโพสต์ที่ตรงเงื่อนไข',unavailable:'ดึงข้อมูลไม่ได้',not_checked:'ยังไม่ได้ตรวจ'};
+    const coverage=(latest?.details?.platforms||[]).map(p=>h('div',{class:'sub'},
+      socialLabel(p.platform)+' · '+(coverageLabels[p.state]||p.state)+(p.posts>0?' · '+p.posts+' โพสต์ใน 7 วัน':'')+
+      (p.errors?.length?' · '+p.errors.join(', '):'')));
     const openAICost=latest?.known_estimated_usd==null || (!knownUSD&&latest.unpriced_calls) ? 'ค่า OpenAI ยังไม่มีราคาประเมิน'
       : 'ค่า OpenAI ที่ประเมินได้ $'+knownUSD.toFixed(4)+(latest.unpriced_calls?' · ยังมีรายการรอราคา':'');
     put(researchResults,[
       latest?.request?.query?h('div',{class:'sub'},'เรื่องที่ค้นหา · '+latest.request.query):'',
       latest?.finished_at && latest.details?.received_count!=null?h('div',{class:'sub'},'ตรวจโพสต์ย้อนหลัง 7 วัน '+latest.evidence_count+' โพสต์ · แหล่งเว็บ '+(latest.details.web_sources||[]).length+' แหล่ง'):'',
+      ...coverage,
+      latest?.details?.notion_synced_count!=null&&latest.eligible_count>0?h('div',{class:'sub'},'ซิงก์ Notion แล้ว '+latest.details.notion_synced_count+' / '+latest.eligible_count+' เรื่อง'):'',
       latest?.error?h('div',{class:'err'},latest.error):'',
       latest?.details?.limitation?h('div',{class:'sub'},latest.details.limitation):'',
       ...[...new Map((latest?.details?.warnings||[]).map(w=>[w.code,w])).values()].map(w=>h('div',{class:'sub'},({uncertain_cost:'ยังยืนยันราคาของเครื่องมือโซเชียลภายในวงเงินไม่ได้ ระบบจึงหยุดก่อนเรียกข้อมูล',insufficient_credits:'เครดิต Firecrawl ไม่พอ กรุณาตรวจยอดในบัญชี แล้วค้นคว้าใหม่ · ยังใช้ไอเดียจากเว็บได้',THIRD_PARTY_DATA_TERMS_REQUIRED:'เจ้าของบัญชีต้องตรวจและยอมรับข้อกำหนดผู้ให้บริการก่อน',budget_stopped:'หยุดเรียกข้อมูลเพื่อรักษางบ 25 เครดิต',capability_unavailable:'ผู้ให้บริการยังไม่มีเครื่องมือที่ต้องใช้',uncertain_charge:'การตอบกลับขาดหาย จึงหยุดไว้เพื่อป้องกันการคิดเงินซ้ำ',notion_sync_pending:'กำลังรอบันทึกลง Notion'}[w.code]||'ข้อจำกัด: '+w.code),w.action_url?h('a',{href:w.action_url,target:'_blank',rel:'noopener noreferrer'},' เปิดข้อกำหนดผู้ให้บริการ'):'')),
@@ -1148,7 +1154,20 @@ function studio(st, drafts){
       }}},'ตรวจราคาแล้วค้นต่อจากงานเดิม'):'',
       latest?.details?.web_summary?h('details',{},h('summary',{},'ข้อมูลจากเว็บ · ยังไม่ใช่หลักฐานยืนยันเทรนด์โซเชียล'),h('p',{class:'sub'},latest.details.web_summary),...(latest.details.web_sources||[]).map(s=>h('div',{},h('a',{href:s.url,target:'_blank',rel:'noopener noreferrer'},s.title||s.url)))):'',
       shownTrends.length?h('h4',{},viewedRun?'เทรนด์ที่พบในงานนี้':'เทรนด์ที่ผ่านเกณฑ์ในช่วง 7 วัน'):'',
-      ...shownTrends.map(t=>h('details',{style:'padding:10px 0;border-bottom:1px solid var(--line)'},h('summary',{},t.title+' · '+t.score+'/100'),h('p',{class:'sub'},'ความมั่นใจ '+t.confidence+'% · '+t.research_model+' · ตรวจ '+trendDate(t.last_verified)),h('p',{class:'sub'},'AI วิเคราะห์: '+t.summary),h('div',{class:'sub'},t.score_details?.reason||''),h('div',{class:'sub'},(t.score_details?.missing||[]).join(' · ')),...(t.supporting_sources||[]).map(sourceCard))),
+      ...shownTrends.map(t=>{
+        const signal={growing:'กำลังโต',interest:'คนสนใจ'}[t.interest_signal]||'พบประเด็นร่วม';
+        const scope=(t.platforms?.length?t.platforms:[t.platform]).map(socialLabel).join(' + ');
+        const growth=t.interest_signal==='growing'?(t.score_details?.growth||[]):[];
+        return h('details',{style:'padding:10px 0;border-bottom:1px solid var(--line)'},
+          h('summary',{},t.title+' · '+signal+' บน '+scope),
+          h('p',{class:'sub'},t.score+'/100 · ตรวจ '+trendDate(t.last_verified)+(t.notion_synced?' · ซิงก์ Notion แล้ว':' · รอซิงก์ Notion')),
+          t.score_details?.creators_count?h('p',{class:'sub'},'หลักฐานจาก '+t.score_details.creators_count+' ครีเอเตอร์'):'',
+          ...growth.map(g=>h('div',{class:'sub'},h('a',{href:g.url,target:'_blank',rel:'noopener noreferrer'},socialLabel(g.platform)+' · '+g.author),
+            ' · ยอดดู '+Number(g.views_before).toLocaleString('th-TH')+' → '+Number(g.views_after).toLocaleString('th-TH')+
+              ' · '+trendDate(g.from)+' ถึง '+trendDate(g.to))),
+          h('p',{},'AI วิเคราะห์ · '+t.summary),h('div',{class:'sub'},t.score_details?.reason||''),
+          h('div',{class:'sub'},(t.score_details?.missing||[]).join(' · ')),...(t.supporting_sources||[]).map(sourceCard));
+      }),
       latest?h('details',{},h('summary',{},'ค่าใช้จ่ายและการเรียกข้อมูล'),h('p',{class:'sub'},'เพดานทั้งงาน 25 เครดิต · เครดิตที่สำรองค้างยังใช้ซ้ำไม่ได้ · ค่าประมวลผล OpenAI แยกต่างหาก'),...(latest.details?.calls||[]).map(c=>h('div',{class:'sub'},c.provider+' / '+c.capability+' · สูงสุด '+c.max_credits+' · จริง '+(c.actual_credits==null?'ยังไม่ทราบ':c.actual_credits)+(c.cache_hit?' · ใช้แคช':'')+(c.error?' · '+c.error:''))),h('div',{class:'sub'},openAICost)):''
     ]);
   };

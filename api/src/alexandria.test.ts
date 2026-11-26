@@ -12,9 +12,11 @@ import {runResearch,webEvidence} from './trends/orchestrator.js';
 import {registerTrendRoutes} from './trends/routes.js';
 import {eligibleTrends,selectedContext} from './trends/store.js';
 import {parseDetailedIdeas} from './topic-suggestions.js';
-import {notionProperties} from './trends/notion.js';
+import {platformCoverage} from './trends/coverage.js';
+import {previousObservations,recordObservations} from './trends/observations.js';
+import {notionProperties,syncNotion} from './trends/notion.js';
 
-const db=new PGlite();const query=(sql:string,args:any[]=[])=>db.query(sql,args);
+const db=new PGlite();const query=(sql:string,args:any[]=[])=>db.query<any>(sql,args);
 const pool:any={query,connect:async()=>({query,release(){}})};
 const catalog:Tool[]=JSON.parse(readFileSync(new URL('./trends/fixtures/catalog-2026-11-15.json',import.meta.url),'utf8'));
 const tool=catalog.find(t=>t.capability==='tiktok/search-videos')!;
@@ -24,7 +26,7 @@ after(async()=>{globalThis.fetch=nativeFetch;process.env=originalEnv;await db.cl
 const response=(capability:string,data:any,credits=2)=>Response.json({success:true,data:{alexandria:[{provider:capability==='find-tools'?'firecrawl':'scrapecreators',capability,creditsCost:credits,data}]}});
 async function job(){const id=randomUUID(),budgetId=randomUUID();await query("INSERT INTO trend_research_runs(id,request_key,request,status) VALUES($1::uuid,$1::text,'{}','running')",[id]);await query('INSERT INTO research_jobs(id) VALUES($1)',[budgetId]);await query('INSERT INTO trend_alexandria_jobs(run_id,request_id,request_hash,budget_id) VALUES($1::uuid,$1::uuid,$1::text,$2)',[id,budgetId]);return {id,budgetId,store:new PgResearchBudget(pool)};}
 const observed=new Date().toISOString(),published=Math.floor((Date.now()-3600000)/1000);
-const payload={search_item_list:[1,2].map(i=>({aweme_info:{aweme_id:String(810000000+i),author:{unique_id:'creator'+i},desc:'ทดลองแรงตึงผิว น้ำกับพริกไทย ทำไมพริกไทยหนีสบู่',create_time:published,statistics:{play_count:1000000,digg_count:50000,comment_count:500}}}))};
+const payload={search_item_list:[1,2].map(i=>({aweme_info:{aweme_id:String(810000000+i),author:{unique_id:'creator'+i},desc:'ทดลองแรงตึงผิว '+(i===1?'น้ำกับพริกไทยในแก้ว ทำไมพริกไทยเคลื่อนไปที่ขอบ':'เทสบู่ลงบนจานแล้วสังเกตพริกไทยเคลื่อนที่อีกครั้ง'),create_time:published,statistics:{play_count:1000000,digg_count:50000,comment_count:500}}}))};
 const evidence=normaliseSocial(tool.capability,payload,observed);
 const assessment:Assessment={title:'พริกไทยหนีสบู่ได้อย่างไร',category:'วิทยาศาสตร์ใกล้ตัว',summary:'พบผู้สร้างหลายรายทดลองแรงตึงผิว',reason:'มีการทดลองเรื่องเดียวกันจากผู้สร้างสองราย',relevance:95,novelty:90,source_ids:evidence.map(e=>e.platform+':'+e.sourceId),quotes:evidence.map(e=>({source_id:e.platform+':'+e.sourceId,quote:'ทดลองแรงตึงผิว'})),angles:['การทดลองที่บ้าน']};
 test('official discovery is authenticated, free, expanded and rejects login failure without a paid call',async()=>{
@@ -98,7 +100,30 @@ test('one post, one creator, fake quotes or forged supporting IDs cannot establi
 test('missing metrics reduce confidence; growth needs older observations of the same source',()=>{
  const score=assessPattern(assessment,evidence);assert.equal(score.components.growth_velocity,null);assert.equal(score.growth.length,0);
  const missing=assessPattern(assessment,evidence.map(e=>({...e,views:null,likes:null,comments:null})));assert.ok(missing.confidence<score.confidence);assert.equal(missing.components.engagement,null);
- const before=evidence.map(e=>({...e,observedAt:new Date(Date.now()-8*3600000).toISOString(),views:500000}));assert.equal(assessPattern(assessment,evidence,before).growth[0].views_delta,500000);
+ const recent=evidence.map(e=>({...e,publishedAt:new Date(Date.now()-12*3600000).toISOString()}));
+ const before=recent.map(e=>({...e,observedAt:new Date(Date.now()-8*3600000).toISOString(),views:500000}));
+ assert.equal(assessPattern(assessment,recent,before).growth[0].views_delta,500000);
+ assert.equal(assessPattern(assessment,recent,before).signal,'growing');
+ assert.equal(assessPattern(assessment,recent,before.slice(0,1)).signal,'interest');
+ assert.equal(assessPattern(assessment,recent,before.map(e=>({...e,views:1000000}))).signal,'interest');
+ assert.equal(assessPattern(assessment,evidence.map(e=>({...e,views:1,likes:0,comments:0}))).verified,false);
+ const copied=recent.map(e=>({...e,content:recent[0].content}));
+ assert.equal(assessPattern(assessment,copied).verified,false);
+ assert.equal(assessPattern(assessment,recent.map(e=>({...e,reused_media:'same-video'}))).verified,false);
+});
+test('observations survive independently of AI and repeated cached reads cannot create growth',async()=>{
+ const current=evidence.map(e=>({...e,sourceId:e.sourceId+'99',publishedAt:new Date(Date.now()-12*3600000).toISOString()}));
+ const prior=current.map(e=>({...e,observedAt:new Date(Date.now()-8*3600000).toISOString(),views:500000}));
+ const count=async()=>Number((await query('SELECT count(*) AS n FROM trend_post_observations WHERE source_id=ANY($1::text[])',[current.map(e=>e.sourceId)])).rows[0].n);
+ await recordObservations(pool,prior);
+ await recordObservations(pool,prior);
+ assert.equal(await count(),2);
+ assert.equal((await previousObservations(pool,prior)).length,0);
+ assert.deepEqual((await previousObservations(pool,current)).map(e=>e.views),[500000,500000]);
+ assert.deepEqual(platformCoverage('both',[{capability:'tiktok/search-videos',received:2},{capability:'instagram/search-reels',error:'not_found'}],[],current),[
+  {platform:'tiktok',state:'complete',posts:2,errors:[]},
+  {platform:'instagram',state:'unavailable',posts:0,errors:['not_found']},
+ ]);
 });
 test('web evidence only takes URLs returned by tool sources or citations',()=>{
  assert.deepEqual(webEvidence({output:[{type:'message',content:[{type:'output_text',text:'https://fabricated.example'}]}]}),[]);
@@ -181,11 +206,16 @@ test('complete mocked research → Notion → topic → script selection uses co
   throw new Error('Unexpected mock URL '+u);
  };
  const run={id:j.id,budget_id:j.budgetId,checkpoint:{},request:{platform:'tiktok',model:'gpt-6.2-sol',count:10,query:'แรงตึงผิว',audience:'เด็กไทย'}};
- const result=await runResearch(pool,pool,run);assert.equal(result.status,'done');assert.equal(result.eligible_count,1);assert.equal(paid,2);assert.equal(openai,2);assert.equal(notionCreates,1);
+ const result=await runResearch(pool,pool,run);assert.equal(result.status,'done');assert.equal(result.eligible_count,1);assert.equal(paid,2);assert.equal(openai,2);assert.equal(notionCreates,0);
+ assert.equal((await query('SELECT count(DISTINCT source_id)::int AS n FROM trend_post_observations WHERE source_id=ANY($1::text[])',[evidence.map(e=>e.sourceId)])).rows[0].n,2);
  const rows=await eligibleTrends(pool);assert.equal(rows.length,1);assert.equal(rows[0].provider_name,'scrapecreators');assert.equal(rows[0].actual_credits,2);assert.equal(rows[0].supporting_sources.length,2);
  assert.ok(result.details.calls.every((c:any)=>c.max_credits===1));
  assert.deepEqual((await eligibleTrends(pool,'both',10,j.id)).map(r=>r.id),[rows[0].id]);assert.deepEqual(await eligibleTrends(pool,'both',10,randomUUID()),[]);
  assert.equal(rows[0].research_model,run.request.model);
+ assert.equal(rows[0].notion_synced_at,null);
+ assert.equal(rows[0].score_details.signal,'interest');
+ await syncNotion(pool,rows[0]);
+ assert.equal(notionCreates,1);
  const props=notionProperties(rows[0]);assert.equal(props['Confidence']!.number,80);assert.equal(props['Actual Credits']!.number,2);
  const id=randomUUID();const ideas=['ทำไมพริกไทยหนีสบู่','แรงตึงผิวทำอะไรได้บ้าง','หยดน้ำเดินทางอย่างไร'].map(title=>({title,explanation:'จากการทดลอง',interesting:'ชวนสังเกต',kind:'trending',trend_ids:[rows[0].id]}));
  const parsed=parseDetailedIdeas({status:'completed',output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({ideas})}]}]},[],3,'trending',rows);assert.equal(parsed.length,3);
@@ -193,6 +223,33 @@ test('complete mocked research → Notion → topic → script selection uses co
  const ctx=await selectedContext(pool,{id,index:0},parsed[0].title);assert.ok(ctx);assert.equal(ctx.warning,null);assert.equal(ctx.sources[0].supporting_sources.length,2);assert.equal(ctx.sources[0].research_job_id,j.budgetId);
  const checkpoint:any=(await query('SELECT checkpoint FROM trend_alexandria_jobs WHERE run_id=$1',[j.id])).rows[0];await runResearch(pool,pool,{...run,checkpoint:checkpoint.checkpoint});assert.equal(paid,2);assert.equal(openai,2);assert.equal(notionCreates,1);
  globalThis.fetch=nativeFetch;
+});
+test('one platform can verify a growing trend while another fails and Notion is pending',async()=>{
+ const j=await job();
+ const current=evidence.map((e,i)=>({...e,sourceId:'987000000'+i,url:'https://www.tiktok.com/@creator'+i+'/video/987000000'+i,
+  publishedAt:new Date(Date.now()-12*3600000).toISOString()}));
+ const prior=current.map(e=>({...e,observedAt:new Date(Date.now()-8*3600000).toISOString(),views:500000}));
+ await recordObservations(pool,prior);
+ const pattern={...assessment,source_ids:current.map(e=>e.platform+':'+e.sourceId),
+  quotes:current.map(e=>({source_id:e.platform+':'+e.sourceId,quote:'ทดลองแรงตึงผิว'}))};
+ const request={platform:'both',model:'gpt-6.2-sol',count:3,query:'แรงตึงผิว',audience:'คนไทยทั่วไป'};
+ const checkpoint={social_complete:true,evidence:current,patterns:[pattern],plan:{summary:'เว็บ',queries:[]},
+  calls:[{capability:'tiktok/search-videos',received:2},{capability:'instagram/search-reels',error:'not_found'}],
+  warnings:[{code:'not_found',capability:'instagram/search-reels'}]};
+ const result=await runResearch(pool,pool,{id:j.id,budget_id:j.budgetId,request,checkpoint});
+ assert.equal(result.status,'partial');
+ assert.equal(result.eligible_count,1);
+ assert.deepEqual(result.details.platforms.map(p=>p.state),['complete','unavailable']);
+ const [row]=await eligibleTrends(pool,'tiktok',10,j.id);
+ assert.equal(row.score_details.signal,'growing');
+ assert.equal(row.notion_synced_at,null);
+ assert.equal((await eligibleTrends(pool,'instagram',10,j.id)).length,0);
+ assert.equal(row.score_details.growth[0].views_after,1000000);
+ await query("UPDATE trend_research_runs SET request=$2, details=$3, finished_at=now(), eligible_count=1 WHERE id=$1",[j.id,JSON.stringify(request),JSON.stringify(result.details)]);
+ const app=new Hono();registerTrendRoutes(app,pool,async(_c,next)=>next());
+ const detail=await (await app.request('/app/api/studio/trends/runs/'+j.id)).json() as any;
+ assert.equal(detail.details.notion_synced_count,0);
+ assert.equal(detail.trends[0].interest_signal,'growing');
 });
 test('production UI script parses and keeps unrelated creation surfaces with new research controls',()=>{
  const ui=readFileSync(new URL('./ui.html',import.meta.url),'utf8');for(const [,code] of ui.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g))new Script(code);

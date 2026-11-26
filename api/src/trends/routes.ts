@@ -2,6 +2,7 @@ import type {Hono,Context,Next} from 'hono';
 import type pg from 'pg';
 import {z} from 'zod';
 import {createHash,randomUUID} from 'node:crypto';
+import {platformCoverage} from './coverage.js';
 import {eligibleTrends,publicTrend} from './store.js';
 import {PgResearchBudget} from '../firecrawl-budget.js';
 import {readModels,type ModelSource} from '../openai-models.js';
@@ -24,7 +25,15 @@ export function registerTrendRoutes(app:Hono,pool:pg.Pool,guard:(c:Context,next:
   const presentRun=async(r:any)=>{
     const budget=r.budget_id?await new PgResearchBudget(pool).snapshot(r.budget_id):null;
     const unknown=r.budget_id?Number((await pool.query('SELECT count(*)::int AS n FROM firecrawl_requests WHERE research_job_id=$1 AND reported_credits IS NULL',[r.budget_id])).rows[0].n):0;
-    return {...r,firecrawl:budget?{...budget,actual:unknown?null:budget.reported,unreported_calls:unknown,estimated:budget.committed}:null};
+    const details=r.details||{};
+    const ids=details.verified_source_ids;
+    const notionSynced=Array.isArray(ids)?Number((await pool.query(
+      'SELECT count(*)::int AS n FROM trend_sources WHERE id=ANY($1::uuid[]) AND notion_page_id IS NOT NULL AND notion_synced_at IS NOT NULL',[ids]
+    )).rows[0].n):null;
+    const covered=details.platforms||(r.finished_at&&details.engine==='alexandria'
+      ? platformCoverage(r.request?.platform,details.calls,details.warnings):[]);
+    return {...r,details:{...details,platforms:covered,notion_synced_count:notionSynced},
+      firecrawl:budget?{...budget,actual:unknown?null:budget.reported,unreported_calls:unknown,estimated:budget.committed}:null};
   };
   app.get('/app/api/studio/trends',guard,async c=>{
     const platform=['tiktok','instagram','youtube'].includes(c.req.query('platform')||'')?c.req.query('platform')!:'both';
