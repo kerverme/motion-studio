@@ -17,10 +17,12 @@ export async function saveEvidence(db:Queryable,runId:string,e:Evidence,assessme
 }
 export async function eligibleTrends(db:Queryable,platform='both',limit=20,runId:string|null=null) {
   return (await db.query(`SELECT * FROM trend_sources WHERE status='Active' AND last_trend_evidence_at >= now()-interval '7 days'
-    AND ($1='both' OR platform=$1) AND ($3::uuid IS NULL OR research_run_id=$3)
-    ORDER BY trend_score DESC,last_trend_evidence_at DESC LIMIT $2`,[platform,limit,runId])).rows.filter(r=>isEligible(r));
+    AND ($1='both' OR platform=$1 OR (score_details->'platforms') ? $1::text) AND ($3::uuid IS NULL OR research_run_id=$3)
+    ORDER BY (COALESCE(score_details->>'signal','')='growing') DESC,trend_score DESC,last_trend_evidence_at DESC LIMIT $2`,[platform,limit,runId])).rows.filter(r=>isEligible(r));
 }
-export const publicTrend=(r:any)=>({id:r.id,title:r.title,platform:r.platform,url:r.source_url,published_at:r.published_at,last_verified:r.last_checked,last_trend_evidence_at:r.last_trend_evidence_at,score:Number(r.trend_score),score_details:r.score_details,status:r.status,summary:r.research_summary,views:r.views==null?null:Number(r.views),likes:r.likes==null?null:Number(r.likes),comments:r.comments==null?null:Number(r.comments),provider:r.provider_name||null,research_model:r.research_model||null,confidence:r.confidence??null,verification:r.verification_status||'legacy_unverified',supporting_sources:r.supporting_sources||[],estimated_credits:r.estimated_credits??null,actual_credits:r.actual_credits??null,research_job_id:r.research_job_id||null,metric_origin:'provider_reported'});
+export const publicTrend=(r:any)=>({id:r.id,title:r.title,platform:r.platform,
+  platforms:r.score_details?.platforms||[...new Set([r.platform,...(r.supporting_sources||[]).map((e:any)=>e.platform).filter(Boolean)])],
+  interest_signal:r.score_details?.signal||null,notion_synced:!!(r.notion_page_id&&r.notion_synced_at),url:r.source_url,published_at:r.published_at,last_verified:r.last_checked,last_trend_evidence_at:r.last_trend_evidence_at,score:Number(r.trend_score),score_details:r.score_details,status:r.status,summary:r.research_summary,views:r.views==null?null:Number(r.views),likes:r.likes==null?null:Number(r.likes),comments:r.comments==null?null:Number(r.comments),provider:r.provider_name||null,research_model:r.research_model||null,confidence:r.confidence??null,verification:r.verification_status||'legacy_unverified',supporting_sources:r.supporting_sources||[],estimated_credits:r.estimated_credits??null,actual_credits:r.actual_credits??null,research_job_id:r.research_job_id||null,metric_origin:'provider_reported'});
 export async function selectedContext(db:Queryable,selection:any,topic:string,nameStory=false) {
   if(!selection)return null;
   if(typeof selection.id!=='string'||!Number.isInteger(selection.index))throw new Error('ข้อมูลหัวข้อที่เลือกไม่ถูกต้อง');
