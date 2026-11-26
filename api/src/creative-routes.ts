@@ -49,7 +49,6 @@ export function registerCreative(app:Hono,pool:pg.Pool,deps:{guard:(c:Context,n:
     try{
       await cl.query('BEGIN');const r=(await cl.query(STUDIO_DRAFT_BY_ID + ' FOR UPDATE',[c.req.param('id')])).rows[0];
       if(!r?.creative)throw Error('No creative project');
-      if('confirm' in input&&r.creative.engine!=='classic')throw Error('Simple confirmation is available only for Classic');
       const old=(await cl.query('SELECT job_id,quote FROM creative_approvals WHERE draft_id=$1 AND revision=$2',[r.id,input.revision])).rows[0];
       if(old?.job_id){if(hash(old.quote)!==input.quote_hash)throw Error('Approval does not match the saved quote');await cl.query('COMMIT');return c.json({id:old.job_id,duplicate:true});}
       if(r.status!=='ready')throw Error('Draft is not ready');
@@ -58,8 +57,8 @@ export function registerCreative(app:Hono,pool:pg.Pool,deps:{guard:(c:Context,n:
       if(q.revision!==input.revision||hash(q)!==input.quote_hash)throw Error('Story, rates or settings changed; review a new quote');
       let b:z.infer<typeof advanced>;
       if('confirm' in input){
-        const recommendation=q.classic_approval;
-        if(!recommendation?.available)throw Error(recommendation&&'reason' in recommendation?recommendation.reason:'Classic estimate is unavailable');
+        const recommendation='lemo_approval' in q?q.lemo_approval:q.classic_approval;
+        if(!recommendation.available)throw Error(recommendation.reason);
         // The single confirmation acknowledges the displayed quote, including its
         // unknown-price and style notices. No client-supplied allocations are trusted.
         b={revision:input.revision,quote_hash:input.quote_hash,max_usd:recommendation.max_usd,allocations:recommendation.allocations,unknown_ack:true,style_ack:true};

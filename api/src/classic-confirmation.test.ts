@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync,readdirSync} from 'node:fs';
 import {PGlite} from '@electric-sql/pglite';
 import {Hono} from 'hono';
-import {CreativeSettings,chooseStyle,classicProductionApproval,estimateCreative} from './creative.js';
+import {CreativeSettings,chooseStyle,productionApproval,estimateCreative,releaseGates} from './creative.js';
 import {registerCreative} from './creative-routes.js';
 import {retryCreativeJob} from './creative-retry.js';
 
@@ -12,7 +12,7 @@ const row=(max_usd=3)=>({creative:{engine:'classic',settings:{max_usd},selection
 const unknown={items:[{category:'narration',quantity:670,estimated_usd:null},{category:'sfx',quantity:4.5,estimated_usd:null},{category:'compute',quantity:1,estimated_usd:null}],unknown:['narration','sfx','compute']};
 
 test('Classic reservations preserve the saved cap and leave unknown prices explicitly unknown',()=>{
-  const result=classicProductionApproval(row(),unknown);
+  const result=productionApproval(row(),unknown);
   assert.equal(result.available,true);
   assert.deepEqual(result.allocations,{narration:1,sfx:1,compute:1});
   assert.equal(result.max_usd,3);assert.equal(result.unknown_ack_required,true);
@@ -24,21 +24,21 @@ test('Classic reservations preserve the saved cap and leave unknown prices expli
 
 test('automatic allocation handles known costs and rounding without raising the budget',()=>{
   const quote={...unknown,items:unknown.items.map((x,i)=>({...x,estimated_usd:i===0?2.25:null}))};
-  const result=classicProductionApproval(row(),quote);
+  const result=productionApproval(row(),quote);
   assert.equal(result.available,true);
   assert.ok(result.allocations.narration>=2.25);
   assert.ok(Object.values(result.allocations).every(x=>x>0));
   assert.ok(Object.values(result.allocations).reduce((a,b)=>a+b,0)<=3);
-  const tiny=classicProductionApproval(row(.0000109),unknown);
+  const tiny=productionApproval(row(.0000109),unknown);
   assert.equal(tiny.available,true);
   assert.deepEqual(tiny.allocations,{narration:.000004,sfx:.000003,compute:.000003});
   assert.ok(Object.values(tiny.allocations).reduce((a,b)=>a+b,0)<=.0000109);
-  assert.equal(classicProductionApproval(row(2),quote).available,false);
-  assert.equal(classicProductionApproval(row(.000001),unknown).available,false);
-  assert.equal(classicProductionApproval(row(NaN),unknown).available,false);
-  assert.equal(classicProductionApproval(row(),{...unknown,items:[{category:'narration',quantity:NaN,estimated_usd:null}]}).available,false);
-  assert.equal(classicProductionApproval(row(),{...unknown,items:[{category:'narration',quantity:1,estimated_usd:Infinity}]}).available,false);
-  assert.deepEqual(classicProductionApproval(row(),{items:[{category:'compute',quantity:1,estimated_usd:0}],unknown:[]}).allocations,{compute:3});
+  assert.equal(productionApproval(row(2),quote).available,false);
+  assert.equal(productionApproval(row(.000001),unknown).available,false);
+  assert.equal(productionApproval(row(NaN),unknown).available,false);
+  assert.equal(productionApproval(row(),{...unknown,items:[{category:'narration',quantity:NaN,estimated_usd:null}]}).available,false);
+  assert.equal(productionApproval(row(),{...unknown,items:[{category:'narration',quantity:1,estimated_usd:Infinity}]}).available,false);
+  assert.deepEqual(productionApproval(row(),{items:[{category:'compute',quantity:1,estimated_usd:0}],unknown:[]}).allocations,{compute:3});
 });
 
 test('sound cue occurrences must exist before quoting or dispatching paid narration',()=>{
@@ -113,11 +113,40 @@ test('concurrent Classic confirmations queue one job and reuse its saved quote o
   }finally{if(old===undefined)delete process.env.MOTION_CREATIVE_RATES_JSON;else process.env.MOTION_CREATIVE_RATES_JSON=old;}
 });
 
-test('Lemo cannot use Classic simple confirmation and retains its existing advanced quote',async()=>{
-  const {id,request}=await fixture('lemo');const q=await(await request('/estimate')).json() as any;
-  assert.equal(q.classic_approval,undefined);
-  assert.equal((await request('/approve',{revision:q.revision,quote_hash:q.quote_hash,confirm:true})).status,409);
-  assert.equal((await query('SELECT count(*)::int n FROM creative_approvals WHERE draft_id=$1',[id])).rows[0].n,0);
+test('Lemo confirmation binds the coding and render budget and queues a single job after gate checks',async()=>{
+  const env={...process.env};
+  try{
+    process.env.LEMO_ENABLED='false';
+    process.env.LEMO_STYLE_LIBRARY='cloudbath-original-v1';
+    delete process.env.MOTION_CREATIVE_RATES_JSON;
+    const {id,request}=await fixture('lemo');
+    const q=await(await request('/estimate')).json() as any;
+    const approval=q.lemo_approval;
+    assert.equal(approval.available,true);
+    assert.equal(approval.max_usd,3);
+    assert.equal(approval.style_ack_required,true);
+    assert.equal(approval.unknown_ack_required,true);
+    assert.deepEqual(approval.allocations,{coding:.75,narration:.75,sfx:.75,compute:.75});
+    const confirm={revision:q.revision,quote_hash:q.quote_hash,confirm:true};
+    assert.equal((await request('/approve',confirm)).status,409);
+    for(const key of releaseGates().blockers)process.env[key]='true';
+    process.env.LEMO_ENABLED='true';
+    assert.equal((await request('/approve',{...confirm,quote_hash:'stale'})).status,409);
+    assert.equal((await request('/approve',{...confirm,max_usd:100})).status,422);
+    assert.equal((await query('SELECT count(*)::int n FROM creative_approvals WHERE draft_id=$1',[id])).rows[0].n,0);
+    const responses=await Promise.all([request('/approve',confirm),request('/approve',confirm)]);
+    assert.deepEqual(responses.map(r=>r.status).sort(),[200,201]);
+    const jobs=await Promise.all(responses.map(r=>r.json()));
+    assert.equal(jobs[0].id,jobs[1].id);
+    const job=(await query('SELECT kind,package FROM jobs WHERE id=$1',[jobs[0].id])).rows[0];
+    assert.equal(job.kind,'lemo');
+    assert.equal(job.package.creative.max_usd,3);
+    assert.deepEqual(job.package.creative.allocations,approval.allocations);
+    assert.equal((await query('SELECT count(*)::int n FROM creative_calls WHERE job_id=$1',[jobs[0].id])).rows[0].n,0);
+  }finally{
+    for(const key of Object.keys(process.env))if(!(key in env))delete process.env[key];
+    Object.assign(process.env,env);
+  }
 });
 
 async function failedClassic(options:{kind?:string;engine?:string;call_key?:string;provider?:string;model?:string;category?:string;provider_id?:string;status?:string}={}){

@@ -1397,9 +1397,24 @@ let LEMO_PREVIEWS=null;
 async function creativeDraftView(body,d,refresh){
   if(d.creative.engine==='classic')return classicDraftView(body,d,refresh);
   const creative=d.creative,selection=creative.selection,plan=structuredClone(selection.plan),settings=structuredClone(creative.settings),script=structuredClone(d.storyboard.script);
-  const err=h('div',{class:'err',role:'alert'}),status=h('div',{class:'sub',role:'status'});
+  const editable=d.status==='ready'&&!d.job_id;
+  const title=h('h2',{class:'d-title'},d.draft.title_th);
+  const err=h('div',{class:'err',role:'alert'}),status=h('p',{class:'sub',role:'status',hidden:true});
+  const production=h('section',{class:'chars','aria-label':'ยืนยันการผลิต Lemo'});
+  const editor=h('fieldset',{style:'border:0;min-width:0;margin:0;padding:0'});
+  const details=h('details',{},h('summary',{},editable?'ปรับบท สไตล์ และรายละเอียดฉาก รวมถึงวงเงินผลิต':'ดูบท สไตล์ และรายละเอียดฉาก'),editor);
+  let dirty=false,busy=false,approve;
+  function markEdited(){
+    if(!editable)return;
+    dirty=true;
+    if(approve)approve.disabled=true;
+    status.hidden=false;status.textContent='บันทึกการแก้ไขเพื่อดูวงเงินล่าสุดก่อนยืนยันผลิต';
+  }
+  editor.addEventListener('input',markEdited);
+  editor.addEventListener('change',markEdited);
+  put(body,title,production,status,details,err);
+  const quoteReady=editable?loadQuote():Promise.resolve();
   if(LEMO_PREVIEWS===null){try{LEMO_PREVIEWS=(await api('/app/api/creative/capabilities')).styles||[];}catch{LEMO_PREVIEWS=[];}}
-  const editable=d.status==='ready';
   const assessed=[selection.selected,...selection.alternatives];
   const catalog=[...(LEMO_PREVIEWS||[])];
   if(!catalog.some(style=>style.id===selection.selected.id))catalog.unshift({id:selection.selected.id,name:selection.selected.id,category:'สไตล์ที่บันทึกไว้'});
@@ -1419,7 +1434,11 @@ async function creativeDraftView(body,d,refresh){
     showSample();
   });
   const locked=h('input',{type:'checkbox',checked:settings.locked,disabled:!editable});locked.addEventListener('change',()=>{settings.locked=locked.checked;styleSel.disabled=modeSel.disabled=locked.checked;});
+  const budget=h('input',{class:'field',type:'number',min:0,max:1000,step:'any',required:true,value:settings.max_usd});
   const save=async()=>{
+    const amount=budget.valueAsNumber;
+    if(!Number.isFinite(amount)||amount<=0||amount>1000)throw Error('กรอกวงเงินผลิตมากกว่า 0 และไม่เกิน 1,000 USD');
+    settings.max_usd=amount;
     settings.mode=locked.checked?'manual':modeSel.value;
     if(settings.mode==='manual')settings.manual_style=styleSel.value;else delete settings.manual_style;
     return api('/app/api/creative/'+d.id,{method:'PATCH',body:JSON.stringify({settings,plan,...(creative.engine==='lemo'?{script}:{})})});
@@ -1432,22 +1451,76 @@ async function creativeDraftView(body,d,refresh){
     const cues=scene.sound.cues.map(c=>{const el=h('textarea',{class:'field',value:c.prompt,disabled:!editable,'aria-label':'เสียง '+c.id});el.value=c.prompt;el.addEventListener('input',()=>c.prompt=el.value);return h('label',{class:'sub'},c.word+' · '+c.duration+' วินาที',el);});
     return h('section',{class:'chars'},h('h3',{},'ฉาก '+(i+1)),text,...fields,h('label',{class:'sub'},'ตัวละคร (คั่นด้วย ,)',chars),h('p',{class:'sub'},'การเคลื่อนไหว: '+scene.events.map(e=>e.action).join(' → ')),h('details',{},h('summary',{},'เสียงประกอบ · '+({effects:'เอฟเฟกต์',ambience:'บรรยากาศ',silence:'เว้นเสียง'}[scene.sound.decision])),h('p',{},scene.sound.reason),...cues),creative.engine==='lemo'?h('button',{class:'btn quiet',on:{click:async()=>{try{const r=await api('/app/api/creative/'+d.id+'/regenerate-scene',{method:'POST',body:JSON.stringify({seg:scene.seg})});openDraft(r.id);}catch(e){err.textContent=e.message;}}}},'สร้างเวอร์ชันเพื่อวาดฉากนี้ใหม่…'):'');
   });
-  const production=h('div',{class:'chars'});
   if(d.job_id){
     try{const job=await api('/app/api/creative/jobs/'+d.job_id);put(production,h('h3',{},job.status),h('progress',{value:job.progress,max:1}),h('p',{},job.error||job.stage),job.result?.video_url?h('video',{controls:true,src:job.result.video_url,style:'max-width:100%;max-height:500px'}):'',h('div',{class:'row'},job.assets.filter(a=>a.kind==='preview'&&a.url).map(a=>h('a',{href:a.url,target:'_blank',rel:'noopener'},h('img',{src:a.url,alt:'เฟรมฉาก '+(a.meta?.seg||''),style:'width:120px;border-radius:10px'})))),h('p',{class:'sub'},'คำขอที่บันทึก '+job.calls.length+' · ราคาที่ยังรอยืนยัน '+job.calls.filter(x=>x.actual_usd===null).length+' รายการ'),h('button',{class:'btn',on:{click:refresh}},'ตรวจสถานะอีกครั้ง'),!['READY_TO_POST','CANCELLED','FAILED'].includes(job.status)?h('button',{class:'btn',on:{click:async()=>{await api('/app/api/creative/jobs/'+d.job_id+'/cancel',{method:'POST'});refresh();}}},'ยกเลิกงาน'):job.status==='FAILED'?h('button',{class:'btn',on:{click:async()=>{try{await api('/app/api/creative/jobs/'+d.job_id+'/retry',{method:'POST'});refresh();}catch(e){err.textContent=e.message;}}}},'ซ่อมต่อจากจุดที่บันทึกไว้'):'');}catch(e){err.textContent=e.message;}
   }
-  put(body,h('h2',{},d.draft.title_th),identity,...scenes,editable?h('div',{class:'row'},h('button',{class:'btn',on:{click:async()=>{try{await save();status.textContent='บันทึกแล้ว ราคาจะคำนวณตามฉบับล่าสุด';await refresh();}catch(e){err.textContent=e.message;}}}},'บันทึกการแก้ไข'),h('button',{class:'btn',disabled:settings.locked,on:{click:async()=>{if(!confirm('ให้สมองที่เลือกประเมินสไตล์ใหม่? จะมีค่าใช้จ่ายการวางแผน AI และยังไม่ส่งผลิตเสียงหรือวิดีโอ'))return;try{await save();const r=await draftPost('/app/api/studio/drafts/'+d.id+'/rewrite',{creative:{...settings,mode:'auto',locked:false},note:'Keep the story and factual sources. Reevaluate creative style candidates and scene direction. Do not copy the previous style scores.'});openDraft(r.id);}catch(e){err.textContent=e.message;}}}},'ให้ AI ประเมินสไตล์ใหม่'),h('button',{class:'btn primary',on:{click:async()=>{try{await save();await creativeCostDialog(production,d.id);}catch(e){err.textContent=e.message;}}}},'ตรวจราคาและส่งผลิต…')):'',status,production,err);
-}
-async function creativeCostDialog(target,id){
-  const q=await api('/app/api/creative/'+id+'/estimate'),allocations={},labels={planning:'สมองวางบท (จ่ายไปแล้ว)',style:'กำกับสไตล์ในคำขอเดิม',coding:'AI เขียนภาพ',narration:'เสียงบรรยาย',sfx:'เสียงประกอบ',music:'ดนตรี',compute:'เรนเดอร์',other:'อื่น ๆ'};
-  const cap=h('input',{class:'field',type:'number',step:.01,min:.01,value:10,'aria-label':'ยอดสูงสุดที่อนุมัติ'}),unknown=h('input',{type:'checkbox'}),style=h('input',{type:'checkbox'}),error=h('div',{class:'err'});
-  const rows=q.items.map(item=>{const n=h('input',{class:'field',type:'number',step:.01,min:0,value:item.estimated_usd===null?'':Number(item.estimated_usd).toFixed(4),disabled:!item.quantity,'aria-label':'วงเงิน '+item.category});allocations[item.category]=n;return h('tr',{},h('td',{},labels[item.category]),h('td',{},item.estimated_usd===null?'ยังไม่ทราบ':item.category==='planning'?'ดู usage ที่ใช้แล้ว':Number(item.estimated_usd).toFixed(4)+' USD'),h('td',{},n));});
-  put(target,h('h3',{},'ตรวจค่าใช้จ่ายก่อนผลิต'),h('table',{},h('thead',{},h('tr',{},h('th',{},'รายการ'),h('th',{},'ประมาณการ'),h('th',{},'วงเงิน USD'))),h('tbody',{},...rows)),h('p',{class:'sub'},'โทเค็นวางบทที่ใช้แล้ว: เข้า '+fmtN(q.planning_usage.input_tokens||0)+' · ออก '+fmtN(q.planning_usage.output_tokens||0)),h('label',{},'วงเงินรวมสูงสุด',cap),h('label',{class:'check'},unknown,' อนุมัติรายการราคายังไม่ทราบตามวงเงินที่กรอก (ยอดจริงต้องตรวจจากผู้ให้บริการ วงเงินนี้ไม่ใช่ราคาที่รับประกัน)'),h('label',{class:'check'},style,' ตรวจบท ภาพ เสียง และสไตล์แล้ว'),h('button',{class:'btn primary',on:{click:async function(){this.disabled=true;try{const r=await api('/app/api/creative/'+id+'/approve',{method:'POST',body:JSON.stringify({revision:q.revision,quote_hash:q.quote_hash,max_usd:Number(cap.value),allocations:Object.fromEntries(Object.entries(allocations).map(([k,v])=>[k,Number(v.value)])),unknown_ack:unknown.checked,style_ack:style.checked})});toast('ส่งเข้าคิวแล้ว');openDraft(id);}catch(e){error.textContent=e.message;this.disabled=false;}}}},'ยืนยันวงเงินและผลิต'),error);
+  const saveButton=h('button',{class:'btn',on:{click:async()=>{
+    if(busy)return;
+    busy=true;editor.disabled=true;
+    try{await save();await refresh();}catch(e){err.textContent=e.message;}
+    finally{busy=false;editor.disabled=false;}
+  }}},'บันทึกการแก้ไข');
+  const reassess=h('button',{class:'btn',disabled:settings.locked,on:{click:async()=>{
+    if(busy||!confirm('ให้ AI ประเมินสไตล์ใหม่โดยใช้เครดิตวางแผนเพิ่มเติม?'))return;
+    busy=true;editor.disabled=true;if(approve)approve.disabled=true;
+    try{
+      await save();
+      const r=await draftPost('/app/api/studio/drafts/'+d.id+'/rewrite',{creative:{...settings,mode:'auto',locked:false},note:'Keep the story and factual sources. Reevaluate creative style candidates and scene direction. Do not copy the previous style scores.'});
+      openDraft(r.id);
+    }catch(e){err.textContent=e.message;markEdited();}
+    finally{busy=false;editor.disabled=false;}
+  }}},'ให้ AI ประเมินสไตล์ใหม่');
+  put(editor,editable?h('label',{},'วงเงินผลิตสูงสุด (USD)',budget):'',identity,...scenes,editable?h('div',{class:'row'},saveButton,reassess):'');
+  await quoteReady;
+
+  async function loadQuote(){
+    put(production,h('p',{class:'sub',role:'status'},'กำลังโหลดวงเงินผลิต…'));
+    let q;
+    try{q=await api('/app/api/creative/'+d.id+'/estimate');}
+    catch(e){
+      put(production,h('p',{class:'err',role:'alert'},e.message),h('button',{class:'btn',on:{click:loadQuote}},'โหลดวงเงินอีกครั้ง'));
+      return;
+    }
+    const approval=q.lemo_approval;
+    const gateOpen=q.gates?.enabled===true;
+    const canApprove=gateOpen&&approval?.available===true;
+    const submitError=h('p',{class:'err',role:'alert',hidden:true});
+    const usd=value=>Number(value).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:6})+' USD';
+    const labels={coding:'เขียนโค้ดภาพ',narration:'เสียงบรรยาย',sfx:'เสียงประกอบ',music:'ดนตรี',compute:'เรนเดอร์วิดีโอ',other:'อื่น ๆ'};
+    const rows=q.items.filter(item=>item.quantity>0).map(item=>h('tr',{},h('td',{},labels[item.category]||item.category),
+      h('td',{},item.estimated_usd==null?'รอราคาจริง':usd(item.estimated_usd)),h('td',{},usd(approval?.allocations?.[item.category]||0))));
+    approve=h('button',{class:'btn primary',disabled:!canApprove||dirty||busy,on:{click:async()=>{
+      if(busy||dirty||!canApprove)return;
+      busy=true;editor.disabled=true;approve.disabled=true;approve.textContent='กำลังส่งผลิต…';submitError.hidden=true;
+      try{
+        await api('/app/api/creative/'+d.id+'/approve',{method:'POST',body:JSON.stringify({revision:q.revision,quote_hash:q.quote_hash,confirm:true})});
+        toast('ส่งเข้าคิวผลิตแล้ว');await refresh();
+      }catch(e){
+        if(e.status===409){
+          toast('โปรดตรวจวงเงินล่าสุดก่อนยืนยันอีกครั้ง · '+e.message);
+          await refresh();
+        }else{
+          submitError.textContent=e.status?e.message:'การเชื่อมต่อขาด กดยืนยันซ้ำเพื่อตรวจคำขอเดิมได้';submitError.hidden=false;
+          approve.textContent='ยืนยันผลิตคลิป';approve.disabled=dirty;
+        }
+      }finally{busy=false;editor.disabled=false;}
+    }}},'ยืนยันผลิตคลิป');
+    put(production,h('p',{},approval?'วงเงินผลิตสูงสุด '+usd(approval.max_usd):'ยังไม่มีวงเงินที่อนุมัติได้'),
+      approval?.unknown_ack_required?h('p',{class:'sub'},'บางรายการยังไม่ทราบราคาจริง ยืนยันเพื่ออนุมัติรายการเหล่านี้ภายในวงเงินที่แสดง'):'',
+      approval?.style_ack_required?h('p',{class:'warn'},'กรุณาตรวจสไตล์ที่เลือกในรายละเอียดก่อนยืนยันผลิต'):'',
+      !gateOpen?h('p',{class:'err',role:'alert'},'ยังไม่เปิดให้ผลิตด้วย Lemo กรุณาให้ผู้ดูแลตรวจการตั้งค่าการผลิต แล้วเปิดร่างนี้อีกครั้ง'):'',
+      !approval?.available?h('p',{class:'err',role:'alert'},approval?.reason||'ยังไม่สามารถส่งผลิตได้'):'',
+      approve,submitError,
+      h('details',{},h('summary',{},'รายละเอียดค่าใช้จ่าย'),h('table',{class:'classic-costs'},
+        h('thead',{},h('tr',{},h('th',{},'รายการ'),h('th',{},'ประมาณการ'),h('th',{},'วงเงิน'))),h('tbody',{},rows)),
+        h('p',{class:'sub'},'การวางบทใช้โทเค็นไปแล้ว '+fmtN(q.planning_usage?.input_tokens||0)+' เข้า · '+fmtN(q.planning_usage?.output_tokens||0)+' ออก')));
+  }
 }
 
 function openDraft(id){
   drawer(({body, titleEl, close})=>{
-    let timer=null, dirty=false;
+    let timer=null, dirty=false, previousStatus;
+    const panel=body.closest('.drawer');
     const stop=()=>{ if(timer){ clearTimeout(timer); timer=null; } };
     const obs = new MutationObserver(()=>{ if(!body.isConnected){ stop(); obs.disconnect(); } }); obs.observe(document.body,{childList:true});
     async function refresh(){
@@ -1456,11 +1529,13 @@ function openDraft(id){
       if (!body.isConnected) return;
       titleEl.textContent = draftState(d)[1];
       if (dirty) return;
+      const scroll=panel.scrollTop;
+      const justReady=d.creative?.engine==='lemo'&&d.status==='ready'&&['queued','researching','writing'].includes(previousStatus);
+      previousStatus=d.status;
       if(d.creative&&d.draft&&!['failed','queued','researching','writing'].includes(d.status)){
-        const scroll=body.scrollTop;
         await creativeDraftView(body,d,refresh);
-        body.scrollTop=scroll;
       }else render(d);
+      panel.scrollTop=justReady?0:scroll;
       if (body.isConnected && inProgress(d)) timer=setTimeout(refresh, 4000);
     }
     function logList(d){ return h('ol',{class:'logl'}, (d.log||[]).slice(-14).map(l=>h('li',{}, h('time',{},hhmm(l.at)), h('span',{},l.msg)))); }

@@ -67,7 +67,7 @@ const quote={revision:'revision-1',quote_hash:'quote-1',known_total_usd:0,unknow
   assert.equal(await list.locator('.pulse').count(),0);
   assert.equal(await p.evaluate(()=>busyWithoutJobs),false);assert.equal(await p.evaluate(()=>activeJob),true);
   assert.match(await list.textContent(),/ยกเลิกการผลิตแล้ว/);
-  await list.getByRole('button',{name:/ร่างเก่า/}).click();
+  await list.getByRole('button',{name:/^ร่างเก่า/}).click();
   await p.locator('.drawer').getByRole('heading',{name:'ไม่พบงานผลิตที่เชื่อมกับร่าง',exact:true}).last().waitFor();
   await p.clock.runFor(10000);
   assert.equal(await p.evaluate(()=>statusReads),1);
@@ -183,9 +183,52 @@ const quote={revision:'revision-1',quote_hash:'quote-1',known_total_usd:0,unknow
   await p.setViewportSize({width:390,height:844});await p.evaluate(()=>{const target=document.getElementById('test-target');target.className='drawer';target.style.padding='20px';return creativeDraftView(target,fixture,async()=>{});});
   const sizes=await p.locator('#test-target').evaluate(el=>({scroll:el.scrollWidth,width:el.clientWidth}));assert.ok(sizes.scroll<=sizes.width+1,JSON.stringify(sizes));assert.equal(await p.locator('#test-target input:visible,#test-target textarea:visible,#test-target select:visible').count(),0);
  });
- await test('Lemo retains its advanced editor and explicit cost form',async p=>{
-  await p.evaluate(()=>{fixture.creative.engine='lemo';return creativeDraftView(document.getElementById('test-target'),fixture,async()=>{});});assert.ok(await p.locator('#test-target textarea:visible').count()>0);assert.equal(await p.getByLabel('สไตล์หลัก',{exact:true}).count(),1);assert.equal(await p.getByRole('button',{name:'ตรวจราคาและส่งผลิต…'}).count(),1);assert.equal(await p.evaluate(()=>estimateCount),0);
-  await p.evaluate(()=>creativeCostDialog(document.getElementById('test-target'),'lemo-test'));assert.ok(await p.locator('#test-target input[type=number]').count()>1);assert.equal(await p.locator('#test-target input[type=checkbox]').count(),2);
+ await test('Lemo opens with bounded production confirmation and optional storyboard editing',async p=>{
+  await p.evaluate(()=>{
+   fixture.creative.engine='lemo';quote.lemo_approval=quote.classic_approval;quote.gates={enabled:true};
+   return creativeDraftView(document.getElementById('test-target'),fixture,async()=>{});
+  });
+  assert.equal(await p.locator('#test-target input:visible,textarea:visible,select:visible').count(),0);
+  assert.ok(await p.getByRole('button',{name:'ยืนยันผลิตคลิป',exact:true}).isEnabled());
+  assert.equal(await p.evaluate(()=>estimateCount),1);
+  await p.locator('summary').filter({hasText:'ปรับบท สไตล์ และรายละเอียดฉาก'}).click();
+  assert.ok(await p.getByLabel('สไตล์หลัก',{exact:true}).isVisible());
+  assert.ok(await p.getByLabel('บทฉาก one',{exact:true}).isVisible());
+ });
+ await test('Lemo with disabled production gates shows the draft without allowing a paid submission',async p=>{
+  await p.evaluate(()=>{
+   fixture.creative.engine='lemo';quote.lemo_approval=quote.classic_approval;quote.gates={enabled:false,blockers:['LEMO_ENABLED']};
+   return creativeDraftView(document.getElementById('test-target'),fixture,async()=>{});
+  });
+  const confirm=p.getByRole('button',{name:'ยืนยันผลิตคลิป',exact:true});
+  assert.ok(await p.getByRole('alert').filter({hasText:'ยังไม่เปิดให้ผลิตด้วย Lemo'}).isVisible());
+  assert.ok(await confirm.isDisabled());
+  await confirm.evaluate(button=>button.click());
+  assert.equal(await p.evaluate(()=>approvalCount),0);
+ });
+ await test('A scrolled Lemo research log returns to the production confirmation when the draft is ready',async p=>{
+  await p.setViewportSize({width:390,height:600});
+  await p.clock.install();
+  await p.evaluate(()=>{
+   fixture.creative.engine='lemo';quote.lemo_approval=quote.classic_approval;quote.gates={enabled:true};
+   let reads=0;
+   const previous=api;
+   api=async(path,opts)=>{
+    if(path.endsWith('/drafts/'+fixture.id)&&++reads===1){
+     const log=Array.from({length:14},(_,i)=>({at:new Date().toISOString(),msg:'กำลังค้นข้อมูลรอบ '+i+' · '+('รายละเอียดการอ่านข้อมูล '.repeat(8))}));
+     return {...fixture,status:'researching',log};
+    }
+    return path.endsWith('/drafts/'+fixture.id)?fixture:previous(path,opts);
+   };
+   window.openStudioDraft(fixture.id);
+  });
+  const drawer=p.getByRole('dialog');
+  await drawer.getByRole('heading',{name:'กำลังค้นข้อมูล'}).waitFor();
+  assert.ok(await drawer.evaluate(panel=>{panel.scrollTop=panel.scrollHeight;return panel.scrollTop;})>0);
+  await p.clock.runFor(4100);
+  await drawer.getByRole('button',{name:'ยืนยันผลิตคลิป',exact:true}).waitFor();
+  assert.equal(await drawer.evaluate(panel=>panel.scrollTop),0);
+  assert.equal(await p.evaluate(()=>approvalCount),0);
  });
  console.log(JSON.stringify({passed:results.length,tests:results,realBrowser:true,mockedProviders:true}));
  }finally{await browser.close();}
