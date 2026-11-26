@@ -2,6 +2,7 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { PGlite } from '@electric-sql/pglite';
+import {creativeSourceEvidence} from './creative.js';
 import { BudgetedFirecrawl, PgResearchBudget, priceRequest } from './firecrawl-budget.js';
 
 const job='10000000-0000-0000-0000-000000000001';
@@ -52,7 +53,14 @@ test('cached extraction retains URLs and collection time and makes no paid reque
   const a=await fc.request(job,'/v2/scrape',{url:'https://official.example/Report?utm_source=a'},fallback);
   const b=await fc.request(job,'/v2/scrape',{url:'https://official.example/Report'},fallback);
   assert.equal(calls,1);assert.equal(b.cache_hit,true);assert.deepEqual(b.source_urls,a.source_urls);
-  assert.equal(new Date(b.collected_at).getTime(),new Date(a.collected_at).getTime(), 'cache provenance keeps the stored collection time');
+  const {rows:[stored]}=await db.query<{collected_at:Date}>('SELECT collected_at FROM firecrawl_cache');
+  assert.ok(stored.collected_at instanceof Date, 'exercise the PostgreSQL driver type that broke submit_episode');
+  for(const result of [a,b]){
+    const sources=creativeSourceEvidence([{url:result.source_urls[0],published:'2024'}],
+      [{url:result.source_urls[0],via:'read',collected:result.collected_at}]);
+    assert.equal(sources[0].collected, stored.collected_at.toISOString(), 'fresh and cached reads use the original collection instant as a JSON string');
+    assert.equal(sources[0].published,'2024');
+  }
   assert.equal(b.budget.committed,3);
   
 });

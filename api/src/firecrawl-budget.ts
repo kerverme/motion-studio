@@ -128,7 +128,11 @@ export class PgResearchBudget implements BudgetStore {
     return {research_job_id:job,limit:r.credit_limit,committed:r.committed_credits,remaining:Math.max(0,r.credit_limit-r.committed_credits),reserved:r.reserved,reported:r.reported,calls:r.calls,blocked_reason:r.blocked_reason};
   }
   async cached(key:string) {
-    return (await this.db().query('SELECT payload, source_urls, collected_at FROM firecrawl_cache WHERE cache_key=$1 AND expires_at>now()',[key])).rows[0] || null;
+    const {rows} = await this.db().query<{payload:any; source_urls:string[]; collected_at:Date | string}>(
+      'SELECT payload, source_urls, collected_at FROM firecrawl_cache WHERE cache_key=$1 AND expires_at>now()', [key]);
+    const entry = rows[0];
+    // pg decodes timestamptz as Date. Tools and episode packages share a JSON timestamp contract.
+    return entry ? {...entry, collected_at:new Date(entry.collected_at).toISOString()} : null;
   }
   async reserve(job:string, req:SafeRequest) {
     if (!this.client) throw new Error('A research request must hold the budget lock before reserving credits.');

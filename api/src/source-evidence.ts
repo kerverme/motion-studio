@@ -14,6 +14,28 @@ export function sourceKey(raw: string): string {
   } catch { return ''; }
 }
 
+export type Seen = {url:string; title?:string; published_hint?:string|null; collected:string; via:'search'|'read'|'web'};
+
+/** Rebuild only provider retrieval evidence, including the canonical URLs of a Firecrawl read. */
+export function savedResearchEvidence(events:any[], since=-Infinity): Seen[] {
+  const seen = new Map<string,Seen>();
+  for (const event of events) {
+    if (!event || !['read','search','web'].includes(event.kind)) continue;
+    const collected = event.collected || event.at;
+    const time = typeof collected === 'string' ? Date.parse(collected) : NaN;
+    if (!Number.isFinite(time) || time < since) continue;
+    for (const item of Array.isArray(event.results) ? event.results : [event]) {
+      if (!item) continue;
+      const aliases = event.kind==='read' && Array.isArray(item.source_urls) ? item.source_urls : [];
+      for (const url of [item.url,...aliases]) {
+        const key = typeof url === 'string' && sourceKey(url);
+        if (key) seen.set(key,{url,title:item.title,published_hint:item.published_hint || item.published,collected,via:event.kind});
+      }
+    }
+  }
+  return [...seen.values()];
+}
+
 /** Only provider retrieval metadata counts; proposed citations in tool arguments do not. */
 export function extractWebEvidence(response: any): WebEvidence {
   const output = Array.isArray(response) ? response : response?.output || [];

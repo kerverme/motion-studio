@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { sourceKey, extractWebEvidence, verifySources } from './source-evidence.js';
+import { sourceKey, extractWebEvidence, verifySources, savedResearchEvidence } from './source-evidence.js';
 
 test('records exact page opens and in-page finds without a sources array', () => {
   const web = extractWebEvidence({ output: [
@@ -64,4 +64,20 @@ test('source repair never promotes requested URL when provider did not retrieve 
   const result = await verifySources(['https://requested.example/page'], { apiKey: 'mock', baseUrl: 'https://api.example.test', model: 'gpt-6.1-sol', fetch: async () => new Response(JSON.stringify({ status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: 'Could not access https://requested.example/page' }] }] }), { status: 200 }) });
   assert.deepEqual(result.sources, []);
   await assert.rejects(() => verifySources(['file:///private'], { apiKey: 'mock', baseUrl: 'https://api.example.test', model: 'x' }), /one to four/);
+});
+
+test('saved evidence restores read aliases for metadata retries and preserves observation time',()=>{
+  const at='2026-11-24T12:34:56.123Z',url='https://official.example/report';
+  const events=[
+    {kind:'read',at,url,source_urls:[url,'https://official.example/report-v2','file:///local'],title:'Report'},
+    {kind:'search',at,results:[{url:'https://official.example/search',source_urls:['https://invented.example/']}]},
+    {kind:'web',at:'invalid date',results:[{url:'https://invalid.example/'}]},
+    {kind:'read',at:'2025-01-01',url:'https://older.example/report'},
+    {kind:'owner',at,url:'https://owner.example/citation'}
+  ];
+  const evidence=savedResearchEvidence(events,Date.parse('2026-11-01'));
+  assert.deepEqual(evidence.map(e=>[e.url,e.via,e.collected]),[
+    [url,'read',at],['https://official.example/report-v2','read',at],['https://official.example/search','search',at]
+  ]);
+  assert.ok(savedResearchEvidence(events).some(e=>e.url==='https://older.example/report'));
 });

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {readFileSync,readdirSync} from 'node:fs';
 import {PGlite} from '@electric-sql/pglite';
 import {Hono} from 'hono';
-process.env.OPENAI_API_KEY='test-key';process.env.MOTION_LLM_PROVIDER='openai';process.env.LEMO_DEVELOPMENT='true';
+process.env.OPENAI_API_KEY='test-key';process.env.MOTION_LLM_PROVIDER='openai';process.env.LEMO_DEVELOPMENT='true';process.env.MOTION_LLM_MAX_INPUT_TOKENS='1000';
 const {registerStudio}=await import('./studio.js');
 test('Lemo reuses the research planner, persists direction and stops before drawing or paid production',async()=>{
   const db=new PGlite();
@@ -13,11 +13,22 @@ test('Lemo reuses the research planner, persists direction and stops before draw
   const story=JSON.parse(readFileSync(new URL('../../lemo-worker/tests/fixtures/cats.json',import.meta.url),'utf8'));
   const board={script:story.script,character_notes:'Original orange cat, same round face and scarf throughout.',narrative:{premise:'A fictional day when cats can speak.',central_question:'What changes when cats can speak?',throughline:'A cat asks for fish and calls a meeting.',payoff:'The day ends and the cats meow again.'},sound_policy:{mode:'designed'},creative:story.creative,
     shots:story.script.map((s:any)=>({seg:s.id,visual:'An original orange cat with a fish plate in the same kitchen.',action:'The cat talks and moves its paws.',camera:'Medium shot with a gentle push.',characters:['แมวส้ม'],subjects:[{id:'cat',description:'An original orange cat acting out the narrated event.'}],continuity:{from:'The cat continues from the previous action.',to:'The cat prepares the next part of the same event.'},motion_beats:[{start:0,end:.5,action:'The cat moves its paw toward the fish.',purpose:'Illustrate the fictional request in this narration.'},{start:.5,end:1,action:'The cat reacts and turns toward the next scene.',purpose:'Carry the same character into the next story beat.'}]}))};
-  const metadata={title_th:story.topic,angle:'เรื่องสมมติเมื่อแมวพูดได้',sources:[],claims:[{text:'เรื่องนี้เป็นเหตุการณ์สมมติ',kind:'assumption',source_ids:[]}],captions:{},music:'playful'};
+  const metadata={title_th:story.topic,angle:'เรื่องสมมติเมื่อแมวพูดได้',sources:[],claims:[{text:'เรื่องนี้เป็นเหตุการณ์สมมติ',kind:'assumption',source_ids:[]}],captions:{facebook:story.topic,instagram:story.topic,tiktok:story.topic,youtube:story.topic,twitter:story.topic}};
   let calls=0,reads=0;const nativeFetch=globalThis.fetch,nativeTimeout=globalThis.setTimeout;
   globalThis.fetch=(async(url:any,opts:any)=>{
     if(!opts.body){reads++;assert.match(String(url),/\/v1\/responses\/resp_mock_2$/);return new Response(JSON.stringify({status:'completed',output:[{type:'function_call',name:'submit_episode',arguments:JSON.stringify(metadata)}]}),{headers:{'content-type':'application/json'}});}
-    calls++;const body=JSON.parse(opts.body);assert.equal(body.model,'gpt-6.1-sol');assert.ok(!body.tools.some((t:any)=>t.name==='draw_scene'),'Lemo planning must not draw Classic artwork');assert.ok(body.tools.find((t:any)=>t.name==='plan_story').parameters.required.includes('creative'));const name=calls===1?'plan_story':'submit_episode';return new Response(JSON.stringify({id:'resp_mock_'+calls,status:'completed',usage:{input_tokens:100,output_tokens:100},output:[{type:'function_call',id:'fc_'+calls,call_id:'call_'+calls,name,arguments:JSON.stringify(calls===1?board:metadata)}]}),{headers:{'content-type':'application/json'}});}) as typeof fetch;
+    calls++;const body=JSON.parse(opts.body);assert.equal(body.model,'gpt-6.1-sol');assert.ok(!body.tools.some((t:any)=>t.name==='draw_scene'),'Lemo planning must not draw Classic artwork');assert.ok(body.tools.find((t:any)=>t.name==='plan_story').parameters.required.includes('creative'));const schema=body.tools.find((t:any)=>t.name==='submit_episode').parameters;
+    assert.doesNotMatch(body.instructions,/Call draw_character|call draw_scene|submit motion_review/i);
+    assert.match(body.instructions,/Never substitute its access date/);
+    assert.deepEqual(Object.keys(schema.properties).sort(),Object.keys(metadata).sort());
+    assert.deepEqual(schema.required.sort(),Object.keys(metadata).sort());
+    if(calls===2){
+      assert.deepEqual(body.tool_choice,{type:'function',name:'submit_episode'},'A saved Lemo plan can submit under budget pressure without Classic art');
+      const saved=JSON.parse(body.input.find((x:any)=>x.call_id==='call_1'&&x.type==='function_call_output').output);
+      assert.equal(saved.missing_scenes,undefined);
+      assert.match(saved.instruction,/title_th, angle, sources, claims and captions/);
+    }
+    const name=calls===1?'plan_story':'submit_episode';return new Response(JSON.stringify({id:'resp_mock_'+calls,status:'completed',usage:{input_tokens:calls===1?850:100,output_tokens:100},output:[{type:'function_call',id:'fc_'+calls,call_id:'call_'+calls,name,arguments:JSON.stringify(calls===1?board:metadata)}]}),{headers:{'content-type':'application/json'}});}) as typeof fetch;
   globalThis.setTimeout=((cb:any,ms?:number,...args:any[])=>nativeTimeout(ms===8000?()=>{}:cb,ms===8000?0:ms,...args)) as typeof setTimeout;
   try{
     const app=new Hono();registerStudio(app,{query,connect:async()=>({query,release(){}})} as any,{models:FALLBACK_MODELS,guard:async(_c,n)=>n(),createJob:async()=>{throw Error('Unapproved production');},validate:()=>[],researchFreshness:()=>{throw Error('A fictional story with no factual claims must not be sent to factual source freshness checks');},estimateCredits:()=>0});
@@ -30,9 +41,11 @@ test('Lemo reuses the research planner, persists direction and stops before draw
     await query("UPDATE drafts SET status='failed',draft=NULL,log=log||$2::jsonb WHERE id=$1",[id,JSON.stringify([{msg:'Saved response [resp_mock_2]'}])]);
     const recover=(response_id:string)=>app.request('/app/api/studio/drafts/'+id+'/recover',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({response_id})});
     assert.equal((await recover('resp_another_draft')).status,404);assert.equal(reads,0);
+    const diagnosis=await app.request('/app/api/studio/drafts/'+id+'/diagnostics?response_id=resp_mock_2');
+    assert.deepEqual((await diagnosis.json() as any).calls[0].issues,[],'Lemo diagnostics validate metadata without requiring Classic artwork');
     const recovered=await recover('resp_mock_2');assert.equal(recovered.status,200,await recovered.clone().text());
-    assert.equal(reads,1);assert.equal(calls,2,'Recovery must never issue a paid POST');
+    assert.equal(reads,2);assert.equal(calls,2,'Recovery must never issue a paid POST');
     assert.equal((await query('SELECT status FROM drafts WHERE id=$1',[id])).rows[0].status,'ready');
-    assert.equal((await recover('resp_mock_2')).status,200);assert.equal(reads,1,'Repeated recovery is idempotent');
+    assert.equal((await recover('resp_mock_2')).status,200);assert.equal(reads,2,'Repeated recovery is idempotent');
   }finally{globalThis.fetch=nativeFetch;globalThis.setTimeout=nativeTimeout;await db.close();}
 });

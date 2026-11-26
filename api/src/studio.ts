@@ -1,4 +1,5 @@
 import { DEFAULT_OPENAI_MODEL, DEFAULT_REASONING as REASONING, REASONING_LEVELS, openAIModelLabel, readModels, type ModelSource } from './openai-models.js';
+import {savedLemoDraft} from './lemo-recovery.js';
 import {CreativeSettings,CreativePlanToolSchema,creativeSourceEvidence,chooseStyle,creativePrompt,releaseGates,lemoStyles} from './creative.js';
 import {registerCreative} from './creative-routes.js';
 import {selectedContext,trendPrompt} from './trends/store.js';
@@ -17,7 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { openaiResponse, networkCode } from './openai-response.js';
 import { Artwork, emptyArtwork, reconcileArtwork, updateArtwork, mergeArtwork, artworkComplete, ARTWORK_TOOLS, type ArtworkState } from './art-batches.js';
 import { BudgetedFirecrawl, PgResearchBudget, ResearchBudgetError } from './firecrawl-budget.js';
-import { extractWebEvidence, verifySources, searchWeb, sourceKey } from './source-evidence.js';
+import { extractWebEvidence, verifySources, searchWeb, sourceKey, savedResearchEvidence, type Seen } from './source-evidence.js';
 import { Storyboard, reviseStoryboard, validateStoryboardDraft, personCalls, withDepictionPolicy, type StoryboardT } from './storyboard.js';
 import { draftRequest } from './draft-request.js';
 import { IS_STUDIO_DRAFT, STUDIO_DRAFT_BY_ID, DAILY_STUDIO_DRAFT_COUNT } from './studio-draft-queries.js';
@@ -171,7 +172,6 @@ const yearOf = (s?: string | null) => {
 };
 const host = (u: string) => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return u; } };
 
-type Seen = { url: string; title?: string; published_hint?: string | null; collected: string; via: 'search' | 'read' | 'web' };
 
 // Firecrawl traffic is exclusively routed through the persistent research budget.
 const pubHint = (m: any) => m?.publishedTime || m?.['article:published_time'] || m?.publishedDate || m?.['og:updated_time'] || m?.modifiedTime || m?.date || null;
@@ -210,8 +210,18 @@ type WebFound = { searches: number; queries: string[]; sources: { url: string; t
 type Active = { fc: boolean; ws: boolean; drawing?: boolean; searches?: number; source?: boolean; creative?: boolean; lemo?: boolean };
 const activeTools = (a: Active) => TOOLS.filter(t => t.name !== 'openai_search' || PROVIDER !== 'openai').filter(t => ['submit_episode','plan_story','revise_story',...ARTWORK_TOOLS.map(x=>x.name)].includes(t.name) || (t.name === 'read_source_material' ? !!a.source : t.name === 'read_page' ? !!env.OPENAI_API_KEY : t.name === 'openai_search' && !a.drawing && a.ws)).filter(t=>!a.lemo||!ARTWORK_TOOLS.some(x=>x.name===t.name)).map(t => {
   if(a.creative&&t.name==='plan_story')return {...t,input_schema:{...t.input_schema,properties:{...t.input_schema.properties,creative:CreativePlanToolSchema},required:[...(t.input_schema.required||[]),'creative']}};
-  if (t.name !== 'submit_episode' || !a.drawing) return t;
+  if (t.name !== 'submit_episode') return t;
   const schema:any = t.input_schema;
+  if (a.lemo) {
+    const required = ['title_th','angle','sources','claims','captions'];
+    const {title_th,angle,sources,claims,captions} = schema.properties;
+    return {...t, description:'Submit metadata for the saved Lemo storyboard for owner review.', input_schema:{
+      type:'object', additionalProperties:false, required,
+      properties:{title_th:{...title_th,minLength:4,maxLength:90},angle:{...angle,maxLength:600},
+        sources:{...sources,maxItems:30},claims:{...claims,maxItems:80},captions},
+    }};
+  }
+  if (!a.drawing) return t;
   const omit = new Set(['script','scenes','cast','art']);
   return {...t,input_schema:{...schema,required:schema.required.filter((key:string)=>!omit.has(key)),properties:Object.fromEntries(Object.entries(schema.properties).filter(([key])=>!omit.has(key)))}};
 });
@@ -298,12 +308,7 @@ function openaiConversation(system: string, first: string, model: string, effort
 export function systemPrompt(a: Active, mode: 'name_story' | 'general' = 'name_story', directionVersion:0|1=0, visualVersion:0|1=0) {
   const d = nowBkk();
   const ce = d.getUTCFullYear(), be = ce + 543;
-  let prompt = `You are the head writer and researcher of a Thai short-video channel. Series tag: "${SERIES_TAG}".
-Today is ${todayIso()} (Thai year ${be}). Every clip is a 1080x1920 vertical video, 45–75 seconds, narrated in Thai by a synthetic voice,
-with bespoke code-drawn motion graphics. Read the story, direct every shot and draw every scene and cast member for THIS episode.
-Use code and the canvas toolkit below; do not call image generation services or use stock footage. Reference photos guide likeness, never become the background.
-
-## Research rule (the owner's standing instruction — non-negotiable)
+  const research = `## Research rule (the owner's standing instruction — non-negotiable)
 - Every fact, number and story condition must come from pages you retrieve in THIS session. Use OpenAI Web Search FIRST (built-in web_search, or openai_search for an Anthropic writer). read_page defaults to an exact source read through OpenAI. Firecrawl is ONLY a fallback for deeper text extraction after that exact URL has already been attempted through OpenAI; set use_firecrawl=true and explain the missing evidence in fallback_reason. Start with ONE selected source, never bulk extraction. A durable 25-credit maximum applies cumulatively to the entire Research Job, across endpoints, retries and rewrites. Each call reserves its maximum cost before dispatch; calls are sequential. On insufficient budget, stop Firecrawl and ask the owner for an explicit budget increase, or continue using verified OpenAI evidence. Never assume permission. Unpriced operations, PDF parsing, X/Twitter, provider enrichment and agents are disabled. Reuse cached results and preserve original URLs.
 - Always look for the MOST RECENT data that exists. Put the year in queries (${ce} / ${be}, or ${ce - 1} / ${be - 1}) and search in Thai and English.
   Prefer primary/official sources (สำนักงานสถิติแห่งชาติ, ministries, Bank of Thailand, WHO, World Bank, UN, OECD, DataReportal, peer-reviewed papers,
@@ -312,15 +317,8 @@ Use code and the canvas toolkit below; do not call image generation services or 
   you must say so in that source's freshness_note (why nothing newer exists), and say the year on screen or in narration.
 - Never invent numbers. If something cannot be found, build the story from what you did find, or present it explicitly as an assumption
   (claims kind "assumption", and say "สมมติ" in the narration and on screen). A "what if" scenario must be built on real conditions you found.
-- Sources may only be URLs you actually retrieved. Prefer 3–7 strong sources.
-
-## Story — vary it every episode (the owner finds a fixed pattern boring)
-Pick the format that suits the topic best AND differs from the recent episodes listed in the user message. Formats ("format" field):
-${Object.entries(FORMATS).map(([k, f]) => `- ${k}: ${f.how}`).join('\n')}
-Also vary the scene types and their order, the sets (locations) and the cast from recent episodes; do not reuse a recent episode's scene sequence.
-A quiz is one tool among many, not a fixed step.
-
-## Retention rules (the owner's standing rules — checked automatically; narration runs at about ${CPS} Thai characters per second)
+- Sources may only be URLs you actually retrieved. Prefer 3–7 strong sources.`;
+  const narration = `## Retention rules (the owner's standing rules — checked automatically; narration runs at about ${CPS} Thai characters per second)
 - HOOK in the first ${HOOK_SECS} seconds: segment 1 has beat "hook", ≤ ${HOOK_SECS * CPS} characters, and grabs attention immediately
   (a provocative question, a shocking number, a bold claim, or a mini-cliffhanger). No greetings, no "วันนี้เราจะมาดู…".
 - RE-HOOK at least every ${REHOOK_SECS} seconds: mark segments that pull attention back with beat "rehook" (a new question, twist, "แต่เดี๋ยวก่อน…",
@@ -337,7 +335,38 @@ taking sides, and content about private individuals.
 - Natural spoken Thai, short phrases separated by single spaces (each space-separated phrase becomes one subtitle chunk; ≤ 28 characters per phrase).
 - NO digits, %, or symbols: write numbers as Thai words (หกสิบห้าล้าน, ยี่สิบเอ็ดเปอร์เซ็นต์, ปีสองพันห้าร้อยหกสิบแปด or ปีสองห้าหกแปด).
 - Brand/English names in Thai script (ไลน์, ยูทูบ, ติ๊กต็อก). Total narration 450–1000 Thai characters.
-- segment ids: short lowercase ascii. Every segment has "beat": hook | rehook | info | payoff | cta.
+- segment ids: short lowercase ascii. Every segment has "beat": hook | rehook | info | payoff | cta.`;
+  const captions = `## Captions
+captions: facebook, instagram, tiktok, youtube (title-style, ≤ 90 chars), twitter (≤ 260 chars). Thai, hook + the quiz question or key fact,
+one short "อ้างอิง:" line naming the main sources and years, 5–8 hashtags including #จะเกิดอะไรขึ้นถ้า #รู้หรือไม่ (instagram/tiktok may have more).`;
+  if (a.lemo) {
+    const opening=mode==='general'
+      ? 'Open on the actual topic. A character-free explanation is valid. Names of authors and experts are attribution.'
+      : 'Open with คนชื่อ X ในประเทศไทย มีกี่คน using the requested name. Give the newest verified count or explain honestly that it is unknown; cite the source year and never invent a count. Continue into the requested story.';
+    return `You plan Thai short films for "${SERIES_TAG}". Today is ${todayIso()} (Thai year ${be}). Design a 45–75 second 1080×1920 film.
+${research}
+For sources[].published use the actual publication date or year. If none can be verified, use a different dated source or remove the unsupported factual claim. Never substitute its access date. Use empty sources for clearly fictional stories with no factual claims. For health content verify original sources, distinguish personal advice from medical facts, and preserve uncertainty.
+${narration}
+${opening}
+Treat the opening frame as the cover: plan a legible Thai headline and the scene's main subject visible from the start. Keep the same identity for recurring subjects and show the actual examples described in the narration.
+${directionVersion===1?directionPrompt('lemo'):''}
+${captions}
+Work through the available tools. Use plan_story to save the script, shots, character_notes and creative direction. When the storyboard is ready, call submit_episode with title_th, angle, sources, claims and captions. The rendering worker makes the visuals after owner approval.`;
+  }
+  let prompt = `You are the head writer and researcher of a Thai short-video channel. Series tag: "${SERIES_TAG}".
+Today is ${todayIso()} (Thai year ${be}). Every clip is a 1080x1920 vertical video, 45–75 seconds, narrated in Thai by a synthetic voice,
+with bespoke code-drawn motion graphics. Read the story, direct every shot and draw every scene and cast member for THIS episode.
+Use code and the canvas toolkit below; do not call image generation services or use stock footage. Reference photos guide likeness, never become the background.
+
+${research}
+
+## Story — vary it every episode (the owner finds a fixed pattern boring)
+Pick the format that suits the topic best AND differs from the recent episodes listed in the user message. Formats ("format" field):
+${Object.entries(FORMATS).map(([k, f]) => `- ${k}: ${f.how}`).join('\n')}
+Also vary the scene types and their order, the sets (locations) and the cast from recent episodes; do not reuse a recent episode's scene sequence.
+A quiz is one tool among many, not a fixed step.
+
+${narration}
 
 ## Scenes (scenes[]) — one per segment, same seg id; prefer 6–8 concise shots and reusable art helpers
 Each scene: {"seg", "type", "bg", ...template fields, optional common fields}. Timing fields ("at", "*_at", countdown entries) must be a word or
@@ -428,9 +457,7 @@ scene code: def draw(c, t, p):\n  c.grad(rgb(255,196,120), rgb(255,236,190))\n  
 Every episode is drawn in one visual style (all code-drawn): ${STYLE_NAMES.map((k) => `${k} (${STYLES[k].en})`).join('; ')}.
 Set "style". The user message says whether the owner fixed it; otherwise pick the one that suits the story best and differs from the last two episodes.
 
-## Captions
-captions: facebook, instagram, tiktok, youtube (title-style, ≤ 90 chars), twitter (≤ 260 chars). Thai, hook + the quiz question or key fact,
-one short "อ้างอิง:" line naming the main sources and years, 5–8 hashtags including #จะเกิดอะไรขึ้นถ้า #รู้หรือไม่ (instagram/tiktok may have more).
+${captions}
 
 ## Process
 1. Plan, then research (several queries, Thai + English, newest year first) and confirm the key figures on the actual pages.
@@ -1095,11 +1122,8 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     if (row.parent_id) {
       parent = (await pool.query('SELECT draft, research, storyboard, artwork FROM drafts WHERE id=$1', [row.parent_id])).rows[0] ?? null;
       if (!research.length && Array.isArray(parent?.research)) research.push(...parent.research);
-      for (const event of [...(parent?.research || []), ...(row.research || [])]) {
-        const collected = event.collected || event.at;
-        if (!collected || Date.now() - new Date(collected).getTime() > 25 * 86400_000) continue;
-        for (const r of event.results || [event]) if (r.url) seen.set(normUrl(r.url), {...r,collected,via:event.kind === 'web' ? 'web' : event.kind === 'read' ? 'read' : 'search'});
-      }
+      const cutoff = Date.now() - 25 * 86400_000;
+      for (const r of savedResearchEvidence([...(parent?.research || []), ...(row.research || [])],cutoff)) seen.set(normUrl(r.url),r);
       for (const r of parent?.draft?.research_seen || []) if (r.url && r.collected && Date.now() - new Date(r.collected).getTime() < 25 * 86400_000) seen.set(normUrl(r.url), r);
     }
     const usage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, firecrawl_calls: 0, web_searches: 0, turns: 0 };
@@ -1145,11 +1169,12 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const reqChars: ReqChar[] = Array.isArray(row.characters) ? row.characters : [];
     if (reqChars.length) {
       userText += `\n\nRequired characters (reference images follow): ${reqChars.map(c => JSON.stringify({name:c.name,look:((({backdrop,...look})=>look)(c.look))})).join('\n')}. ` +
-        `Make these the first cast members in this order. Draw their actual visible features in portrait_code; every scene is custom. Show each in at least a third of the shots. Ignore any old backdrop; draw locations from the story. `;
+        (active.lemo ? 'Preserve their identity, look and clothing in the creative identity and in the appropriate shot descriptions. Ignore old backdrops; choose locations from the story.' :
+          'Make these the first cast members in this order. Draw their actual visible features in portrait_code; every scene is custom. Show each in at least a third of the shots. Ignore any old backdrop; draw locations from the story.');
     }
     const recent = await recentEpisodes(id);
     const fixedStyle = row.style && STYLES[row.style] ? row.style : recurringCharacter ? 'classic' : null;
-    userText += fixedStyle
+    if(!active.lemo) userText += fixedStyle
       ? `\n\nVisual style: the owner chose "${fixedStyle}" (${STYLES[fixedStyle].en}); set "style": "${fixedStyle}" and let the music fit it.`
       : `\n\nVisual style: choose "style" yourself (suits the story, differs from the last two episodes).`;
     userText += recent.length
@@ -1189,6 +1214,8 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     let reviewedArt = '';
     let pendingReview = '';
     let submits = 0;
+    let rejectedLemoSubmits = 0;
+    const toolFailures = new Map<string, Map<string, { turn: number; count: number }>>();
     let pendingImages: { text: string; images: string[] } | null = null;
 
     if(row.trend_context?.sources?.length){
@@ -1214,8 +1241,9 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       usage.turns = turn + 1;
       const totalIn = usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens;
       if (totalIn > MAX_INPUT_TOKENS) throw new Error('ครบงบโทเค็นของร่างนี้แล้ว เก็บบทและภาพที่วาดสำเร็จไว้ สามารถลองใหม่เพื่อทำต่อได้');
-      const mustSubmit = !!storyboard && artworkComplete(artwork, storyboard) && (turn >= MAX_TURNS - 2 || totalIn > MAX_INPUT_TOKENS * 0.8);
+      const mustSubmit = !!storyboard && (active.lemo === true || artworkComplete(artwork, storyboard)) && (turn >= MAX_TURNS - 2 || totalIn > MAX_INPUT_TOKENS * 0.8);
       await log(id, `รอบที่ ${turn + 1}: ${storyboard ? active.lemo ? 'ตรวจบทและสไตล์ Lemo ก่อนอนุมัติผลิต' : `วาดทีละส่วน (${artwork.cast.length} ตัวละคร · ${artwork.scenes.length}/${storyboard.shots.length} ฉาก · reasoning ${effort})` : 'ค้นข้อมูล/วางบท'} (${model})`);
+      const offeredTools = new Set(activeTools(active).map(tool => tool.name));
       const { uses, usage: u, web } = await conv.turn(mustSubmit);
       if (web) {
         usage.web_searches += web.searches;
@@ -1236,6 +1264,10 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       for (const u of uses) {
         if ((await pool.query('SELECT removed_at FROM drafts WHERE id=$1',[id])).rows[0]?.removed_at) return;
         try {
+          if (!offeredTools.has(u.name)) throw new Error(`Tool unavailable for this step. Choose one of: ${[...offeredTools].join(', ')}`);
+          if (!u.input || typeof u.input !== 'object' || Array.isArray(u.input) || u.input.__invalid_json !== undefined) {
+            throw new Error('Tool arguments must be a valid JSON object. Correct the arguments and call this tool again.');
+          }
           if (ARTWORK_TOOLS.some(t => t.name === u.name)) {
             if (!storyboard) throw new Error('Call plan_story before drawing assets');
             artwork = updateArtwork(artwork, u.name, u.input, storyboard);
@@ -1301,12 +1333,19 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
             pendingImages = null;
             await pool.query("UPDATE drafts SET storyboard=$2, status='writing', updated_at=now() WHERE id=$1", [id, JSON.stringify(storyboard)]);
             compactSource();
-            const savedScenes = artwork.scenes.map(scene => scene.seg);
-            const missingScenes = storyboard.shots.filter(shot => !savedScenes.includes(shot.seg)).map(shot => shot.seg);
-            const requiredNames = [...new Set(storyboard.shots.flatMap(shot => shot.characters))];
-            const savedCharacters = artwork.cast.map(character => character.name);
-            await log(id, `${u.name === 'revise_story' ? 'แก้บทเฉพาะฉากแล้ว' : `วางบทและสตอรีบอร์ด ${storyboard.shots.length} ฉากแล้ว`} · เก็บภาพเดิม ${savedScenes.length} ฉาก · ต้องวาด ${missingScenes.length} ฉาก`);
-            results.push({type:'tool_result',tool_use_id:u.id,content:JSON.stringify({status:'saved',saved_scenes:savedScenes,missing_scenes:missingScenes,saved_characters:savedCharacters,missing_characters:requiredNames.filter(name=>!savedCharacters.includes(name)),shared_art_saved:!!(artwork.art_saved || artwork.art),instruction:active.lemo?'Storyboard saved. Next call submit_episode with title, angle, sources, claims and captions only. Drawing is deferred until cost approval.':'Keep saved scenes, portraits and helpers. Draw only reported missing assets, one at a time, then submit metadata only. Use revise_story for further partial narration or shot repairs; do not restate unchanged shots. All affected art must pass preview review again.'})});
+            if (active.lemo) {
+              await log(id, `บันทึกบทและแผนภาพ Lemo ${storyboard.shots.length} ฉากแล้ว · พร้อมตรวจข้อมูลประกอบบท`);
+              results.push({type:'tool_result',tool_use_id:u.id,content:JSON.stringify({
+                status:'saved',instruction:'Submit the saved story using submit_episode with title_th, angle, sources, claims and captions. Rendering starts after owner approval.',
+              })});
+            } else {
+              const savedScenes = artwork.scenes.map(scene => scene.seg);
+              const missingScenes = storyboard.shots.filter(shot => !savedScenes.includes(shot.seg)).map(shot => shot.seg);
+              const requiredNames = [...new Set(storyboard.shots.flatMap(shot => shot.characters))];
+              const savedCharacters = artwork.cast.map(character => character.name);
+              await log(id, `${u.name === 'revise_story' ? 'แก้บทเฉพาะฉากแล้ว' : `วางบทและสตอรีบอร์ด ${storyboard.shots.length} ฉากแล้ว`} · เก็บภาพเดิม ${savedScenes.length} ฉาก · ต้องวาด ${missingScenes.length} ฉาก`);
+              results.push({type:'tool_result',tool_use_id:u.id,content:JSON.stringify({status:'saved',saved_scenes:savedScenes,missing_scenes:missingScenes,saved_characters:savedCharacters,missing_characters:requiredNames.filter(name=>!savedCharacters.includes(name)),shared_art_saved:!!(artwork.art_saved || artwork.art),instruction:'Keep saved scenes, portraits and helpers. Draw only reported missing assets, one at a time, then submit metadata only. Use revise_story for further partial narration or shot repairs; do not restate unchanged shots. All affected art must pass preview review again.'})});
+            }
           } else if (u.name === 'submit_episode') {
             if (!storyboard) { results.push({type:'tool_result',tool_use_id:u.id,is_error:true,content:'First call plan_story with the complete narration and shots. Do not draw before planning.'}); continue; }
             if(row.creative?.engine==='lemo'){
@@ -1318,10 +1357,6 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
             submits++;
             await pool.query("UPDATE drafts SET status='writing', updated_at=now() WHERE id=$1", [id]);
             await log(id, submits === 1 ? 'เขียนสคริปต์และวางฉากเสร็จ กำลังตรวจกฎ' : `แก้ตามที่ตรวจพบ (รอบ ${submits})`);
-            if (u.input?.__invalid_json !== undefined) {
-              results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: 'The arguments were not valid JSON. Submit again with valid JSON.' });
-              continue;
-            }
             const parsed = Draft.safeParse(draftWithCharacterPolicy({ ...mergeArtwork({script:storyboard.script,...u.input}, artwork), storyboard, ...(storyMode === 'general' ? {story_mode:storyMode} : {}) }, recurringCharacter, presenterKind, directionVersion, row.note || '', visualVersion));
             if (!parsed.success) {
               const issues = parsed.error.issues.slice(0, 15).map((i) => `${i.path.join('.')}: ${i.message}`);
@@ -1394,7 +1429,9 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
             results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: `unknown tool ${u.name}` });
           }
         } catch (e) {
-          const msg = e instanceof Error ? `${e.message}${e.cause ? ` (${networkCode(e)})` : ''}` : String(e);
+          const msg = e instanceof z.ZodError
+            ? e.issues.slice(0,8).map(issue => `${issue.path.join('.') || 'arguments'}: ${issue.message}`).join(' · ')
+            : e instanceof Error ? `${e.message}${e.cause ? ` (${networkCode(e)})` : ''}` : String(e);
           if (e instanceof ResearchBudgetError) {
             if ((e as any).fcDown) active.fc=false;
             await syncFcBudget();
@@ -1410,14 +1447,37 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
             continue;
           }
           if (/ANTHROPIC_API_KEY|OPENAI_API_KEY|FIRECRAWL_API_KEY/.test(msg)) throw e;
-          await log(id, `เครื่องมือขัดข้อง: ${msg.slice(0, 120)}`);
-          results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: `Tool failed: ${msg.slice(0, 300)}` });
+          await log(id, `เครื่องมือ ${u.name} ขัดข้อง: ${msg.slice(0, 320)}`);
+          results.push({ type: 'tool_result', tool_use_id: u.id, is_error: true, content: msg.slice(0, 1000) });
+        }
+      }
+      await saveUsage();
+      // Check after the whole response: a parallel tool result is not another model repair round.
+      for (const [index, result] of results.entries()) {
+        const use = uses[index];
+        const target = use.name === 'draw_scene' ? use.input?.scene?.seg :
+          use.name === 'draw_character' ? use.input?.character?.name :
+          use.name === 'read_page' ? use.input?.url : '';
+        const key = JSON.stringify([use.name,target]);
+        if (!result.is_error) { toolFailures.delete(key); continue; }
+        const reason = result.content;
+        const history = toolFailures.get(key) ?? new Map<string, {turn:number; count:number}>();
+        const last = history.get(reason);
+        if (last?.turn === turn) continue;
+        const count = (last?.count ?? 0) + 1;
+        history.set(reason, {turn,count});
+        toolFailures.set(key,history);
+        if (active.lemo && use.name === 'submit_episode') rejectedLemoSubmits++;
+        if (count >= 3 || rejectedLemoSubmits >= 7) {
+          const detail = `${use.name} · ${reason.slice(0, 900)}`;
+          await pool.query('UPDATE drafts SET problems=$2 WHERE id=$1 AND removed_at IS NULL',[id,JSON.stringify([detail])]);
+          const stop = count >= 3 ? 'พบข้อผิดพลาดเดิม 3 รอบ' : 'ส่งข้อมูลร่างแล้ว 7 ครั้งยังไม่ผ่าน';
+          throw new Error(`${stop} จึงหยุดเรียกโมเดล: ${detail}`);
         }
       }
       conv.results(results.map((r: any) => ({ id: r.tool_use_id, content: r.content, is_error: r.is_error })),
         !mustSubmit && !active.ws && (!active.fc || fcBudget?.remaining === 0) ? 'Research budget reached: write and submit now.' : undefined);
       if (pendingImages) { conv.show(pendingImages.text, pendingImages.images); pendingImages = null; reviewedArt = pendingReview; pendingReview = ''; }
-      await saveUsage();
     }
     await pool.query("UPDATE drafts SET status='failed', error=$2, usage=$3, research=$4, updated_at=now() WHERE id=$1",
       [id, 'เขียนไม่เสร็จภายในจำนวนรอบที่กำหนด', JSON.stringify(usage), JSON.stringify(research)]);
@@ -1671,7 +1731,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
   app.get('/app/api/studio/drafts/:id/diagnostics', g, async (c) => {
     const id = c.req.param('id');
     if (!isId(id)) return c.json({error:'not found'},404);
-    const row = (await pool.query(`SELECT log,storyboard,artwork,problems FROM drafts WHERE id=$1 AND removed_at IS NULL AND ${IS_STUDIO_DRAFT}`,[id])).rows[0];
+    const row = (await pool.query(STUDIO_DRAFT_BY_ID,[id])).rows[0];
     if (!row) return c.json({error:'not found'},404);
     const responseId = String(c.req.query('response_id') || '');
     const allowed = (row.log || []).flatMap((x:any)=>String(x.msg || '').match(/resp_[a-zA-Z0-9_-]+/g) || []);
@@ -1684,6 +1744,16 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const data:any = await response.json();
     const calls = (data.output || []).filter((x:any)=>x.type==='function_call').map((x:any)=>{
       let input:any; try {input=JSON.parse(x.arguments || '{}');} catch {return {name:x.name,error:'invalid JSON'};}
+      if (!input || typeof input!=='object' || Array.isArray(input)) return {name:x.name,error:'Expected an arguments object'};
+      if (x.name==='submit_episode' && row.creative?.engine==='lemo'){
+        try {
+          prepareCreative({...row,draft:savedLemoDraft(row,input)});
+          return {name:x.name,fields:Object.keys(input),input,issues:[]};
+        } catch(error) {
+          const issues=error instanceof z.ZodError?error.issues:[{message:error instanceof Error?error.message:String(error)}];
+          return {name:x.name,fields:Object.keys(input),input,issues};
+        }
+      }
       const parsed = x.name === 'submit_episode' ? Draft.safeParse({...mergeArtwork({script:row.storyboard?.script,...input},row.artwork || emptyArtwork()),storyboard:row.storyboard}) : null;
       return {name:x.name,fields:Object.keys(input),input,issues:parsed && !parsed.success ? parsed.error.issues : []};
     });
@@ -1709,16 +1779,13 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const call=(data.output||[]).find((x:any)=>x.type==='function_call'&&x.name==='submit_episode');
     if(!call)return c.json({error:'This response has no completed episode metadata'},422);
     try{
-      const seen=new Map<string,Seen>();
-      for(const event of row.research||[]){
-        const collected=event.collected||event.at;if(!collected)continue;
-        for(const item of event.results||[event])for(const url of [item.url,...(item.source_urls||[])])if(url)seen.set(normUrl(url),{url,title:item.title,collected,via:event.kind==='web'?'web':event.kind==='read'?'read':'search'});
-      }
-      const draft={...JSON.parse(call.arguments),script:row.storyboard.script,storyboard:row.storyboard,research_seen:[...seen.values()]};
+      const draft=savedLemoDraft(row,JSON.parse(call.arguments),body.reviewed_citation);
       prepareCreative({...row,draft});
-      const changed=await pool.query("UPDATE drafts SET draft=$2,status='ready',problems='[]',error=NULL,updated_at=now() WHERE id=$1 AND status='failed' RETURNING id",[id,JSON.stringify(draft)]);
+      const stamp=new Date().toISOString();
+      const messages=body.reviewed_citation ? [{at:stamp,msg:`แก้แหล่งอ้างอิงลำดับ ${body.reviewed_citation.index+1} หลังตรวจต้นฉบับ: ${body.reviewed_citation.original_url} → ${body.reviewed_citation.url}`}] : [];
+      messages.push({at:stamp,msg:'กู้บทจากคำตอบ OpenAI ที่บันทึกไว้แล้ว · ไม่มีการเรียกสร้างใหม่หรือส่งผลิตอัตโนมัติ'});
+      const changed=await pool.query("UPDATE drafts SET draft=$2,status='ready',problems='[]',error=NULL,log=log||$3::jsonb,updated_at=now() WHERE id=$1 AND status='failed' RETURNING id",[id,JSON.stringify(draft),JSON.stringify(messages)]);
       if(!changed.rowCount)return c.json({error:'Draft changed during recovery'},409);
-      await log(id,'กู้บทจากคำตอบ OpenAI ที่บันทึกไว้แล้ว · ไม่มีการเรียกสร้างใหม่หรือส่งผลิตอัตโนมัติ');
       return c.json({id,recovered:true,response_id:responseId});
     }catch(error){return c.json({error:error instanceof Error?error.message:String(error)},422);}
   });
