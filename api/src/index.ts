@@ -19,6 +19,7 @@ import { registerTextVideo } from './text-video.js';
 import { registerVideoArena } from './video-arena.js';
 import { registerSceneRevisions } from './video-derivative.js';
 import { registerVideoBenchmarks } from './video-benchmarks.js';
+import { registerProductTrends } from './product-trends.js';
 import { registerReverse } from './reverse.js';
 import { registerCommunity } from './community.js';
 import { retryCreativeJob } from './creative-retry.js';
@@ -436,6 +437,7 @@ const textVideo = registerTextVideo(app,pool,{guard:ui.requireUi,workerGuard:req
 const videoArena = registerVideoArena(app,pool,ui.requireUi);
 registerVideoBenchmarks(app,pool,ui.requireUi);
 registerSceneRevisions(app,pool,ui.requireUi);
+registerProductTrends(app, pool, { guard: ui.requireUi });
 const studio = registerStudio(app, pool, { guard: ui.requireUi, signAsset:async key=>s3&&env.BUCKET?getSignedUrl(s3,new GetObjectCommand({Bucket:env.BUCKET,Key:key}),{expiresIn:3600}):null, createJob, estimateCredits: (p: unknown) => estimateCredits(Package.parse(p)), researchFreshness: (p: unknown) => researchFreshness(Package.parse(p)), validate: (p: unknown) => {
   const r = Package.safeParse(p);
   return r.success ? [] : r.error.issues.slice(0, 10).map((i) => `${i.path.join('.')}: ${i.message}`);

@@ -51,6 +51,9 @@ a{color:var(--ink);text-underline-offset:3px}
 .nav button{all:unset;cursor:pointer;display:flex;justify-content:space-between;align-items:center;padding:9px 10px;border-radius:var(--r-md);color:var(--ink-2)}
 .nav button:hover{background:var(--line-2);color:var(--ink)}
 .nav button[aria-current="page"]{background:var(--surface);color:var(--ink);font-weight:600;box-shadow:inset 3px 0 0 var(--accent)}
+.trend-form,.trend-result{display:grid;gap:10px;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md);padding:18px;margin:16px 0}
+.trend-form .btn{justify-self:start}
+.trend-result li+li{margin-top:12px}
 .nav .n{font-size:13px;color:var(--ink-3);font-variant-numeric:tabular-nums;font-weight:400}
 .nav button:focus-visible{outline:2px solid var(--focus)}
 .rail-foot{margin-top:auto;display:flex;flex-direction:column;gap:2px}
@@ -342,7 +345,7 @@ details summary{cursor:pointer;color:var(--ink-2);font-size:14px;margin-top:10px
   .app{grid-template-columns:1fr}
   .rail{position:fixed;top:auto;bottom:0;left:0;right:0;height:auto;flex-direction:row;padding:6px 8px calc(6px + env(safe-area-inset-bottom));border-right:0;border-top:1px solid var(--line);background:var(--surface);z-index:30;gap:0}
   .brand,.rail-foot{display:none}
-  .nav{flex-direction:row;width:100%;justify-content:space-around}
+  .nav{flex-direction:row;width:100%;overflow-x:auto;white-space:nowrap}
   .nav button{flex-direction:column;gap:0;padding:6px 8px;font-size:13px;align-items:center}
   .nav button[aria-current="page"]{box-shadow:inset 0 -2px 0 var(--accent);background:transparent}
   .nav .n{font-size:11.5px}
@@ -437,7 +440,7 @@ function login(msg){
 }
 
 /* ---------- frame ---------- */
-const VIEWS = [['create','สร้าง'],['text_video','Text to Video'],['community','Community'],['ready','พร้อมใช้'],['used','เสร็จแล้ว'],['working','กำลังทำ'],['analytics','สถิติ']];
+const VIEWS = [['create','สร้าง'],['text_video','Text to Video'],['product_trends','เทรนด์สินค้า'],['community','Community'],['ready','พร้อมใช้'],['used','เสร็จแล้ว'],['working','กำลังทำ'],['analytics','สถิติ']];
 let mainEl;
 function frame(){
   const nav = h('nav',{class:'nav','aria-label':'หมวด'}, VIEWS.map(([k,l])=>h('button',{'data-view':k,'aria-current':S.view===k?'page':false,on:{click:()=>go(k)}}, h('span',{},l), h('span',{class:'n'}, k!=='analytics' && S.counts[k]!=null ? S.counts[k] : '\u00a0'))));
@@ -452,6 +455,36 @@ async function logout(){ await api('/app/api/logout',{method:'POST'}); login(); 
 function go(v){ if (v!==S.view) removalSelections[S.view]?.clear(); S.view=v; S.liveOn=false; try{ localStorage.setItem('ms.view',v); }catch{} load(); }
 
 let loadSeq=0;
+function renderProductTrends(config){
+  const query = h('input',{id:'trend-query',maxlength:150,placeholder:'เช่น รองเท้าออกกำลังกาย หรือของแต่งบ้าน'});
+  const model = h('select',{id:'trend-model'},config.models.map(id=>h('option',{value:id},id)));
+  if (config.models.includes('gpt-6.1-terra')) model.value='gpt-6.1-terra';
+  const status = h('p',{role:'status'},config.enabled ? '' : 'ยังไม่ได้ตั้งค่า OpenAI สำหรับค้นหาและอ่านหลักฐาน');
+  const results = h('div',{});
+  const submit = h('button',{class:'btn primary',type:'submit',disabled:!config.enabled},'ค้นหาเทรนด์');
+  const form = h('form',{class:'trend-form',on:{submit:async event=>{
+    event.preventDefault();
+    if (submit.disabled) return;
+    submit.disabled=true;
+    status.textContent='กำลังค้นหาและตรวจหลักฐานย้อนหลัง 30 วัน…';
+    put(results);
+    try{
+      const result=await api('/app/api/product-trends',{method:'POST',body:JSON.stringify({query:query.value,model:model.value})});
+      status.textContent=[result.fallbackReason,result.provider,result.model,
+        result.products.length ? 'พบ '+result.products.length+' สินค้า' : 'ยังไม่พบสินค้าที่มีหลักฐานครบ'].filter(Boolean).join(' · ');
+      put(results,result.products.map(product=>h('article',{class:'trend-result'},h('h2',{},product.name),
+        h('ul',{},product.evidence.map(source=>h('li',{},
+          h('strong',{},source.kind==='demand'?'ความสนใจ':'ยอดขายและอันดับ'), ' · ',source.date,
+          h('p',{},source.quote),h('a',{href:source.url,target:'_blank',rel:'noopener noreferrer'},source.title||source.url)))))));
+    }catch(error){status.textContent=error.message;}
+    finally{submit.disabled=false;}
+  }}},h('label',{for:'trend-query'},'ชื่อสินค้าหรือหมวด (เว้นว่างเพื่อสำรวจทุกหมวด)'),query,
+     h('label',{for:'trend-model'},'โมเดลค้นหาและอ่านหลักฐาน'),model,submit);
+  put(mainEl,h('h1',{},'เทรนด์สินค้า'),
+    h('p',{},'ค้นหาสินค้าในไทยจากสัญญาณความสนใจและยอดขายย้อนหลัง 30 วัน'),
+    form,status,results);
+}
+
 async function load(){
   const seq=++loadSeq;
   try{
@@ -461,6 +494,9 @@ async function load(){
       CHARS = ch.characters||[]; S.formats=st.formats; S.counts={...e.counts, create: dr.drafts.filter(d=>d.status==='ready').length||null}; frame(); studio(st, dr.drafts);
     } else if (S.view==='text_video'){
       const [cfg, plans] = await Promise.all([api('/app/api/text-video/config'),api('/app/api/text-video/plans')]);frame();renderTextVideo(cfg,plans.plans);
+    } else if (S.view==='product_trends'){
+      const config = await api('/app/api/product-trends');
+      if (S.view==='product_trends') { frame(); renderProductTrends(config); }
     } else if (S.view==='community'){
       const [cm, e] = await Promise.all([api('/app/api/community'), api('/app/api/episodes?tab=ready')]);
       S.counts={...S.counts, ...e.counts, community: cm.winners.filter(w=>w.status==='claude_draft_ready').length||null}; frame(); community(cm);
