@@ -29,7 +29,7 @@ export async function saveMedia(pool:pg.Pool, store:AssetStore, draft:string, by
     :bytes.toString('ascii',0,4)==='RIFF' && bytes.toString('ascii',8,12)==='WEBP'?'image/webp'
     :bytes.toString('ascii',4,8)==='ftyp'?'video/mp4':null);
   if (!type) throw Error('รองรับไฟล์ JPEG, PNG, WebP หรือ MP4');
-  const id=randomUUID(), key='ugc/'+draft+'/'+id;
+  const id=randomUUID(), key='ugc-r2/v1/originals/'+draft+'/'+id;
   await store.put(key,bytes,type);
   const kind=type.startsWith('video')?'video':'image';
   await pool.query('INSERT INTO ugc_media(id,draft_id,kind,content_type,storage_key,bytes) VALUES($1,$2,$3,$4,$5,$6)',

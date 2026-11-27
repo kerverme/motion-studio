@@ -29,7 +29,7 @@ test('product through confirmed quote, real queue/render/export, and no duplicat
       await pool.query('INSERT INTO schema_migrations(name) VALUES($1)',[file]);
     }
     await pool.query("INSERT INTO integrations(provider,data) VALUES('text_video_worker',$1)",[JSON.stringify({
-      ugc_version:1,fal:true,eleven:true,voice_id:'voice-fixture',voice_model:'eleven_v3',voice_usd_per_1000_characters:.1,
+      ugc_version:2,ugc_r2:true,fal:true,eleven:true,voice_id:'voice-fixture',voice_model:'eleven_v3',voice_usd_per_1000_characters:.1,
       capabilities_checked_at:Math.floor(Date.now()/1000),audio_pricing_source:'https://elevenlabs.io/pricing/api',
     })]);
     const app=new Hono(),source='https://example.org/trend',buy='https://store.example/sku-a';
@@ -47,8 +47,9 @@ test('product through confirmed quote, real queue/render/export, and no duplicat
       guard:async(c,next)=>{if(c.req.header('x-test')!=='owner')return c.json({error:'unauthorized'},401);await next();},
       workerGuard:async(c,next)=>{if(c.req.header('x-internal-token')!=='test-worker')return c.json({error:'unauthorized'},401);await next();},
       env:options,models:['gpt-6.2-sol'],
-      storage:{put:async(key,data)=>{const file=join(temp,key);await mkdir(dirname(file),{recursive:true});await writeFile(file,data);},
-        sign:async(key,download)=>'https://fixture.invalid/'+key+(download?'?attachment=1':'')},
+      storage:{sign:async(key,download)=>'https://fixture.invalid/'+key+(download?'?attachment=1':'')},
+      references:{put:async(key,data)=>{const file=join(temp,'r2',key);await mkdir(dirname(file),{recursive:true});await writeFile(file,data);},
+        sign:async(key)=>'https://r2-fixture.invalid/'+key},
       notionFetch:async(input)=>{
         const url=new URL(String(input));
         assert.equal(url.hostname,'api.notion.com');
@@ -96,6 +97,8 @@ test('product through confirmed quote, real queue/render/export, and no duplicat
     assert.equal((await ok(await request('/drafts','POST',{name:product.name},creation))).id,draft.id);
     assert.equal(draft.document.product.order_url,'');
     assert.equal(draft.document.duration,20);
+    assert.equal(draft.document.endpoint,'minimax/h3-max/image-to-video');
+    assert.equal(draft.document.resolution,'768P');
     const draftPath='/drafts/'+draft.id;
     const imported=await ok(await request(draftPath+'/import-notion','POST',{page_id:page}));
     assert.equal(imported.product.order_url,buy);
@@ -187,6 +190,9 @@ test('product through confirmed quote, real queue/render/export, and no duplicat
     assert.ok(done.download.endsWith('?attachment=1'));
     assert.equal(done.notes.order_url,buy);
     assert.ok(done.scenes.every((s:any)=>s.state==='done'));
+    assert.equal(done.fal_usage.length,1);
+    assert.equal(done.fal_usage[0].estimated_usd,1.1);
+    assert.equal(done.fal_usage[0].actual_usd,.98);
     assert.ok((await readFile(join(temp,'jobs',a.job_id,'ugc','subtitles.ass'),'utf8')).includes('990 บาท'));
     draft=await ok(await request(draftPath+'/edit','POST',{job_id:a.job_id,scene:'shot_02'}));
     let repair=await ok(await getQuote());
@@ -200,6 +206,9 @@ test('product through confirmed quote, real queue/render/export, and no duplicat
     const c=await ok(await produce(recut));
     const worker2=await runWorker(c.job_id);
     assert.deepEqual(worker2.calls,[]);
+    const quiet=await ok(await request('/jobs/'+c.job_id));
+    assert.equal(quiet.fal_usage[0].reused,true);
+    assert.equal(quiet.fal_usage[0].actual_usd,null);
     assert.ok((await readFile(join(temp,'jobs',c.job_id,'ugc','subtitles.ass'),'utf8')).includes('1190 บาท'));
     assert.ok((await readFile(join(temp,'jobs',c.job_id,'ugc','subtitles.ass'),'utf8')).includes('พื้นยางของรุ่นนี้'));
     assert.equal((await ok(await produce(quote))).job_id,a.job_id);

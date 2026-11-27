@@ -440,11 +440,18 @@ const videoArena = registerVideoArena(app,pool,ui.requireUi);
 registerVideoBenchmarks(app,pool,ui.requireUi);
 registerSceneRevisions(app,pool,ui.requireUi);
 registerProductTrends(app, pool, { guard: ui.requireUi });
-const ugc = registerUgc(app,pool,{guard:ui.requireUi,workerGuard:requireInternal,storage:s3 && env.BUCKET ? {
-  put:async(key,bytes,type)=>{await s3.send(new PutObjectCommand({Bucket:env.BUCKET,Key:key,Body:bytes,ContentType:type}));},
-  sign:(key,download)=>getSignedUrl(s3,new GetObjectCommand({Bucket:env.BUCKET,Key:key,
-    ...(download?{ResponseContentDisposition:'attachment; filename="ugc.mp4"'}:{})}),{expiresIn:3600}),
-}:null});
+const ugcBucket=env.UGC_R2_BUCKET||env.R2_BUCKET;
+const ugcR2=ugcBucket && env.R2_ENDPOINT && env.R2_ACCESS_KEY_ID && env.R2_SECRET_ACCESS_KEY
+  ? new S3Client({region:'auto',endpoint:env.R2_ENDPOINT,forcePathStyle:true,
+    credentials:{accessKeyId:env.R2_ACCESS_KEY_ID,secretAccessKey:env.R2_SECRET_ACCESS_KEY}}) : null;
+const ugc = registerUgc(app,pool,{guard:ui.requireUi,workerGuard:requireInternal,
+  storage:s3 && env.BUCKET ? {sign:(key,download)=>getSignedUrl(s3,new GetObjectCommand({Bucket:env.BUCKET,Key:key,
+    ...(download?{ResponseContentDisposition:'attachment; filename="ugc.mp4"'}:{})}),{expiresIn:3600})}:null,
+  references:ugcR2 ? {
+    put:async(key,bytes,type)=>{await ugcR2.send(new PutObjectCommand({Bucket:ugcBucket,Key:key,Body:bytes,ContentType:type}));},
+    sign:key=>getSignedUrl(ugcR2,new GetObjectCommand({Bucket:ugcBucket,Key:key}),{expiresIn:3600}),
+  }:null,
+});
 ugc.start();
 const studio = registerStudio(app, pool, { guard: ui.requireUi, signAsset:async key=>s3&&env.BUCKET?getSignedUrl(s3,new GetObjectCommand({Bucket:env.BUCKET,Key:key}),{expiresIn:3600}):null, createJob, estimateCredits: (p: unknown) => estimateCredits(Package.parse(p)), researchFreshness: (p: unknown) => researchFreshness(Package.parse(p)), validate: (p: unknown) => {
   const r = Package.safeParse(p);

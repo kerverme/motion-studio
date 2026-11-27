@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { DEFAULT_OPENAI_MODEL, DEFAULT_REASONING } from './openai-models.js';
 import { digest } from './text-video-contract.js';
 import { chooseGenerationSeconds, compileProductMotion } from './video-director.js';
-import { PREVIOUS_FRAME, getVideoModel, buildVideoPayload, estimateVideoPayload, type FalVideoModel } from './video-registry.js';
+import { H3_MAX_IMAGE, PREVIOUS_FRAME, getVideoModel, buildVideoPayload, estimateVideoPayload, type FalVideoModel } from './video-registry.js';
 
 export const uuid = z.string().uuid();
 const short = (size: number) => z.string().trim().max(size);
@@ -35,13 +35,14 @@ export type DraftDocument = z.infer<typeof Document>;
 export type Shot = z.infer<typeof Scene>;
 export const blank = (name = ''): DraftDocument => ({
   product: {name, variant:'', price:'', promo:'', selling_points:'', order_url:''}, brief:'',
-  model:DEFAULT_OPENAI_MODEL, reasoning:DEFAULT_REASONING, endpoint:'', resolution:'', duration:20,
+  model:DEFAULT_OPENAI_MODEL, reasoning:DEFAULT_REASONING, endpoint:H3_MAX_IMAGE, resolution:'768P', duration:20,
   hooks:[], hook:'', caption:'', cta:'กดสั่งซื้อ', scenes:[], show_price:true, show_promo:true,
 });
 export const Suggestion = z.object({
   hooks: z.tuple([Hook,Hook,Hook]), caption: short(500), scenes: z.array(Scene.omit({id:true, media_id:true, subtitle:true})).min(2).max(10),
 }).strict();
 export const falEndpoints = [
+  H3_MAX_IMAGE,
   'minimax/h3/image-to-video',
   'xai/grok-imagine-video/v1.5/image-to-video',
   'alibaba/wan-3.0/image-to-video',

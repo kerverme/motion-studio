@@ -14,7 +14,7 @@ import { readMedia, saveMedia,type AssetStore } from './ugc-media.js';
 import { notionProducts } from './ugc-notion.js';
 
 type Guard=(c:Context,next:Next)=>Promise<any>;
-type Options={guard:Guard;workerGuard:Guard;storage:AssetStore|null;models?:ModelSource;
+type Options={guard:Guard;workerGuard:Guard;storage:Pick<AssetStore,'sign'>|null;references:AssetStore|null;models?:ModelSource;
   video?:typeof videoProvider;response?:typeof openaiResponse;env?:NodeJS.ProcessEnv;notionFetch?:typeof fetch};
 
 const P='/app/api/ugc';
@@ -26,9 +26,9 @@ const documentError=(e:unknown)=>e instanceof ZodError
   : e instanceof Error?e.message:'ทำรายการไม่สำเร็จ';
 
 export function registerUgc(app:Hono,pool:pg.Pool,options:Options) {
-  const env=options.env||process.env, g=options.guard, store=options.storage;
+  const env=options.env||process.env, g=options.guard, store=options.storage, references=options.references;
   const provider=options.video||videoProvider, respond=options.response||openaiResponse;
-  const notion=notionProducts(pool,store,options.notionFetch,env);
+  const notion=notionProducts(pool,references,options.notionFetch,env);
   const get=async(id:string,conn:pg.Pool|pg.PoolClient=pool,lock=false)=>
     (await conn.query('SELECT * FROM ugc_drafts WHERE id=$1'+(lock?' FOR UPDATE':''),[uuid.parse(id)])).rows[0];
   const mediaFor=async(id:string):Promise<Media[]>=>
@@ -37,7 +37,7 @@ export function registerUgc(app:Hono,pool:pg.Pool,options:Options) {
     (await pool.query('SELECT DISTINCT ON (slot) * FROM text_video_calls WHERE job_id=$1 ORDER BY slot,created_at DESC',[id])).rows;
   const worker=async():Promise<any>=>{
     const row=(await pool.query("SELECT data,updated_at FROM integrations WHERE provider='text_video_worker'")).rows[0];
-    return row && Date.now()-Date.parse(row.updated_at)<120000 && row.data.ugc_version===1 ? row.data : null;
+    return row && Date.now()-Date.parse(row.updated_at)<120000 && row.data.ugc_version===2 && row.data.ugc_r2 ? row.data : null;
   };
   const model=async (endpoint:string)=>{
     if (!isFal(endpoint)) throw Error('เลือกโมเดล fal.ai สำหรับฉากที่สร้างจากภาพ');
@@ -61,7 +61,7 @@ export function registerUgc(app:Hono,pool:pg.Pool,options:Options) {
   async function price(row:any) {
     const d=Document.parse(row.document), media=await mediaFor(row.id);
     validateDocument(d,media,row.evidence);
-    if (!store) throw Error('ยังไม่ได้ตั้งค่าที่เก็บไฟล์ Studio');
+    if (!store||!references) throw Error('ตั้งค่าที่เก็บไฟล์ Studio และ R2 สำหรับภาพสินค้า');
     if (['queued','submitting','accepted'].includes(row.planning?.state)) throw Error('รอให้สมองวางฉากเสร็จก่อนขอราคา');
     const baseId=row.job_id||row.source_job_id;
     const [base,calls,w]=await Promise.all([
@@ -112,7 +112,7 @@ export function registerUgc(app:Hono,pool:pg.Pool,options:Options) {
   app.get(P+'/config',g,async c=>{
     const [brains,w,mapping]=await Promise.all([readModels(options.models),worker(),notion.config()]);
     return c.json({brains:brains.ids,default_brain:DEFAULT_OPENAI_MODEL,openai:!!env.OPENAI_API_KEY,
-      fal:!!env.FAL_KEY,storage:!!store,worker:!!w,notion:{enabled:notion.enabled,databases:notion.allowed,mapping}});
+      fal:!!env.FAL_KEY,storage:!!references,worker:!!w,notion:{enabled:notion.enabled,databases:notion.allowed,mapping}});
   });
   let catalog: {expires:number;promise:Promise<any[]>}|undefined;
   app.get(P+'/models',g,async c=>{
@@ -120,7 +120,15 @@ export function registerUgc(app:Hono,pool:pg.Pool,options:Options) {
       catalog={expires:Date.now()+60_000,promise:Promise.all(falEndpoints.map(async endpoint=>{
         try {
           const m=await model(endpoint);
-          return {id:endpoint,name:m.name,resolutions:m.resolutions,durations:m.durations.filter(x=>x<=30),available:m.available,reason:m.reason};
+          const rates = m.available && m.billing && m.price ? m.resolutions.flatMap(resolution=>{
+            const tariff=m.billing!.rates[resolution.toLowerCase()]??m.billing!.rates['*'];
+            if (!tariff) return [];
+            return [{resolution,unit:m.price!.unit,unit_usd:Math.max(tariff,m.price!.unit_price),
+              image_usd:m.billing!.reference_image_usd||0}];
+          }) : [];
+          return {id:endpoint,name:m.name,resolutions:rates.map(r=>r.resolution),durations:m.durations.filter(x=>x<=30),
+            available:m.available,reason:m.reason,rates,checked_at:m.checked_at,output_padding_seconds:m.output_padding_seconds,
+            source_url:m.source_url};
         } catch(e){return {id:endpoint,name:endpoint,available:false,reason:documentError(e)};}
       }))};
     }
@@ -141,7 +149,8 @@ export function registerUgc(app:Hono,pool:pg.Pool,options:Options) {
       const row=requireDraft(await get(c.req.param('id')));
       const [media,history]=await Promise.all([mediaFor(row.id),pool.query(`SELECT id,status,created_at,package->'ugc'->'export' AS export
         FROM jobs WHERE package ? 'ugc' AND package->'ugc'->>'draft_id'=$1 ORDER BY created_at DESC LIMIT 25`,[row.id])]);
-      return c.json({...shape(row),media:await Promise.all(media.map(async ({storage_key,...m})=>({...m,url:await store?.sign(storage_key)}))),
+      return c.json({...shape(row),media:await Promise.all(media.map(async ({storage_key,...m})=>({...m,
+        url:await (storage_key.startsWith('ugc-r2/')?references:store)?.sign(storage_key)}))),
         history:history.rows});
     } catch(e){return c.json({error:documentError(e)},404);}
   });
@@ -163,8 +172,9 @@ export function registerUgc(app:Hono,pool:pg.Pool,options:Options) {
   app.post(P+'/drafts/:id/media',g,async c=>{
     try {
       const row=requireDraft(await get(c.req.param('id')));
-      if (!store||row.job_id) throw Error('ยังอัปโหลดสื่อในร่างนี้ไม่ได้');
-      return c.json(await saveMedia(pool,store,row.id,await readMedia(c.req.raw.body,c.req.header('content-length'))),201);
+      if (row.job_id) throw Error('เปิดฉบับแก้ไขก่อนอัปโหลดสื่อ');
+      if (!references) throw Error('ยังไม่ได้ตั้งค่าที่เก็บสื่อสินค้า R2');
+      return c.json(await saveMedia(pool,references,row.id,await readMedia(c.req.raw.body,c.req.header('content-length'))),201);
     } catch(e){return c.json({error:documentError(e)},422);}
   });
   app.get(P+'/notion/columns/:id',g,async c=>{
@@ -348,9 +358,18 @@ Hook introduces the exact product, a problem, or a confirmed benefit. Sum scene 
       const id=uuid.parse(c.req.param('id'));
       const j=(await pool.query("SELECT status,progress,error,package,result FROM jobs WHERE id=$1 AND package ? 'ugc'",[id])).rows[0];
       if (!j) return c.json({error:'ไม่พบงาน'},404);
-      const calls=await callsFor(id);
+      const [calls,usage]=await Promise.all([callsFor(id),pool.query(`SELECT c.slot,c.status,c.request_id,c.created_at,
+        c.data->'actual_usd' AS actual_usd,c.data->'generated_duration' AS generated_duration,a.approval
+        FROM text_video_calls c JOIN ugc_approvals a ON a.id=c.approval_id AND a.job_id=c.job_id
+        WHERE c.job_id=$1 AND c.provider='fal' ORDER BY c.created_at,c.slot`,[id])]);
+      const fal_usage=usage.rows.map(({approval,...call})=>{
+        const item=approval.fal.find((x:any)=>x.slot===call.slot);
+        const reused=approval.reused.includes(call.slot);
+        return {...call,reused,model_name:item?.model_name,resolution:item?.resolution,
+          estimated_usd:reused?null:item?.estimated_usd??null,actual_usd:reused?null:call.actual_usd??null};
+      });
       const events=(await pool.query("SELECT message,data FROM job_events WHERE job_id=$1 AND data ? 'scene_id' ORDER BY id DESC LIMIT 40",[id])).rows;
-      return c.json({id,status:j.status,progress:j.progress,error:j.error,notes:j.package.ugc.export,
+      return c.json({id,status:j.status,progress:j.progress,error:j.error,notes:j.package.ugc.export,fal_usage,
         scenes:j.package.text_video.plan.shots.map((s:any)=>({id:s.id,mode:s.mode,
           state:events.find(e=>e.data.scene_id===s.id)?.data?.state||null,
           video:calls.find(x=>x.slot==='fal:'+s.id)?.status||null,voice:calls.find(x=>x.slot==='eleven:'+s.id)?.status||null})),

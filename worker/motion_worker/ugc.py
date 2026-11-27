@@ -5,7 +5,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from . import audio, rendering, text_video as video
+from . import audio, r2, rendering, text_video as video
 
 
 def validate_production(ctx, spec):
@@ -64,9 +64,15 @@ def local_ffmpeg(args):
                    timeout=120,check=True,capture_output=True)
 
 
-def prepare_media(ctx, media, needs_fal):
+def prepare_media(ctx, media, needs_fal, reference_store):
     codec, suffix = FORMATS[media['content_type']]
-    path = ctx.fetch(media['storage_key'], ctx.path('product',media['id']+suffix))
+    key = media['storage_key']
+    path = ctx.path('product',media['id']+suffix)
+    if key.startswith('ugc-r2/'):
+        if not Path(path).exists():
+            reference_store.get_file(key,path)
+    else:
+        ctx.fetch(key,path)
     src = ['-protocol_whitelist','file','-f',codec]
     if codec == 'image2':
         src+=['-pattern_type','none']
@@ -90,8 +96,8 @@ def prepare_media(ctx, media, needs_fal):
     ref = ctx.path('refs',media['id']+'.jpg')
     local_ffmpeg([*src,'-an','-vf',FIT,'-frames:v','1','-q:v','2',ref])
     key = 'ugc-frames/v1/'+media['id']+'.jpg'
-    if needs_fal and not ctx.store.exists(key):
-        ctx.store.put_file(key,ref,'image/jpeg')
+    if needs_fal and not reference_store.exists(key):
+        reference_store.put_file(key,ref,'image/jpeg')
     return src, ref, key
 
 
@@ -147,8 +153,9 @@ def run(ctx):
     shots = spec['plan']['shots']
     refs = {s['media_id'] for s in shots if s['mode']=='fal'}
     try:
-        media = {m['id']:prepare_media(ctx,m,m['id'] in refs) for m in ctx.pkg['ugc']['media']}
-    except (subprocess.SubprocessError,ValueError,IndexError,KeyError) as e:
+        reference_store = r2.ugc_references()
+        media = {m['id']:prepare_media(ctx,m,m['id'] in refs,reference_store) for m in ctx.pkg['ugc']['media']}
+    except (subprocess.SubprocessError,ValueError,IndexError,KeyError,r2.R2Error) as e:
         raise video.ApprovalRequired('เปิดสื่อสินค้าไม่ได้ ตรวจไฟล์แล้วอัปโหลดใหม่ก่อนผลิต') from e
     voices = []
     for i, shot in enumerate(shots):
@@ -169,10 +176,12 @@ def run(ctx):
             clip = original_clip(ctx,shot,source)
         else:
             item = video.scene_items(spec,shot)[0]
-            result = video.fal_shot(ctx,shot,i,source[2],item)
-            if result.get('actual_usd') is not None and result['actual_usd']>item['estimated_usd']+1e-6:
-                if item['slot'] in spec['approval']['pending_slots']:
-                    raise video.ApprovalRequired('fal แจ้งยอดเกินราคาที่อนุมัติ เก็บผลแล้วและหยุดก่อนส่งฉากต่อไป')
+            result = video.fal_shot(ctx,shot,i,source[2],item,reference_store=reference_store)
+            padded = (item.get('billed_seconds') or 0)>item['generation_seconds']
+            over_duration = padded and (result.get('generated_duration') or 0)>item['billed_seconds']+.04
+            over_cost = result.get('actual_usd') is not None and result['actual_usd']>item['estimated_usd']+1e-6
+            if (over_duration or over_cost) and item['slot'] in spec['approval']['pending_slots']:
+                raise video.ApprovalRequired('ผลจาก fal ใช้วินาทีหรือค่าใช้จ่ายเกินใบราคา เก็บฉากแล้วและหยุดก่อนส่งฉากต่อไป')
             clip = ctx.fetch(result['video_key'],ctx.path('fal',shot['id']+'.mp4'))
         clips.append(clip)
         ctx.db.event(ctx.job['id'],f'ฉาก {i+1} พร้อมประกอบ',{'scene_id':shot['id'],'state':'done'},status='RENDERING')

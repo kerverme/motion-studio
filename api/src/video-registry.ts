@@ -8,10 +8,12 @@ export type FalVideoModel={
   endpoint_id:string; category:VideoCategory; name:string; available:boolean; endpoint_available?:boolean;
   resolutions:string[]; durations:number[]; audio:boolean|null; input_schema:Obj; schema_hash:string;
   price:{unit:string;unit_price:number;currency:string}|null; source_url:string; checked_at:string; reason?:string;
+  output_padding_seconds?:number;
   pricing_description?:string; billing?:Billing|null; verification_error?:string;
 };
 type Billing={rates:Record<string,number>;reference_image_usd?:number;source_second_usd?:number;basis?:'per_request'};
 export const PREVIOUS_FRAME='https://studio.cloudbath.co/internal/previous-frame.png';
+export const H3_MAX_IMAGE='minimax/h3-max/image-to-video';
 const API='https://api.fal.ai/v1/models';
 const schemaValidators=new Ajv2020({strict:false,allErrors:false,validateFormats:true,addUsedSchema:false});
 addFormats(schemaValidators);
@@ -241,12 +243,34 @@ function imageControl(props:Obj){return ['image_url','start_image_url','first_fr
 function pricingParagraph(text:string){
   return text.match(/^## Pricing\s*\n([\s\S]*?)(?=^## |$(?![\s\S]))/m)?.[1]?.split(/\nFor more details, see /)[0].replace(/\*\*/g,'').trim()||'';
 }
+function h3MaxOutputPadding(schema:Obj) {
+  const duration=schema.properties?.duration;
+  const expansion=schema.properties?.prompt_expansion_mode;
+  const match=String(duration?.description||'').match(/output can run up to (?:about )?([\d.]+) s longer than requested/i);
+  const padding=Number(match?.[1]);
+  const disablesExpansion=expansion?.type==='string' &&
+    (expansion.enum||expansion.examples||[]).includes('disabled');
+  if(duration?.type!=='number'||duration.minimum<=0||duration.maximum>30||
+    !Number.isFinite(duration.minimum)||!Number.isFinite(duration.maximum)||!disablesExpansion||
+    !Number.isFinite(padding)||padding<=0||padding>2) return undefined;
+  return padding;
+}
+function h3MaxTariff(paragraph:string):Billing|null {
+  const promotions = /^Billing is calculated per second of video generated\. Through [A-Z][a-z]+ \d+, \d{4}, the \d+% promotional discount applies: \$[\d.]+ at 480p, \$[\d.]+ at 768p, and \$[\d.]+ at 1080p per second\. From [A-Z][a-z]+ \d+ through [A-Z][a-z]+ \d+, \d{4}, get \d+% off standard rates: \$[\d.]+ at 480p, \$[\d.]+ at 768p, and \$[\d.]+ at 1080p per second\. During the [A-Z][a-z]+ promotion, \d+ seconds of video at 768p costs \$[\d.]+\. /;
+  const current = paragraph.replace(promotions,'');
+  const tariff=current.match(/^From ([A-Z][a-z]+ \d+, \d{4}), standard rates are \$(\d+(?:\.\d+)?), \$(\d+(?:\.\d+)?), and \$(\d+(?:\.\d+)?) per second at 480p, 768p, and 1080p, respectively\. Contact your sales representative to discuss permanent discounted pricing\.$/);
+  if(current===paragraph||!tariff) return null;
+  const effective=Date.parse(tariff[1]+' 00:00:00 UTC');
+  const rates={'480p':Number(tariff[2]),'768p':Number(tariff[3]),'1080p':Number(tariff[4])};
+  return Number.isFinite(effective)&&Date.now()>=effective&&Object.values(rates).every(v=>v>0)?{rates}:null;
+}
 function billingRules(endpoint:string,paragraph:string):Billing|null{
   if(!paragraph || /tokens?|roughly|approximately|compute|minimum charge/i.test(paragraph))return null;
   // Parse only complete, documented tariffs for the verified version. Reject new clauses and unknown units.
   const cost='\\$(\\d+(?:\\.\\d+)?)';
   const rates:Record<string,number>={};
   const p=paragraph.replace(/\s+/g,' ').trim();
+  if(endpoint===H3_MAX_IMAGE)return h3MaxTariff(p);
   let reference_image_usd:number|undefined;
   const collect=(pattern:RegExp,priceIndex:number,tierIndex:number)=>{
     for(const match of p.matchAll(pattern))rates[match[tierIndex].toLowerCase()]=Number(match[priceIndex]);
@@ -377,6 +401,11 @@ export async function getVideoModel(endpoint:string,category:VideoCategory,reque
   catch{knownSchema=false;}
   const props=schema.properties||{};
   let durations=allowedDurations(props.duration||props.duration_seconds);
+  const padding=endpoint===H3_MAX_IMAGE?h3MaxOutputPadding(schema):undefined;
+  if(padding) {
+    const min=Math.ceil(props.duration.minimum),max=Math.floor(props.duration.maximum);
+    durations=Array.from({length:Math.max(0,max-min+1)},(_,i)=>i+min);
+  }
   const trimBound=sourceTrimLimit(endpoint,schema);
   if(trimBound)durations=Array.from({length:trimBound},(_,i)=>i+1);
   const resolutions:string[]=[...new Set<string>(variants(props.resolution).flatMap(f=>f.enum||[]).filter((v:unknown)=>typeof v==='string' && /^(?:\d+p|[248]k)$/i.test(v)))];
@@ -385,11 +414,11 @@ export async function getVideoModel(endpoint:string,category:VideoCategory,reque
   const billableUnit=info.billing?.basis==='per_request'?/^(?:requests?|videos?|generations?)$/i:/^seconds?$/i;
   const available=!!(active&&compatible&&info.price&&billableUnit.test(info.price.unit)&&info.billing&&durations.length&&resolutions.length&&
     resolutions.some(r=>info.billing!.rates[r.toLowerCase()]||info.billing!.rates['*'])&&
-    props.prompt&&(category!=='image-to-video'||imageControl(props))&&
+    props.prompt&&(endpoint!==H3_MAX_IMAGE||padding)&&(category!=='image-to-video'||imageControl(props))&&
     (category!=='video-to-video'&&category!=='video-editing'||videoControl(props)));
   return {endpoint_id:endpoint,name:found.metadata.display_name,category,endpoint_available:active,available,resolutions,durations,audio,
     input_schema:schema,schema_hash:createHash('sha256').update(stableJson(schema)).digest('hex'),source_url:'https://fal.ai/models/'+endpoint+'/api',
-    checked_at:new Date().toISOString(),...info,...(available?{}:{reason:info.verification_error||(!active?'fal ระบุว่า endpoint นี้ยังไม่เปิดใช้งาน':!knownSchema?'ยังตรวจรูปแบบคำขอของรุ่นนี้ไม่ได้':!compatible?'ตัวอ่านวิดีโอยังไม่รองรับรูปแบบผลลัพธ์ของรุ่นนี้':!info.price?'ยังตรวจราคาบัญชีเป็น USD ไม่ได้':
+    checked_at:new Date().toISOString(),...info,...(padding?{output_padding_seconds:padding}:{}),...(available?{}:{reason:info.verification_error||(!active?'fal ระบุว่า endpoint นี้ยังไม่เปิดใช้งาน':!knownSchema?'ยังตรวจรูปแบบคำขอของรุ่นนี้ไม่ได้':!compatible?'ตัวอ่านวิดีโอยังไม่รองรับรูปแบบผลลัพธ์ของรุ่นนี้':!info.price?'ยังตรวจราคาบัญชีเป็น USD ไม่ได้':
       !info.billing?'ยังคำนวณราคาครบตามการตั้งค่าของรุ่นนี้ไม่ได้':!durations.length?'เวลาผลิตขึ้นกับคลิปต้นทาง หรือยังไม่มีช่วงเวลาที่ตรวจสอบได้':
       'การตั้งค่าหรือหน่วยคิดเงินของรุ่นนี้ยังไม่รองรับ')})};
 }
@@ -443,6 +472,7 @@ export function buildVideoPayload(model:FalVideoModel,scene:SceneInput):Record<s
   const options=variants(props[dk]).flatMap(f=>f.enum||[]);
   const duration=options.find(v=>seconds(v)===scene.duration)??scene.duration;
   const payload:Record<string,unknown>={prompt:scene.prompt,resolution:res};
+  if(model.endpoint_id===H3_MAX_IMAGE)payload.prompt_expansion_mode='disabled';
   if(props[dk])payload[dk]=duration;
   else if(!sourceTrimLimit(model.endpoint_id,model.input_schema))throw new Error('Missing verified duration control');
   const audio=audioControl(props);
@@ -470,11 +500,16 @@ export function previewVideoPayload(model:FalVideoModel,payload:Record<string,un
   const duration=seconds(trimmed?verifiedMediaSeconds:payload.duration??payload.duration_seconds);
   const rate=model.billing.rates[String(payload.resolution).toLowerCase()]??model.billing.rates['*'];
   const allowed=new Set(['prompt','duration','duration_seconds','resolution','aspect_ratio',videoControl(model.input_schema.properties),imageControl(model.input_schema.properties),audioControl(model.input_schema.properties)]);
+  if(model.endpoint_id===H3_MAX_IMAGE){
+    if(!model.output_padding_seconds||payload.prompt_expansion_mode!=='disabled')throw Error('Unpriced H3 Max configuration');
+    allowed.add('prompt_expansion_mode');
+  }
   if(!rate||!model.durations.includes(duration)||!model.resolutions.some(r=>r===payload.resolution)||Object.keys(payload).some(k=>!allowed.has(k)))throw new Error('Unpriced fal configuration');
   const perRequest=model.billing.basis==='per_request';
-  const units=perRequest?quantity:quantity*duration;
+  const billableSeconds=model.output_padding_seconds?Math.ceil(duration+model.output_padding_seconds):duration;
+  const units=perRequest?quantity:quantity*billableSeconds;
   const inputCount=model.category==='image-to-video'?1:0;
-  const documented=quantity*(rate*(perRequest?1:duration)+inputCount*(model.billing.reference_image_usd||0)+
+  const documented=quantity*(rate*(perRequest?1:billableSeconds)+inputCount*(model.billing.reference_image_usd||0)+
     (trimmed?duration*(model.billing.source_second_usd||0):0));
   return {usd:Math.ceil(Math.max(documented,model.price.unit_price*units)*1e6-1e-8)/1e6,unit:model.price.unit,quantity:units};
 }

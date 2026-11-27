@@ -371,7 +371,7 @@ def reported_cost_usd(result):
     return None
 
 
-def fal_shot(ctx, shot, index, previous_frame, approved=None):
+def fal_shot(ctx, shot, index, previous_frame, approved=None, reference_store=None):
     if approved:
         endpoint, slot, payload = approved['endpoint_id'], approved['slot'], approved['payload']
         previous_frame = previous_frame if approved.get('previous_frame') or (ctx.pkg.get('ugc') and approved.get('media_id')) else None
@@ -394,7 +394,8 @@ def fal_shot(ctx, shot, index, previous_frame, approved=None):
     if row['status'] == 'done':
         return row['data']
     if send:
-        wire = resolve_reference(payload, ctx.store.signed_url(previous_frame, 86400) if previous_frame else None)
+        signed_frame = (reference_store or ctx.store).signed_url(previous_frame, 86400) if previous_frame else None
+        wire = resolve_reference(payload, signed_frame)
         if signed_source:
             wire['video_url'] = signed_source
         _, result = paid_post(ctx, row, 'https://queue.fal.run/'+endpoint, fal_headers(), wire, 60)
@@ -744,6 +745,7 @@ def run(ctx):
 
 def capability_loop(stop):
     from .db import DB
+    from .r2 import ugc_ready
     from .video_capabilities import probe
     db=None
     metadata = {}
@@ -755,7 +757,7 @@ def capability_loop(stop):
             if time.monotonic() >= next_probe:
                 metadata = probe()
                 next_probe = time.monotonic()+(3600 if metadata['voice_models'] else 300)
-            data={**metadata,'version':1,'ugc_version':1,'fal':bool(os.environ.get('FAL_KEY')),'eleven':bool(config.ELEVENLABS_API_KEY),'voice_id':config.DEFAULT_VOICE_ID}
+            data={**metadata,'version':1,'ugc_version':2,'ugc_r2':ugc_ready(),'fal':bool(os.environ.get('FAL_KEY')),'eleven':bool(config.ELEVENLABS_API_KEY),'voice_id':config.DEFAULT_VOICE_ID}
             db.q("INSERT INTO integrations(provider,data) VALUES('text_video_worker',%s::jsonb) ON CONFLICT(provider) DO UPDATE SET data=EXCLUDED.data,updated_at=now()",(json.dumps(data),))
         except Exception as e:print('text-video capability pending:',type(e).__name__,flush=True)
         for _ in range(30):

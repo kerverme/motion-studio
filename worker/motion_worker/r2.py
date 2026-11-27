@@ -14,13 +14,28 @@ def enabled():
 
 
 def _client():
-    import boto3
-    from botocore.config import Config
     if not (config.R2_ENDPOINT and config.R2_KEY and config.R2_SECRET and config.R2_PUBLIC_BASE_URL):
         raise R2Error('R2 is not fully configured: need R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_PUBLIC_BASE_URL')
+    return _s3_client()
+
+
+def _s3_client():
+    import boto3
+    from botocore.config import Config
     return boto3.client('s3', endpoint_url=config.R2_ENDPOINT, region_name='auto',
                         aws_access_key_id=config.R2_KEY, aws_secret_access_key=config.R2_SECRET,
                         config=Config(s3={'addressing_style': 'path'}, retries={'max_attempts': 5, 'mode': 'standard'}))
+
+
+def ugc_ready():
+    return bool(config.UGC_R2_BUCKET and config.R2_ENDPOINT and config.R2_KEY and config.R2_SECRET)
+
+
+def ugc_references():
+    if not ugc_ready():
+        raise R2Error('ตั้งค่า Cloudflare R2 สำหรับภาพอ้างอิงของ UGC AI')
+    from .storage import S3Storage
+    return S3Storage(_s3_client(), config.UGC_R2_BUCKET)
 
 
 def public_url(key):

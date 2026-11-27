@@ -51,6 +51,7 @@ async function renderUgc(config,drafts){
   let confirmed=false;
   let models=[];
   let modelsLoading=false;
+  const modelPanel=h('div',{class:'ugc-grid'});
   let imported=null;
   let quoteTimer;
   const priceBox=h('div',{});
@@ -77,7 +78,30 @@ async function renderUgc(config,drafts){
   async function modelList(){
     modelsLoading=true;render();
     try {models=(await api(ugcPath+'/models')).models;}
-    finally {modelsLoading=false;if(active())render();}
+    catch(error){if(active())message.textContent=error.message;}
+    finally {modelsLoading=false;if(active())renderModels();}
+  }
+  function renderModels(){
+    const chosen=models.find(x=>x.id===d.endpoint);
+    const options=models.filter(x=>x.available||x.id===d.endpoint).map(x=>[x.id,x.name]);
+    if(!chosen&&d.endpoint)options.unshift([d.endpoint,d.endpoint]);
+    const resolutions=(chosen?.available?chosen.resolutions:[d.resolution].filter(Boolean)).map(x=>[x,x]);
+    const rate=chosen?.rates?.find(x=>x.resolution===d.resolution);
+    put(modelPanel,
+      h('label',{},'โมเดลวิดีโอ fal.ai',ugcSelect([['','เลือกโมเดล'],...options],d.endpoint,v=>{
+        set('endpoint',v);
+        const model=models.find(x=>x.id===v);
+        set('resolution',model?.resolutions.find(x=>x===d.resolution)||model?.resolutions[0]||'');
+        renderModels();
+      },'โมเดลวิดีโอ')),
+      h('label',{},'ความละเอียดภาพจาก fal',ugcSelect([['','เลือกความละเอียด'],...resolutions],d.resolution,v=>{
+        set('resolution',v);renderModels();
+      },'ความละเอียดภาพจาก fal')),
+      rate?h('div',{},h('p',{},ugcUSD(rate.unit_usd)+' / '+(/^seconds?$/i.test(rate.unit)?'วินาที':'ครั้ง')+
+        (rate.image_usd?' · '+ugcUSD(rate.image_usd)+' / รูป':'')),
+        h('a',{class:'sub',href:chosen.source_url,target:'_blank',rel:'noopener'},'ตรวจเรต '+ugcDate(chosen.checked_at))):
+        h('p',{class:'sub'},chosen?.reason||(modelsLoading?'กำลังตรวจรุ่นและราคา…':'เลือกโมเดลและความละเอียดเพื่อดูเรต')),
+      button(modelsLoading?'กำลังตรวจ catalog…':'ตรวจโมเดลที่ใช้ได้',modelList,modelsLoading));
   }
   function mediaOptions(){
     return [['','เลือกสื่อ'],...row.media.map((m,i)=>[m.id,(m.kind==='image'?'รูป':'วิดีโอ')+' '+(i+1)])];
@@ -99,15 +123,17 @@ async function renderUgc(config,drafts){
     if(quote){
       const q=quote;
       const rows=q.fal.map(x=>[q.plan.shots.findIndex(s=>s.id===x.scene_id)+1,x.model_name,x.resolution,x.edited_seconds,
-        x.billed_seconds??x.generation_seconds,x.billing_quantity+' '+x.billing_unit,ugcUSD(x.unit_usd),
+        x.generation_seconds,x.billing_quantity+' '+(/^seconds?$/i.test(x.billing_unit)?'วิ':x.billing_unit),ugcUSD(x.unit_usd),
         q.reused.includes(x.slot)?'ใช้ไฟล์เดิม':ugcUSD(x.estimated_usd)]);
-      const table=h('table',{class:'ugc-price'},h('thead',{},h('tr',{},['ฉาก','โมเดล','ความละเอียด','ในคลิป (วิ)','ผลลัพธ์ fal (วิ)','หน่วยที่คิด','USD/หน่วย','ฉาก (USD)'].map(x=>h('th',{scope:'col'},x)))),
+      const table=h('table',{class:'ugc-price'},h('thead',{},h('tr',{},['ฉาก','โมเดล','ความละเอียด','ในคลิป (วิ)','ส่ง fal (วิ)','หน่วยประเมิน','USD/หน่วย','ฉาก (USD)'].map(x=>h('th',{scope:'col'},x)))),
         h('tbody',{},rows.map(line=>h('tr',{},line.map(cell=>h('td',{},cell))))));
       const expiresIn=Date.parse(q.expires_at)-Date.now();
       const expired=expiresIn<=0;
       if(!expired)quoteTimer=setTimeout(priceView,expiresIn+50);
       contents.push(h('h3',{},'คลิป '+q.input.duration+' วิ · 1080 × 1920'),
         rows.length?table:h('p',{},'ใช้สื่อสินค้าจริงทุกฉาก'),
+        q.fal.some(item=>item.billed_seconds>item.generation_seconds)?
+          h('p',{class:'sub'},'ใบราคาของฉากที่มีวินาทีเผื่อใช้ความยาวผลลัพธ์ที่ประเมินไว้ ค่าจริงขึ้นกับวิดีโอที่ fal ส่งกลับ'):null,
         h('p',{},'fal.ai '+ugcUSD(q.fal_usd)+' · เสียง '+q.voice_model+' '+ugcUSD(q.eleven_usd)+' · ตัดต่อ '+ugcUSD(q.editing_usd)),
         h('p',{},'เรตเสียง '+ugcUSD(q.eleven[0].usd_per_1000_characters)+'/1,000 ตัวอักษร · '+ugcDate(q.voice_checked_at)),
         q.fal.map(item=>h('p',{class:'sub'},h('a',{href:item.pricing_source,target:'_blank',rel:'noopener'},item.model_name+' · ตรวจเรต '+ugcDate(item.pricing_checked_at)))),
@@ -206,10 +232,20 @@ async function renderUgc(config,drafts){
       try {
         const job=await api(ugcPath+'/jobs/'+jobId);
         if(!active()||jobId!==selected())return;
+        const usage=job.fal_usage||[];
         put(status,h('h3',{},ugcState[job.status]||job.status),h('progress',{value:job.progress||0,max:1}),
           job.error?h('p',{role:'alert'},job.error):null,
           h('ol',{},job.scenes.map(s=>h('li',{},[s.state==='done'?'ภาพพร้อม':s.state==='rendering'?'กำลังเตรียมภาพ':'รอภาพ',
-            s.video?'fal · '+(ugcPaid[s.video]||s.video):'',s.voice?'เสียง · '+(ugcPaid[s.voice]||s.voice):''].filter(Boolean).join(' · ')))));
+            s.video?'fal · '+(ugcPaid[s.video]||s.video):'',s.voice?'เสียง · '+(ugcPaid[s.voice]||s.voice):''].filter(Boolean).join(' · ')))),
+          usage.length?h('details',{},h('summary',{},'ค่าใช้ fal.ai รายครั้ง'),h('ol',{},usage.map(call=>{
+            const index=job.scenes.findIndex(s=>'fal:'+s.id===call.slot);
+            const amount=call.reused?'ใช้คลิปเดิม':[
+              call.estimated_usd==null?'':'อนุมัติ '+ugcUSD(call.estimated_usd),
+              call.actual_usd==null?'ยอดจริงรอ fal ยืนยัน':'ยอดจริง '+ugcUSD(call.actual_usd),
+            ].filter(Boolean).join(' · ');
+            return h('li',{},[index>=0?'ฉาก '+(index+1):call.slot,call.model_name,call.resolution,
+              ugcPaid[call.status]||call.status,amount].filter(Boolean).join(' · '));
+          }))):null);
         if(job.status==='FAILED'&&jobId===current){priceView();status.append(priceBox);}
         if(displayed!==(job.video?'video:':'')+jobId+job.status){
           displayed=(job.video?'video:':'')+jobId+job.status;
@@ -257,11 +293,7 @@ async function renderUgc(config,drafts){
       notionPanel(),
       row.evidence.length?h('details',{},h('summary',{},'หลักฐานเทรนด์สินค้า'),h('ul',{},row.evidence.map(e=>h('li',{},
         h('a',{href:e.url,target:'_blank',rel:'noopener noreferrer'},e.title||e.url),' · '+e.quote)))):null);
-    const needsFal=d.scenes.some(s=>s.mode==='fal');
-    const chosen=models.find(x=>x.id===d.endpoint);
-    const endpoints=models.filter(x=>x.available||x.id===d.endpoint).map(x=>[x.id,x.name]);
-    if(!models.length&&d.endpoint)endpoints.push([d.endpoint,d.endpoint]);
-    const resolution=(chosen?.resolutions||[d.resolution].filter(Boolean)).map(x=>[x,x]);
+    renderModels();
     const selectedHook=ugcSelect([['','เลือก Hook'],...d.hooks.map(x=>[x,x])],d.hook,v=>{set('hook',v);render();},'Hook ที่ AI เสนอ');
     const plan=h('fieldset',{disabled:planning},
       h('div',{class:'ugc-grid'},
@@ -276,14 +308,7 @@ async function renderUgc(config,drafts){
       },!config.openai),
       planning?h('p',{role:'status'},'กำลังเขียน Hook และวางฉาก…'):row.planning?.error?h('p',{role:'alert'},row.planning.error):null,
       h('div',{class:'ugc-grid'},h('label',{},'Hook ที่ AI เสนอ',selectedHook),field('Hook ที่จะใช้','hook',d.hook,{maxlength:85})),
-      d.scenes.map(editScene),button('เพิ่มฉาก',addScene,d.scenes.length>=10),
-      needsFal?h('div',{class:'ugc-grid'},
-        h('label',{},'โมเดลวิดีโอ',ugcSelect([['','เลือกโมเดล fal.ai'],...endpoints],d.endpoint,v=>{
-          set('endpoint',v);set('resolution',models.find(x=>x.id===v)?.resolutions[0]||'');render();
-        },'โมเดลวิดีโอ')),
-        h('label',{},'ความละเอียดภาพจาก fal',ugcSelect([['','เลือกความละเอียด'],...resolution],d.resolution,v=>set('resolution',v),'ความละเอียดภาพจาก fal')),
-        button(modelsLoading?'กำลังตรวจ catalog…':'ตรวจโมเดลที่ใช้ได้',modelList,modelsLoading),
-        ...models.filter(x=>!x.available).map(x=>h('p',{class:'sub'},x.name+' · '+(x.reason||'ตรวจราคาไม่ได้')))):null);
+      d.scenes.map(editScene),button('เพิ่มฉาก',addScene,d.scenes.length>=10),modelPanel);
     const toggled=(key,label)=>{
       const input=h('input',{type:'checkbox',on:{change:e=>set(key,e.target.checked)}});
       input.checked=d[key];
@@ -310,5 +335,6 @@ async function renderUgc(config,drafts){
     },2400);
     else priceView();
   }
-  render();
+  if(row.job_id)render();
+  else void modelList();
 }
