@@ -12,7 +12,8 @@ import { Hono } from 'hono';
 import pg from 'pg';
 import { registerUgc } from './ugc.js';
 import { videoProvider, type DraftDocument } from './ugc-contract.js';
-import { UGC_IMAGE_REFERENCES, type FalVideoModel } from './video-registry.js';
+import { createOpenAIModelCatalog } from './openai-models.js';
+import { MissingEndpoint, UGC_IMAGE_REFERENCES, type FalVideoModel } from './video-registry.js';
 
 const endpoint='minimax/h3/image-to-video';
 test('product through confirmed quote, real queue/render/export, and no duplicate paid requests', {skip:!process.env.UGC_TEST_DATABASE_URL, timeout:360000}, async()=>{
@@ -35,19 +36,54 @@ test('product through confirmed quote, real queue/render/export, and no duplicat
     const app=new Hono(),source='https://example.org/trend',buy='https://store.example/sku-a';
     const database='01552600-a420-42f5-9a47-d496d99389df', page='19552600-a420-42f5-9a47-d496d99389df';
     const product={name:'รองเท้า Orion',variant:'A',price:'990',promo:'ส่งวันนี้',selling_points:'พื้นยาง',order_url:buy};
-    const options={FAL_KEY:'mock',OPENAI_API_KEY:'mock',UGC_NOTION_TOKEN:'mock',UGC_NOTION_DATABASE_IDS:database};
+    const options={FIRECRAWL_API_KEY:'mock',FAL_KEY:'mock',OPENAI_API_KEY:'mock',UGC_NOTION_TOKEN:'mock',UGC_NOTION_DATABASE_IDS:database};
     let rate=.1,openai=0,lookups=0,reads=0,imageRate=.15,browserBase='';
     const creatorEndpoint='xai/grok-imagine-video/v1.5/image-to-video';
+    const altEndpoint='fixture/new-speaker/image-to-video';
+    let catalogMode='normal',brainReads=0,fcSearches=0,fcReads=0,intakePosts=0,ideaModel='';
+    const brains=createOpenAIModelCatalog({env:options,responsesJson:true,request:async()=>{
+      brainReads++;
+      if(catalogMode==='down')return Response.json({}, {status:503});
+      const ids=catalogMode==='changed'?['gpt-6.2-sol','gpt-7.1-terra']:['gpt-6.2-sol'];
+      return Response.json({data:[...ids.map(id=>({id})),{id:'gpt-8-sol',capabilities:{responses:false}},{id:'gpt-image-2'}]});
+    }});
     const footage=join(temp,'product.png');
     execFileSync('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=320x240','-frames:v','1','-threads','1',footage]);
     const fixture=await readFile(footage);
     const schema={type:'object',additionalProperties:false,required:['prompt','image_url'],properties:{
       prompt:{type:'string'},image_url:{type:'string',format:'uri'},duration:{enum:[4,5,10,12]},generate_audio:{type:'boolean'},
       resolution:{enum:['768P']}}};
+    async function readVideo(id:string,category:FalVideoModel['category']):Promise<FalVideoModel>{
+        lookups++;assert.equal(category,'image-to-video');
+        if(catalogMode==='down')throw Error('provider unavailable');
+        if(id===creatorEndpoint&&catalogMode==='removed'||id===altEndpoint&&!['changed','removed'].includes(catalogMode)||
+          ['alibaba/wan-3.0/image-to-video','google/gemini-omni-flash/v1.1/image-to-video'].includes(id))throw new MissingEndpoint();
+        if(id===creatorEndpoint||id===altEndpoint){
+          return {endpoint_id:id,category,name:id===creatorEndpoint?'Grok Imagine 1.5':'Wan 3.0',available:true,resolutions:['720p'],durations:[3,4,5,10,12],audio:true,
+            input_schema:{...schema,properties:{...schema.properties,duration:{enum:[3,4,5,10,12]},resolution:{enum:['720p']}}},
+            schema_hash:'creator-schema',price:{unit:'seconds',unit_price:.01,currency:'USD'},billing:{rates:{'720p':.14},reference_image_usd:.01},
+            source_url:'https://fal.ai/models/'+id,checked_at:new Date().toISOString()} satisfies FalVideoModel;
+        }
+        assert.equal(id,endpoint);
+        return {endpoint_id:id,category,name:'H3',available:true,resolutions:['768P'],durations:[4,5,10,12],audio:true,
+          input_schema:schema,schema_hash:'test-schema',price:{unit:'seconds',unit_price:rate,currency:'USD'},
+          billing:{rates:{'768p':rate}},source_url:'https://fal.ai/models/'+id,checked_at:new Date().toISOString()} satisfies FalVideoModel;
+      }
     const appUgc=registerUgc(app,pool,{
       guard:async(c,next)=>{if(c.req.header('x-test')!=='owner'&&!(browserBase&&c.req.header('x-motion-ui')==='1'))return c.json({error:'unauthorized'},401);await next();},
       workerGuard:async(c,next)=>{if(c.req.header('x-internal-token')!=='test-worker')return c.json({error:'unauthorized'},401);await next();},
-      env:options,models:['gpt-6.2-sol'],
+      env:options,models:brains,firecrawlFetch:async(url,init)=>{
+        const body=JSON.parse(String(init?.body));
+        if(String(url).endsWith('/search')){
+          assert.match(body.query,/^site:shopee\.co\.th /);fcSearches++;
+          if(catalogMode==='research-down')return Response.json({success:false},{status:503});
+          return Response.json({success:true,creditsUsed:2,data:{web:Array.from({length:5},(_,i)=>({url:'https://shopee.co.th/product/22/'+(70+i)}))}});
+        }
+        assert.match(body.url,/^https:\/\/shopee\.co\.th\/product\/22\//);assert.equal(body.maxAge,0);fcReads++;
+        const i=Number(body.url.split('/').at(-1))-70;
+        return Response.json({success:true,creditsUsed:1,data:{metadata:{url:body.url,statusCode:200},
+          markdown:'# '+['แก้วเก็บความเย็น','แก้วพร้อมฝา','แก้วน้ำสแตนเลส','กระบอกน้ำ','ขวดน้ำ'][i]+'\n'+(i?'':'ขายแล้ว 128 ชิ้น\n')+'฿299\n## การจัดส่ง\nHome Studio\nแชทเลย'}});
+      },
       storage:{sign:async(key,download)=>(browserBase?browserBase+'/qa/assets/':'https://fixture.invalid/')+key+(download?'?attachment=1':'')},
       references:{put:async(key,data)=>{const file=join(temp,'r2',key);await mkdir(dirname(file),{recursive:true});await writeFile(file,data);},
         sign:async(key)=>(browserBase?browserBase+'/qa/r2/':'https://r2-fixture.invalid/')+key},
@@ -69,9 +105,18 @@ test('product through confirmed quote, real queue/render/export, and no duplicat
         schema_hash:'image-fixture-schema',billing_quantity:1,billing_unit:'images',unit_usd:imageRate,estimated_usd:imageRate,
         account_unit_usd:imageRate,pricing_source:'https://fal.ai/models/'+endpoint,pricing_checked_at:new Date().toISOString()}),
       response:async(body,opts)=>{
-        if(JSON.parse(body.input).reviewer!==undefined){
+        const data=JSON.parse(body.input);
+        if(data.listings){
+          assert.equal(body.tools,undefined);
+          ideaModel=body.model;
+          return {id:'resp_idea',status:'completed',output:[{content:[{type:'output_text',text:JSON.stringify({picks:data.listings.map((p:any)=>({id:p.id,angle:'demonstration'}))})}]}]};
+        }
+        if(data.reviewer!==undefined){
+          if(body.instructions.includes('product_name')&&!opts.responseId)intakePosts++;
           const id='resp_ugc_creator';await opts.onAccepted?.(id);
-          return {id,status:'completed',output:[{content:[{type:'output_text',text:JSON.stringify({caption:'ดูรายละเอียดกล่องเกม PS5',
+          return {id,status:'completed',output:[{content:[{type:'output_text',text:JSON.stringify({
+            ...(body.instructions.includes('product_name')?{product_name:data.product.name||(data.brief.includes('กล่อง')?'กล่องเกม PS5 After the Tide':'แก้วเก็บความเย็น'),reviewer_kind:data.brief.includes('คลิปคนจริง')?'clip':'ai',presenter_direction:'ผู้หญิงยกสินค้าให้กล้องเห็นแล้วพูดภาษาไทย'}:{}),
+            caption:'ดูรายละเอียดสินค้า',
             angles:[
               {hook:'ส่องหน้ากล่อง',opening:'มาดูกล่องเกมนี้กัน',middle:'หน้ากล่องมีชื่อเกมและโลโก้ PS5',close:'ดูรายละเอียดที่หน้าร้าน'},
               {hook:'เลือกให้ตรงเครื่อง',opening:'เล่นบนเครื่องไหนกัน',middle:'ดูแถบด้านบน มีเครื่องหมาย PS5',close:'ดูรุ่นที่หน้าร้านได้เลย'},
@@ -91,19 +136,8 @@ test('product through confirmed quote, real queue/render/export, and no duplicat
           ],
         })}]}]};
       },
-      video:{...videoProvider,model:async(id,category):Promise<FalVideoModel>=>{
-        lookups++;assert.equal(category,'image-to-video');
-        if(id===creatorEndpoint){
-          return {endpoint_id:id,category,name:'Grok Imagine 1.5',available:true,resolutions:['720p'],durations:[3,4,5,10,12],audio:true,
-            input_schema:{...schema,properties:{...schema.properties,duration:{enum:[3,4,5,10,12]},resolution:{enum:['720p']}}},
-            schema_hash:'creator-schema',price:{unit:'seconds',unit_price:rate,currency:'USD'},billing:{rates:{'720p':rate}},
-            source_url:'https://fal.ai/models/'+id,checked_at:new Date().toISOString()} satisfies FalVideoModel;
-        }
-        assert.equal(id,endpoint);
-        return {endpoint_id:id,category,name:'H3',available:true,resolutions:['768P'],durations:[4,5,10,12],audio:true,
-          input_schema:schema,schema_hash:'test-schema',price:{unit:'seconds',unit_price:rate,currency:'USD'},
-          billing:{rates:{'768p':rate}},source_url:'https://fal.ai/models/'+id,checked_at:new Date().toISOString()} satisfies FalVideoModel;
-      },price:async(m,p)=>({usd:Math.round(Number(p.duration)*m.price!.unit_price*100)/100,unit:'seconds',quantity:Number(p.duration)})},
+      videoDiscovery:async seed=>({ids:[...new Set([...seed,...(['changed','removed'].includes(catalogMode)?[altEndpoint]:[])])],load:id=>readVideo(id,'image-to-video')}),
+      video:{...videoProvider,model:readVideo,price:async(m,p)=>({usd:Math.round((Number(p.duration)*m.billing!.rates[String(p.resolution).toLowerCase()]+(m.billing!.reference_image_usd||0))*100)/100,unit:'seconds',quantity:Number(p.duration)})},
     });
     app.get('/app',async c=>c.html(await readFile(join(repo,'api/src/ui.html'),'utf8')));
     app.get('/app/ugc.js',async c=>c.text(await readFile(join(repo,'api/src/ugc-ui.js'),'utf8'),200,{'Content-Type':'text/javascript'}));
@@ -115,6 +149,7 @@ test('product through confirmed quote, real queue/render/export, and no duplicat
     app.get('/app/api/text-video/plans',c=>c.json({plans:[]}));
     app.get('/app/api/video-intelligence/arena',c=>c.json({categories:[]}));
 
+    app.get('/qa/counters',async c=>c.json({brainReads,lookups,fcSearches,fcReads,ideaModel,jobs:(await pool.query('SELECT count(*)::int n FROM jobs')).rows[0].n}));
     app.get('/qa/:bucket/*',async c=>{
       const bucket=c.req.param('bucket');
       const key=c.req.path.split('/').slice(3).join('/');
@@ -135,6 +170,7 @@ test('product through confirmed quote, real queue/render/export, and no duplicat
       if(!j)return c.json({error:'queue is empty'},404);
       return c.json(await runWorker(j.id));
     });
+    app.post('/qa/catalog-mode',async c=>{assert.ok(browserBase);catalogMode=(await c.req.json()).mode;return c.json({ok:true});});
     app.post('/qa/image-rate',async c=>{assert.ok(browserBase);imageRate=(await c.req.json()).rate;return c.json({ok:true});});
     const headers={'x-test':'owner','content-type':'application/json'};
     const request=async(path:string,method='GET',body?:unknown,key?:string)=>app.request('/app/api/ugc'+path,
@@ -295,6 +331,27 @@ test('product through confirmed quote, real queue/render/export, and no duplicat
     draft=await ok(await request(draftPath+'/edit','POST',{job_id:d.job_id}));
     assert.equal((await request(draftPath,'PATCH',{revision:draft.revision,document:{...draft.document,duration:31}})).status,422);
     assert.ok(lookups>4);
+    const initialJobs=await jobs(), key=randomUUID(), intake={brief:'ให้ผู้หญิงถือแก้วเก็บความเย็นพูดกับกล้อง',endpoint:creatorEndpoint};
+    const [intakeA,intakeB]=await Promise.all([request('/prepare','POST',intake,key),request('/prepare','POST',intake,key)]);
+    assert.equal((await ok(intakeA)).id,key);assert.equal((await ok(intakeB)).id,key);
+    for(let i=0;i<30;i++){
+      await appUgc.pump();
+      if((await ok(await request('/drafts/'+key))).planning?.state==='done')break;
+      await new Promise(resolve=>setTimeout(resolve,50));
+    }
+    const prepared=await ok(await request('/drafts/'+key));
+    assert.equal(prepared.document.product.name,'แก้วเก็บความเย็น');
+    assert.equal(prepared.document.scenes.length,3);assert.equal(prepared.document.reviewer.kind,'ai');
+    assert.equal(prepared.document.reviewer.opening_id,null);assert.equal(prepared.document.product.price,'');
+    assert.equal(prepared.document.scenes[0].media_id,null);assert.match(prepared.document.scenes[0].visual,/ผู้หญิง/);
+    assert.equal(intakePosts,1);assert.equal(await jobs(),initialJobs);
+    assert.equal((await request('/prepare','POST',{...intake,brief:'อีกบรีฟ'},key)).status,422);
+    assert.equal((await request('/drafts/'+key+'/quote','POST',{revision:prepared.revision,product_confirmed:true})).status,409);
+    const before=lookups;
+    const both=await Promise.all([request('/catalog/video?refresh=1'),request('/catalog/video?refresh=1')]);
+    const snapshots=await Promise.all(both.map(ok));
+    assert.deepEqual(snapshots[0],snapshots[1]);assert.equal(lookups-before,3);
+    assert.deepEqual(snapshots[0].models[0].rates[0],{resolution:'720p',unit:'seconds',unit_usd:.14,image_usd:.01});
     if(process.env.UGC_TEST_BROWSER==='1'){
       browserBase='http://127.0.0.1:'+port;
       const proc=spawn(process.env.UGC_TEST_PYTHON||'python3',['worker/tests/ugc_mock_browser.py',browserBase,temp],

@@ -1,6 +1,6 @@
 import {after,before,test} from 'node:test';
 import assert from 'node:assert/strict';
-import {createRankedFalDiscovery,FalRegistryError,registryIssue,buildVideoPayload,discoverRankedModel,estimateVideoPayload,getVideoModel,H3_MAX_IMAGE,PREVIOUS_FRAME,validateVideoPayload,type VideoCategory} from './video-registry.js';
+import {discoverUgcEndpoints,createRankedFalDiscovery,FalRegistryError,registryIssue,buildVideoPayload,discoverRankedModel,estimateVideoPayload,getVideoModel,H3_MAX_IMAGE,PREVIOUS_FRAME,validateVideoPayload,type VideoCategory} from './video-registry.js';
 
 const original=process.env.FAL_KEY;
 before(()=>{process.env.FAL_KEY='offline-test';});
@@ -187,4 +187,28 @@ test('catalog retries a short 429 once and searches a new Arena name just once a
   });
   const models=await Promise.all([discover('Future Model 1.4','text-to-video'),discover('Future Model 1.4','video-editing')]);
   assert.deepEqual(models,[null,null]);assert.equal(calls.length,2);assert.equal(new Set(calls).size,1);
+});
+
+test('UGC discovery pages through fal metadata, keeps speaking image routes and verifies the exact queue schema and price',async()=>{
+  const route='fixture/new-release/image-to-video';
+  const f=fixture(route,'image-to-video','Your request will cost $0.12 per second of output video.');
+  const seen:string[]=[];
+  const request:typeof fetch=async(url,init)=>{
+    const u=new URL(String(url));
+    if(u.searchParams.has('q')){
+      assert.equal(u.searchParams.get('category'),'image-to-video');
+      seen.push(u.searchParams.get('cursor')||'');
+      return Response.json(u.searchParams.has('cursor')?{models:[{endpoint_id:route,metadata:{category:'image-to-video',status:'active',description:'Native audio with spoken dialogue'}}],has_more:false}:
+        {models:[{endpoint_id:'fixture/music',metadata:{category:'image-to-video',status:'active',description:'Music'}},
+          {endpoint_id:'fixture/removed',metadata:{category:'image-to-video',status:'inactive',description:'Spoken dialogue'}}],has_more:true,next_cursor:'p2'});
+    }
+    return f.request(url,init);
+  };
+  const catalog=await discoverUgcEndpoints([],request);
+  assert.deepEqual(seen,['','p2']);assert.deepEqual(catalog.ids,[route]);
+  const m=await catalog.load(route);
+  assert.equal(m.available,true);assert.equal(m.billing?.rates['*'],.12);
+  assert.ok(f.calls.some(c=>c.url.searchParams.get('expand')==='openapi-3.0'));
+  assert.ok(f.calls.some(c=>c.url.pathname.endsWith('/pricing')));
+  assert.ok(f.calls.every(c=>c.url.hostname!=='queue.fal.run'));
 });

@@ -126,7 +126,7 @@ function knownAlias(name:string,cat:VideoCategory):string|null|undefined{
   if(name==='kling o3 pro')return 'fal-ai/kling-video/o3/pro/'+(edit?'video-to-video/edit':cat==='video-to-video'?'video-to-video/reference':cat);
   return undefined;
 }
-class MissingEndpoint extends Error {}
+export class MissingEndpoint extends Error {}
 type PriceLookup=(endpoint:string)=>Promise<Obj|null>;
 type CatalogScope={exact:(endpoint:string)=>Promise<Obj|null>;search:(label:string)=>Promise<Obj>};
 function searchCatalog(label:string,request:typeof fetch,category?:VideoCategory){
@@ -329,6 +329,12 @@ export function createRankedFalDiscovery(rows:readonly {name:string;category:Vid
     const id=knownAlias(canonicalName(name),row.category);
     if(id)ids.add(id);
   }
+  const {scope,lookup}=batchLookup(ids,request);
+  return (name:string,category:VideoCategory)=>discoverRankedModel(name,category,request,lookup,scope);
+}
+
+// Share metadata fetches only within one catalog update. Quotes and dispatch re-read the provider.
+function batchLookup(ids:Set<string>,request:typeof fetch){
   const scheduled=[...ids];
   let batch:Promise<Map<string,Obj>>|undefined;
   const singles=new Map<string,Promise<Obj|null>>();
@@ -368,7 +374,29 @@ export function createRankedFalDiscovery(rows:readonly {name:string;category:Vid
       return rows;
     }
   };
-  return (name:string,category:VideoCategory)=>discoverRankedModel(name,category,request,lookup,scope);
+  return {scope,lookup};
+}
+export async function discoverUgcEndpoints(seed:string[],request:typeof fetch=fetch){
+  const ids=new Set(seed), seen=new Set<string>();
+  const url=new URL(API);
+  url.searchParams.set('category','image-to-video');
+  url.searchParams.set('q','native audio');
+  url.searchParams.set('limit','100');
+  for(;;){
+    const page=await readJson(url,request,'catalog');
+    if(!Array.isArray(page.models))throw new FalRegistryError('catalog','invalid');
+    for(const m of page.models){
+      if(typeof m?.endpoint_id!=='string'||!safeEndpoint.test(m.endpoint_id)||m.metadata?.status!=='active'||
+        classified(m.endpoint_id,m.metadata)!=='image-to-video')continue;
+      // New routes must advertise speech, before verifying the schema, first frame, audio and billing.
+      if(/speech|dialogue|dialog|voice|speaking|spoken|lip[- ]?sync|talking/i.test(m.metadata.description??''))ids.add(m.endpoint_id);
+    }
+    if(!page.has_more)break;
+    if(typeof page.next_cursor!=='string'||!page.next_cursor||seen.has(page.next_cursor))throw new FalRegistryError('catalog','invalid');
+    seen.add(page.next_cursor);url.searchParams.set('cursor',page.next_cursor);
+  }
+  const {scope,lookup}=batchLookup(ids,request);
+  return {ids:[...ids],load:(id:string)=>getVideoModel(id,'image-to-video',request,lookup,scope)};
 }
 async function details(endpoint:string,request:typeof fetch,lookup?:PriceLookup){
   // Fetch independent evidence, so a pricing outage cannot erase a verified model and its schema.

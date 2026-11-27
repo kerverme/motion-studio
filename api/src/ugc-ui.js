@@ -16,9 +16,175 @@ function ugcSelect(values,current,change,label){
   select.value=current;
   return select;
 }
+function ugcDraftId(){return location.hash.match(/^#ugc\/([0-9a-f-]{36})$/i)?.[1]||'';}
+function openUgc(id){history.replaceState(null,'',location.pathname+location.search+(id?'#ugc/'+id:''));go('ugc');}
+function ugcRateText(rate){
+  return ugcUSD(rate.unit_usd)+' / '+(/^seconds?$/i.test(rate.unit)?'วินาที':'ครั้ง')+
+    (rate.image_usd?' + '+ugcUSD(rate.image_usd)+' / รูปอ้างอิง':'');
+}
+function renderUgcHome(){
+  const session=++ugcSession;
+  const active=()=>session===ugcSession&&S.view==='ugc'&&root.isConnected;
+  const root=h('section',{class:'ugc-home'});
+  const errors=h('p',{role:'alert',class:'ugc-note'}),tabs=h('div',{class:'ugc-tabs',role:'tablist','aria-label':'UGC AI'});
+  const placeholder='ช่วยทำคลิปผู้หญิงถือแก้วเก็บความเย็นแล้วรีวิวเป็นภาษาไทย เปิดคลิปด้วยการยกแก้วให้กล้องดู';
+  const brief=h('textarea',{id:'ugc-brief',rows:5,maxlength:1600,'aria-label':'บรีฟคลิป',placeholder});
+  const query=h('textarea',{id:'ugc-idea-query',rows:4,maxlength:200,'aria-label':'คำค้น Shopee',placeholder:'หาของใช้ในบ้านที่กำลังขายดีใน Shopee ไทย งบไม่เกิน 500 บาท'});
+  const file=h('input',{type:'file',accept:'image/jpeg,image/png,image/webp,video/mp4',id:'ugc-attach',class:'ugc-file','aria-label':'แนบรูปหรือคลิปสินค้า'});
+  const filename=h('span',{class:'sub'});
+  file.onchange=()=>{filename.textContent=file.files[0]?.name||'';};
+  const old=h('details',{class:'ugc-old'},h('summary',{},'ร่างเก่า'));
+  const result=h('div',{class:'ugc-results','aria-live':'polite'});
+  let idea=null,activeSearch='',poll,tab='create';
+  const hint=h('div',{class:'ugc-note'}),ideaHint=()=>{put(hint,idea?h('span',{},'จาก Shopee · ',h('a',{href:idea.url,rel:'noopener noreferrer',target:'_blank'},idea.name),' ',
+    h('button',{type:'button',class:'btn',on:{click:()=>{idea=null;ideaHint();remember();}}},'นำออก')):null);};
+  function remember(){
+    sessionStorage.setItem('ms.ugc.composer',JSON.stringify({brief:brief.value,query:query.value,idea}));
+  }
+  try{const saved=JSON.parse(sessionStorage.getItem('ms.ugc.composer')||'{}');brief.value=saved.brief||'';query.value=saved.query||'';idea=saved.idea||null;}catch{}
+  brief.oninput=remember;query.oninput=remember;ideaHint();
+  function action(label,fn,primary=false){
+    const btn=h('button',{type:'button',class:'btn'+(primary?' primary':''),on:{click:async()=>{
+      if(btn.disabled)return;
+      btn.disabled=true;errors.textContent='';
+      try{await fn();}catch(e){if(active())errors.textContent=e.message;}finally{btn.disabled=false;}
+    }}},label);
+    return btn;
+  }
+  function selector(kind,label){
+    const key='ms.ugc.model.'+kind, status=h('small',{role:'status',class:'sub'}),rate=h('small',{class:'sub'});
+    const select=h('select',{'aria-label':label});
+    let items=[],missing=false,loading=false,initialized=false;
+    const chosen=()=>items.find(m=>m.id===select.value);
+    const showRate=()=>{
+      const m=chosen(),r=m?.rates?.find(x=>x.resolution.toLowerCase()==='720p')??m?.rates?.[0];
+      put(rate,r?h('a',{href:m.source_url,target:'_blank',rel:'noopener'},r.resolution+' · '+ugcRateText(r)):null);
+    };
+    select.onchange=()=>{if(select.value){missing=false;localStorage.setItem(key,select.value);status.textContent=lastStatus;}showRate();};
+    let lastStatus='';
+    let pending;
+    const refresh=action('อัปเดตโมเดล',()=>update(true));
+    function update(force=false){
+      if(!pending)pending=read(force).finally(()=>{pending=null;});
+      return pending;
+    }
+    async function read(force){
+      if(loading)return;
+      loading=true;select.disabled=true;refresh.disabled=true;
+      status.textContent='กำลังอัปเดตโมเดล…';
+      try{
+        const data=await api(ugcPath+'/catalog/'+kind+(force?'?refresh=1':''));
+        if(!active())return;
+        const wanted=localStorage.getItem(key)||select.value;
+        items=data.models;
+        missing=!!wanted&&!items.some(m=>m.id===wanted);
+        put(select,ugcOption('','เลือกโมเดล'),items.map(m=>ugcOption(m.id,m.name)));
+        select.value=missing?'':wanted||(items.some(m=>m.id===data.default_id)?data.default_id:items[0]?.id||'');
+        if(select.value)localStorage.setItem(key,select.value);
+        initialized=true;
+        lastStatus=(data.stale?'ยังไม่ได้อัปเดต · '+data.error:items.length?'':'ไม่มีโมเดลที่รองรับในขณะนี้')+
+          (data.checked_at?' · อัปเดตสำเร็จล่าสุด '+ugcDate(data.checked_at):'');
+        showRate();
+      }catch(e){lastStatus='ยังไม่ได้อัปเดต · '+e.message+(lastStatus?' · '+lastStatus:'');}
+      finally{loading=false;refresh.disabled=false;select.disabled=false;
+        status.textContent=(missing?'โมเดลที่เลือกใช้ไม่ได้แล้ว กรุณาเลือกใหม่ · ':'')+lastStatus.replace(/^ · /,'');}
+    }
+    return {node:h('div',{class:'ugc-model'},h('label',{},label,select),refresh,rate,status),select,update,
+      get ready(){return pending;},get initialized(){return initialized;},get missing(){return missing;},get loading(){return loading;}};
+  }
+  const video=selector('video','โมเดลวิดีโอ'),brain=selector('ideas','โมเดลคิดไอเดีย');
+  async function prepare(){
+    const text=brief.value.trim();
+    if(text.length<2){brief.focus();throw Error('พิมพ์บรีฟคลิปก่อนเตรียมร่าง');}
+    if(video.loading){errors.textContent='กำลังตรวจรายการโมเดลวิดีโอ…';await video.ready;errors.textContent='';}
+    if(video.missing||video.select.options.length>1&&!video.select.value)throw Error('โมเดลเดิมใช้ไม่ได้แล้ว กรุณาเลือกโมเดลวิดีโอใหม่');
+    const attached=file.files[0];
+    if(attached?.size>32*1024*1024)throw Error('ไฟล์ต้องไม่เกิน 32 MB');
+    const input={brief:text,endpoint:video.select.value,...(idea?{idea:{search:idea.search,id:idea.id}}:{})};
+    const signature=JSON.stringify([input,attached?[attached.name,attached.size,attached.lastModified]:null]);
+    const slot='ms.ugc.prepare';
+    let pending=JSON.parse(sessionStorage.getItem(slot)||'null');
+    if(pending){
+      try{
+        const existing=await api(ugcPath+'/drafts/'+pending.id);
+        sessionStorage.removeItem(slot);openUgc(existing.id);return;
+      }catch(e){if(e.status!==404)throw e;}
+      if(pending.signature!==signature)throw Error('ส่งบรีฟหรือไฟล์เดิมอีกครั้งเพื่อตรวจคำขอที่ยังไม่ทราบผล');
+    }else{pending={id:crypto.randomUUID(),signature};sessionStorage.setItem(slot,JSON.stringify(pending));}
+    const form=new FormData();form.set('input',JSON.stringify(input));if(attached)form.set('media',attached);
+    const options=attached?{method:'POST',body:form}:{method:'POST',body:JSON.stringify(input)};
+    try{
+      const draft=await api(ugcPath+'/prepare',{...options,headers:{'idempotency-key':pending.id}});
+      sessionStorage.removeItem(slot);sessionStorage.removeItem('ms.ugc.composer');
+      if(active())openUgc(draft.id);
+    }catch(e){if(e.status>=400&&e.status<500&&e.status!==408)sessionStorage.removeItem(slot);throw e;}
+  }
+  function use(card,search){
+    idea={search,id:card.id,name:card.name,url:card.url};
+    brief.value='ช่วยทำคลิปคนถือและรีวิว'+card.name+'เป็นภาษาไทย เปิดด้วย “'+card.hook+'” '+card.reason;
+    ideaHint();remember();show('create');brief.focus();
+  }
+  function present(data){
+    if(!active()||data.id!==activeSearch)return;
+    clearTimeout(poll);
+    if(!['failed','done'].includes(data.state)){
+      search.disabled=true;
+      put(result,h('p',{role:'status'},data.state==='research'?'กำลังค้นและอ่านหน้าสินค้า Shopee ไทย…':'กำลังคิดมุมรีวิวและ Hook…'));
+      poll=setTimeout(()=>check(data.id),1700);return;
+    }
+    search.disabled=false;
+    put(result,data.notice?h('p',{role:'status'},data.notice):null,
+      data.previous?h('p',{},'ผลล่าสุดที่มี · แสดงเวลาตรวจเดิมของแต่ละรายการ'):null,
+      data.cards.map(card=>h('article',{class:'ugc-idea-card'},h('h3',{},card.name),
+        h('p',{},[card.price,card.shop].filter(Boolean).join(' · ')),h('p',{},[card.label,card.signal].filter(Boolean).join(' · ')),
+        h('p',{},card.reason),h('p',{},'“'+card.hook+'”'),
+        h('div',{class:'row'},h('a',{href:card.url,target:'_blank',rel:'noopener noreferrer'},'Shopee · '+ugcDate(card.checked_at)+(card.cached?' · จากแคช':'')),
+          action('ใช้ไอเดียนี้',()=>use(card,data.source_id))))));
+  }
+  async function check(id){
+    if(!active()||activeSearch!==id)return;
+    try{present(await api(ugcPath+'/ideas/'+id));}
+    catch(e){if(active()){
+      if(e.status===404){sessionStorage.removeItem('ms.ugc.idea-search');activeSearch='';search.disabled=false;put(result,h('p',{},e.message));}
+      else put(result,h('p',{role:'status'},'ตรวจงานค้นหาเดิมไม่ได้ · '+e.message),action('ตรวจงานเดิม',()=>check(id)));
+    }}
+  }
+  const search=h('button',{type:'button',class:'btn primary',on:{click:async()=>{
+    if(search.disabled)return;
+    if(query.value.trim().length<2||!brain.select.value){errors.textContent='กรอกคำค้นและเลือกโมเดลคิดไอเดีย';return;}
+    search.disabled=true;errors.textContent='';clearTimeout(poll);
+    try{const data=await draftPost(ugcPath+'/ideas',{query:query.value.trim(),model:brain.select.value});
+      activeSearch=data.id;sessionStorage.setItem('ms.ugc.idea-search',activeSearch);present(data);}
+    catch(e){if(active()){errors.textContent=e.message;search.disabled=false;}}
+  }}},'หาไอเดียจาก Shopee');
+  const panels={
+    create:h('div',{id:'ugc-create',role:'tabpanel','aria-labelledby':'ugc-tab-create'},h('div',{class:'ugc-composer'},brief,
+      h('div',{class:'ugc-attach'},h('label',{for:'ugc-attach',class:'btn'},'แนบรูปหรือคลิปสินค้า'),file,filename),hint,
+      video.node,h('div',{class:'ugc-submit'},action('เตรียมคลิป',prepare,true))),old),
+    ideas:h('div',{id:'ugc-ideas',role:'tabpanel','aria-labelledby':'ugc-tab-ideas'},h('div',{class:'ugc-composer'},query,brain.node,
+      h('div',{class:'ugc-submit'},search)),result)};
+  function show(next){
+    tab=next;errors.textContent='';
+    for(const t of tabs.children){const on=t.dataset.tab===next;t.setAttribute('aria-selected',String(on));t.tabIndex=on?0:-1;}
+    for(const [key,panel] of Object.entries(panels))panel.hidden=key!==next;
+    if(next==='ideas'&&!brain.initialized&&!brain.loading)void brain.update();
+    if(next==='ideas'&&!activeSearch){const id=sessionStorage.getItem('ms.ugc.idea-search');if(id){activeSearch=id;search.disabled=true;void check(id);}}
+    (next==='ideas'?query:brief).focus({preventScroll:true});
+  }
+  for(const [key,label] of [['create','สร้างคลิป'],['ideas','คิดไอเดีย']]){
+    tabs.append(h('button',{type:'button',role:'tab',id:'ugc-tab-'+key,'aria-controls':'ugc-'+key,'data-tab':key,
+      on:{click:()=>show(key),keydown:e=>{if(['ArrowLeft','ArrowRight'].includes(e.key)){e.preventDefault();show(tab==='create'?'ideas':'create');tabs.querySelector('[aria-selected="true"]').focus();}}}},label));
+  }
+  put(root,h('h1',{},'UGC AI'),tabs,errors,panels.create,panels.ideas);put(mainEl,root);show('create');
+  void video.update();
+  void api(ugcPath+'/drafts').then(({drafts})=>{
+    if(active())old.append(drafts.length?ugcSelect([['','เลือกร่าง'],...drafts.map(d=>[d.id,d.name||d.brief||'ร่างสินค้า'])],'',id=>{if(id)openUgc(id);},'ร่าง UGC'):h('p',{class:'sub'},'ยังไม่มีร่าง'));
+  }).catch(e=>{if(active())old.append(h('p',{},e.message));});
+}
+
 async function createUgc(product={}){
   const result=await draftPost(ugcPath+'/drafts',product);
-  if(result?.id){localStorage.setItem('ms.ugc.draft',result.id);go('ugc');}
+  if(result?.id)openUgc(result.id);
 }
 
 async function renderUgc(config,drafts){
@@ -26,7 +192,7 @@ async function renderUgc(config,drafts){
   const active=()=>S.view==='ugc' && session===ugcSession && root.isConnected;
   const root=h('section',{}), message=h('p',{role:'status'}), work=h('div',{});
   const pick=ugcSelect([['','เลือกร่าง'],...drafts.map(d=>[d.id,(d.name||'ร่างสินค้า')+(d.job_status?' · '+(ugcState[d.job_status]||d.job_status):'')])],
-    localStorage.getItem('ms.ugc.draft')||'',id=>{if(id){localStorage.setItem('ms.ugc.draft',id);go('ugc');}},'ร่าง UGC');
+    ugcDraftId(),id=>{if(id)openUgc(id);},'ร่าง UGC');
   function button(label,action,disabled=false,primary=false){
     const btn=h('button',{type:'button',class:'btn'+(primary?' primary':''),disabled,on:{click:async()=>{
       btn.disabled=true;message.textContent='';
@@ -37,8 +203,8 @@ async function renderUgc(config,drafts){
     return btn;
   }
   put(mainEl,root);
-  root.append(h('h1',{},'UGC AI'),h('div',{class:'row'},button('สร้างร่างสินค้า',()=>createUgc(),false,true),pick),message,work);
-  const id=pick.value;
+  root.append(h('h1',{},'UGC AI'),h('div',{class:'row'},button('กลับหน้าสร้างคลิป',()=>openUgc('')),pick),message,work);
+  const id=ugcDraftId();
   if (!id) {work.append(h('p',{},'สร้างร่างเพื่ออัปโหลดรูปหรือ MP4 ของสินค้า หรือเลือกสินค้าจาก Notion'));return;}
   const path=ugcPath+'/drafts/'+id;
   let row;
@@ -56,7 +222,8 @@ async function renderUgc(config,drafts){
   let imageQuote=upgrade?null:row.image_quote;
   let confirmed=false;
   let models=[];
-  let modelsLoading=false;
+  let modelsLoading=false,modelsLoaded=false,modelNotice='';
+  const opened=new Set();
   const modelPanel=h('div',{class:'ugc-grid'});
   let imported=null;
   let quoteTimer;
@@ -64,7 +231,8 @@ async function renderUgc(config,drafts){
   function set(key,value){
     const target=key.includes('.')?d[key.split('.')[0]]:d;
     target[key.split('.').at(-1)]=value;
-    if(d.reviewer&&['product.name','product.variant'].includes(key)&&d.reviewer.kind!=='clip')d.reviewer.opening_id=null;
+    if(key==='presenter_direction'&&d.scenes[0])d.scenes[0].visual='Hold the product and speak Thai to camera. '+value;
+    if(d.reviewer&&['product.name','product.variant','presenter_direction'].includes(key)&&d.reviewer.kind!=='clip')d.reviewer.opening_id=null;
     invalidate();
   }
   function invalidate(){dirty=true;quote=null;imageQuote=null;confirmed=false;priceView();}
@@ -77,23 +245,28 @@ async function renderUgc(config,drafts){
     if(dirty)throw Error('ร่างถูกแก้ระหว่างบันทึก กรุณาบันทึกอีกครั้ง');
   }
   function field(label,key,value,attrs={},tag='input'){
-    const node=h(tag,attrs,tag==='textarea'?value:null);
+    const node=h(tag,{'aria-label':label,...attrs},tag==='textarea'?value:null);
     if(tag==='input')node.value=value;
     node.addEventListener('input',()=>set(key,attrs.type==='number' ? Number(node.value) : node.value));
     return h('label',{},label,node);
   }
   function reload(next){row={...row,...next};d=structuredClone(row.document);quote=row.quote;imageQuote=row.image_quote;dirty=false;render();}
-  async function modelList(){
-    modelsLoading=true;render();
-    try {models=(await api(ugcPath+'/models')).models;}
+  async function modelList(force=false){
+    if(modelsLoading)return;
+    modelsLoading=true;renderModels();
+    try {
+      const data=await api(ugcPath+(d.reviewer?'/catalog/video'+(force?'?refresh=1':''):'/models'));
+      models=data.models;modelsLoaded=true;
+      modelNotice=[data.stale?'ยังไม่ได้อัปเดต · '+data.error:'',data.checked_at?'อัปเดตสำเร็จล่าสุด '+ugcDate(data.checked_at):''].filter(Boolean).join(' · ');
+    }
     catch(error){if(active())message.textContent=error.message;}
-    finally {modelsLoading=false;if(active())renderModels();}
+    finally {modelsLoading=false;if(active()){renderModels();priceView();}}
   }
   function renderModels(){
     const chosen=models.find(x=>x.id===d.endpoint);
-    const options=models.filter(x=>(!d.reviewer||config.creator_video_models.includes(x.id))&&
+    const options=models.filter(x=>(!d.reviewer||d.scenes.filter(s=>s.mode==='fal').every(s=>x.durations?.some(n=>n>=s.seconds)))&&
       (x.available&&(!d.reviewer||x.native_audio)||x.id===d.endpoint)).map(x=>[x.id,x.name]);
-    if(!chosen&&d.endpoint)options.unshift([d.endpoint,d.endpoint]);
+    if(!chosen&&d.endpoint&&!d.reviewer)options.unshift([d.endpoint,d.endpoint]);
     const resolutions=(chosen?.available?chosen.resolutions:[d.resolution].filter(Boolean))
       .filter(x=>!d.reviewer||['360p','480p','720p','1080p'].includes(x.toLowerCase())).map(x=>[x,x]);
     const rate=chosen?.rates?.find(x=>x.resolution===d.resolution);
@@ -107,23 +280,34 @@ async function renderUgc(config,drafts){
       h('label',{},'ความละเอียดภาพจาก fal',ugcSelect([['','เลือกความละเอียด'],...resolutions],d.resolution,v=>{
         set('resolution',v);renderModels();
       },'ความละเอียดภาพจาก fal')),
-      rate?h('div',{},h('p',{},ugcUSD(rate.unit_usd)+' / '+(/^seconds?$/i.test(rate.unit)?'วินาที':'ครั้ง')+
-        (rate.image_usd?' · '+ugcUSD(rate.image_usd)+' / รูป':'')),
+      rate?h('div',{},h('p',{},ugcRateText(rate)),
         h('a',{class:'sub',href:chosen.source_url,target:'_blank',rel:'noopener'},'ตรวจเรต '+ugcDate(chosen.checked_at))):
         h('p',{class:'sub'},chosen?.reason||(modelsLoading?'กำลังตรวจรุ่นและราคา…':'เลือกโมเดลและความละเอียดเพื่อดูเรต')),
-      button(modelsLoading?'กำลังตรวจ catalog…':'ตรวจโมเดลที่ใช้ได้',modelList,modelsLoading));
+      h('p',{role:'status',class:'sub'},modelNotice),
+      button(modelsLoading?'กำลังอัปเดต…':'อัปเดตโมเดล',()=>modelList(true),modelsLoading));
   }
   function productMedia(){return row.media.filter(x=>!x.role||x.role==='product');}
   function mediaOptions(){
     return [['','เลือกสื่อ'],...productMedia().map((m,i)=>[m.id,(m.kind==='image'?'รูป':'วิดีโอ')+' '+(i+1)])];
   }
   const section=(title,...kids)=>h('section',{class:'ugc-block'},h('h2',{},title),kids);
+  function fold(title,...children){
+    return h('details',{class:'ugc-block','data-fold':title,open:opened.has(title)},h('summary',{},title),children);
+  }
+  function reveal(title){
+    const detail=Array.from(work.querySelectorAll('details[data-fold]')).find(el=>el.dataset.fold===title);
+    if(detail){detail.open=true;detail.scrollIntoView({block:'nearest'});}
+  }
   function priceView(){
     clearTimeout(quoteTimer);
     if(!active())return;
     if(d.reviewer&&!d.reviewer.opening_id&&!row.job_id){
       put(priceBox,h('p',{},'เลือกคนรีวิวและยืนยันภาพเปิดก่อนคิดราคาวิดีโอ'));
       return;
+    }
+    if(d.reviewer && !row.job_id && modelsLoaded && !models.some(m=>m.id===d.endpoint&&m.resolutions?.includes(d.resolution)&&d.scenes.filter(s=>s.mode==='fal').every(s=>m.durations?.some(n=>n>=s.seconds)))){
+      put(priceBox,h('p',{role:'status'},'กรุณาเลือกโมเดลวิดีโอและความละเอียดที่ยังใช้ได้ก่อนตรวจราคา'),
+        button('เลือกโมเดลวิดีโอ',()=>{reveal('บทและฉาก');modelPanel.scrollIntoView();}));return;
     }
     const ack=h('input',{type:'checkbox',on:{change:e=>{confirmed=e.target.checked;estimate.disabled=!confirmed;}}});
     ack.checked=confirmed;
@@ -138,7 +322,7 @@ async function renderUgc(config,drafts){
     if(quote){
       const q=quote;
       const rows=q.fal.map(x=>[q.plan.shots.findIndex(s=>s.id===x.scene_id)+1,x.model_name,x.resolution,x.edited_seconds,
-        x.generation_seconds,x.billing_quantity+' '+(/^seconds?$/i.test(x.billing_unit)?'วิ':x.billing_unit),ugcUSD(x.unit_usd),
+        x.generation_seconds,x.billing_quantity+' '+(/^seconds?$/i.test(x.billing_unit)?'วิ':x.billing_unit),ugcUSD(x.unit_usd)+(x.reference_image_usd?' + '+ugcUSD(x.reference_image_usd)+'/รูป':''),
         q.reused.includes(x.slot)?'ใช้ไฟล์เดิม':ugcUSD(x.estimated_usd)]);
       const table=h('table',{class:'ugc-price'},h('thead',{},h('tr',{},['ฉาก','โมเดล','ความละเอียด','ในคลิป (วิ)','ส่ง fal (วิ)','หน่วยประเมิน','USD/หน่วย','ฉาก (USD)'].map(x=>h('th',{scope:'col'},x)))),
         h('tbody',{},rows.map(line=>h('tr',{},line.map(cell=>h('td',{},cell))))));
@@ -286,7 +470,7 @@ async function renderUgc(config,drafts){
       await save();
       reload(await api(path));
     }
-    return section('คนรีวิวและภาพเปิด',h('fieldset',{disabled:planning},
+    return fold('คนรีวิวและภาพเปิด',h('fieldset',{disabled:planning},
       h('label',{},'คนรีวิว',ugcSelect([['','เลือกคนรีวิว'],['clip','คลิปคนจริงถือสินค้า'],['portrait','อัปโหลดรูปคนรีวิว'],['ai','สร้างพิธีกร AI']],r.kind,
         value=>{r.source_id=null;change('kind',value);},'คนรีวิว')),
       product.length>1?h('label',{},'รูปสินค้าสำหรับเฟรมเปิด',ugcSelect([['','เลือกรูป'],...product.map((m,i)=>[m.id,'รูปสินค้า '+(i+1)])],
@@ -330,7 +514,7 @@ async function renderUgc(config,drafts){
     d.hook=angle.hook;
     const r=d.reviewer;
     d.scenes=[
-      {id:'shot_01',seconds:3,narration:angle.opening,visual:'Hold the product up beside the face, make eye contact and speak to the phone camera.',camera:'Eye-level medium close-up',mode:'fal',media_id:r.opening_id},
+      {id:'shot_01',seconds:3,narration:angle.opening,visual:'Hold the product up beside the face, make eye contact and speak to the phone camera. '+(d.presenter_direction||''),camera:'Eye-level medium close-up',mode:'fal',media_id:r.opening_id},
       {id:'shot_02',seconds:d.duration-7,narration:angle.middle,visual:'Show the real product details that help a buyer decide.',camera:'Steady close-up',mode:'original',media_id:r.product_media_id},
       {id:'shot_03',seconds:4,narration:angle.close,visual:'The same reviewer shows the product and gives the short call to action.',camera:'Natural medium close-up',mode:'fal',media_id:r.opening_id},
     ].map(s=>({...s,subtitle:''}));
@@ -422,15 +606,19 @@ async function renderUgc(config,drafts){
     clearTimeout(pollTimer);
     if(!active())return;
     if(row.job_id){void statusView();return;}
+    opened.clear();
+    for(const el of work.querySelectorAll('details[data-fold][open]'))opened.add(el.dataset.fold);
     const planning=['queued','submitting','accepted'].includes(row.planning?.state);
     const history=row.history?.filter(x=>x.status==='READY_TO_POST')||[];
     const file=h('input',{type:'file',accept:'image/jpeg,image/png,image/webp,video/mp4'});
     const upload=button('อัปโหลดสื่อ',async()=>{
       const added=await uploadMedia(file,'product');
-      if(d.reviewer&&added.kind==='image'&&!d.reviewer.product_media_id)d.reviewer.product_media_id=added.id;
+      if(d.reviewer){
+        if(added.kind==='image'&&!d.reviewer.product_media_id)d.reviewer.product_media_id=added.id;
+        for(const shot of d.scenes.slice(1,-1))if(!shot.media_id)shot.media_id=added.id;
+      }
       if(!d.reviewer)for(const shot of d.scenes)if(!shot.media_id)shot.media_id=added.id;
-      invalidate();
-      render();
+      invalidate();await save();render();
     },!config.storage);
     const product=h('fieldset',{disabled:planning},h('div',{class:'ugc-grid'},
       field('ชื่อสินค้า','product.name',d.product.name,{maxlength:140}),
@@ -477,11 +665,22 @@ async function renderUgc(config,drafts){
           button('ปิด',()=>{preview.close();preview.remove();}));
         root.append(preview);preview.showModal();
       }))):null,
-      section('สินค้า',product),reviewerPanel(planning),section('Hook และ storyboard',plan),
-      section('ข้อความตอนตัดต่อ',h('fieldset',{disabled:planning},h('div',{class:'ugc-grid'},
+      section('สรุปร่าง',planning?h('p',{role:'status'},'กำลังเขียน Hook และวางฉาก…'):null,
+        row.planning?.error?h('p',{role:'alert'},row.planning.error):null,
+        h('p',{},d.product.name||d.brief||'ร่างสินค้า'),h('p',{class:'sub'},d.duration+' วินาที · 9:16 · '+(d.endpoint||'ยังไม่ได้เลือกโมเดลวิดีโอ')),
+        d.reviewer && !planning?h('div',{},
+          field('คนรีวิวและท่าเปิดคลิป','presenter_direction',d.presenter_direction||'',{maxlength:400,rows:2},'textarea'),
+          d.hook?field('Hook ของคลิป','hook',d.hook,{maxlength:85}):null,
+          d.scenes.length?h('label',{},'บทพูดเปิด',h('textarea',{'aria-label':'บทพูดเปิด',rows:2,maxlength:160,on:{input:e=>{d.scenes[0].narration=e.target.value;invalidate();}}},d.scenes[0].narration)):null,
+          d.scenes.length?h('ol',{start:2},d.scenes.slice(1).map(s=>h('li',{},s.narration))):null,
+          button('บันทึกร่าง',async()=>{await save();message.textContent='บันทึกแล้ว';})):null,
+        !planning&&d.reviewer&&!d.reviewer.product_media_id?button('เพิ่มรูปสินค้าจริง',()=>{reveal('รายละเอียดสินค้า');work.querySelector('input[type=file]')?.focus();}):
+        !planning&&d.reviewer&&!d.reviewer.opening_id?button('ตรวจภาพคนถือสินค้า',()=>{reveal('คนรีวิวและภาพเปิด');}):null),
+      fold('รายละเอียดสินค้า',product),reviewerPanel(planning),fold('บทและฉาก',plan),
+      fold('ข้อความตอนตัดต่อ',h('fieldset',{disabled:planning},h('div',{class:'ugc-grid'},
         field('แคปชันสำหรับโพสต์','caption',d.caption,{rows:2,maxlength:500},'textarea'),
         field('ข้อความปุ่มสั่งซื้อ','cta',d.cta,{maxlength:40}),toggled('show_price','แสดงราคา'),toggled('show_promo','แสดงโปรโมชัน')),
-        button('บันทึกร่าง',async()=>{await save();message.textContent='บันทึกแล้ว';}))),
+        button('บันทึกข้อความตัดต่อ',async()=>{await save();message.textContent='บันทึกแล้ว';}))),
       section('ราคาก่อนผลิต',planning?null:priceBox));
     const imagePending=row.image_job&&!['READY_TO_POST','FAILED','CANCELLED'].includes(row.image_job.status);
     if (planning||imagePending) pollTimer=setTimeout(async()=>{
@@ -499,6 +698,6 @@ async function renderUgc(config,drafts){
     },2400);
     if(!planning)priceView();
   }
-  if(row.job_id)render();
-  else void modelList();
+  render();
+  if(!row.job_id)void modelList();
 }

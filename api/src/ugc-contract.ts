@@ -37,7 +37,7 @@ export const creatorVideoDefault = 'xai/grok-imagine-video/v1.5/image-to-video';
 export const creatorVideoModels = [creatorVideoDefault,'alibaba/wan-3.0/image-to-video','google/gemini-omni-flash/v1.1/image-to-video'];
 
 export const Document = z.object({
-  product: Product, brief: short(1600), model: short(100).min(1),
+  product: Product, presenter_direction:short(400).optional(), brief: short(1600), model: short(100).min(1),
   angles:z.array(Angle).max(3).optional(),
   reasoning: z.enum(['low','medium','high']), endpoint: short(230), resolution: short(24),
   duration: z.number().int().min(8).max(30), hooks: z.array(Hook).max(3), hook: z.union([z.literal(''), Hook]),
@@ -57,6 +57,15 @@ export const CreatorSuggestion = z.object({
   angles:z.array(Angle).length(3),
   caption:short(500),
 }).strict();
+export const BriefSuggestion=CreatorSuggestion.extend({product_name:short(140),reviewer_kind:z.enum(['ai','clip','portrait']),presenter_direction:short(400).min(4)});
+export function creatorScenes(d:DraftDocument,angle:z.infer<typeof Angle>) {
+  const r=d.reviewer!;
+  return [
+    {id:'shot_01',seconds:3,narration:angle.opening,visual:'Hold the product beside the face, look into the camera and speak Thai. '+(d.presenter_direction??''),camera:'Eye-level medium close-up',mode:'fal' as const,media_id:r.opening_id},
+    {id:'shot_02',seconds:d.duration-7,narration:angle.middle,visual:'Show the real product details that help a buyer decide.',camera:'Steady close-up',mode:'original' as const,media_id:r.product_media_id},
+    {id:'shot_03',seconds:4,narration:angle.close,visual:'The same presenter holds the product and speaks the CTA to camera.',camera:'Medium close-up',mode:'fal' as const,media_id:r.opening_id},
+  ].map(s=>({...s,subtitle:''}));
+}
 export const falEndpoints = [H3_MAX_IMAGE,'minimax/h3/image-to-video',...creatorVideoModels];
 export const videoProvider = { model:getVideoModel, build:buildVideoPayload, price:estimateVideoPayload };
 export type Media = {id:string;kind:'image'|'video';storage_key:string;content_type:string;
@@ -66,7 +75,7 @@ export function speakerShot(d:DraftDocument, i:number) {return !!d.reviewer&&(i=
 export function reviewerBasis(d:DraftDocument) {
   const r=d.reviewer!;
   return digest({kind:r.kind,product:r.product_media_id,source:r.source_id,frame:r.frame_id,product_name:d.product.name,
-    variant:d.product.variant,image_endpoint:r.image_endpoint});
+    variant:d.product.variant,image_endpoint:r.image_endpoint,...(d.presenter_direction?{direction:d.presenter_direction}:{})});
 }
 export function reviewerSources(d:DraftDocument, media:Media[]) {
   const r=d.reviewer;
@@ -119,7 +128,7 @@ export function validateDocument(d: DraftDocument, media: Media[], evidence: {ur
   if(d.reviewer) {
     const opening=approvedOpening(d,media);
     if(!['360p','480p','720p','1080p'].includes(d.resolution.toLowerCase()))throw Error('เลือกความละเอียดแนวตั้งที่ Studio ตัดต่อได้');
-    if(!creatorVideoModels.includes(d.endpoint))throw Error('เลือกโมเดลวิดีโอที่รองรับเสียงพูดพร้อมภาพ');
+    if(!d.endpoint)throw Error('เลือกโมเดลวิดีโอที่รองรับเสียงพูดพร้อมภาพ');
     if(d.duration<12||d.duration>22||d.scenes.length<3 || d.scenes[0].seconds!==3 ||
       [d.scenes[0],d.scenes.at(-1)!].some(s=>s.mode!=='fal'||s.media_id!==opening.id))
       throw Error('ฉากเปิด 3 วิและฉากปิดต้องใช้เฟรมคนถือสินค้าที่อนุมัติ');
@@ -155,7 +164,8 @@ export async function videoItem(model: FalVideoModel, shot: Shot, resolution: st
     slot:'fal:'+shot.id, scene_id:shot.id, endpoint_id:model.endpoint_id, model_name:model.name, resolution,
     schema_hash:model.schema_hash, payload, media_id:shot.media_id, generation_seconds:seconds,
     edited_seconds:shot.seconds, billed_seconds:/^seconds?$/i.test(rate.unit)?rate.quantity:null,
-    billing_quantity:rate.quantity, billing_unit:rate.unit, unit_usd:rate.usd/rate.quantity,
+    billing_quantity:rate.quantity, billing_unit:rate.unit, unit_usd:model.billing?.rates[resolution.toLowerCase()]??model.billing?.rates['*']??rate.usd/rate.quantity,
+    reference_image_usd:model.billing?.reference_image_usd??0,
     account_unit_usd:model.price?.unit_price, estimated_usd:rate.usd, native_audio:speaker, pricing_checked_at:model.checked_at,
     pricing_source:'https://fal.ai/models/'+model.endpoint_id,
   };
