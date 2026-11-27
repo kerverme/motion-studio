@@ -1,5 +1,6 @@
 """Bundle trusted fonts and clean up the legacy scene text helper without an LLM call."""
 import base64, re
+from html.parser import HTMLParser
 from pathlib import Path
 from engine.core import FD
 
@@ -7,6 +8,45 @@ VERSION = 'all-text-kanit-v2'
 LEGACY_VERSION = 'all-text-kanit-v1'
 REPAIR_VERSIONS = {LEGACY_VERSION, VERSION}
 MARKER = 'motion-trusted-typography'
+
+
+class _SceneHead(HTMLParser):
+    """Locate the start of head contents without reserializing the scene's code."""
+    position = None
+
+    def handle_starttag(self, tag, attrs):
+        if self.position is not None or tag == 'html':
+            return
+        line, column = self.getpos()
+        if tag == 'head':
+            column += len(self.get_starttag_text())
+        # With an omitted head, insert before the first element. The injected
+        # meta opens the browser's implicit head, preserving existing head children.
+        self.position = line, column
+
+    def handle_endtag(self, tag):
+        if self.position is None and tag in ('head', 'body', 'html', 'br'):
+            self.position = self.getpos()
+
+    def handle_data(self, data):
+        if self.position is None:
+            if self.getpos() == (1, 0):
+                data = data.removeprefix('\ufeff')
+            if data.strip(' \t\n\r\f'):
+                raise ValueError('Expected an HTML scene document before its drawing code')
+
+    @classmethod
+    def offset(cls, source):
+        header = cls()
+        header.feed(source)
+        header.close()
+        if header.position is None:
+            raise ValueError('Scene source contains no HTML elements')
+        line, column = header.position
+        line_start = 0
+        for _ in range(1, line):
+            line_start = source.index('\n', line_start) + 1
+        return line_start + column
 
 
 def bind_motion_text_imports(html):
@@ -32,15 +72,14 @@ def prepare_source(html, version=LEGACY_VERSION):
     if MARKER in html:
         raise ValueError('Source already contains a typography runtime; use its original source')
     html = bind_motion_text_imports(html)
+    offset = _SceneHead.offset(html)
     js = Path(__file__).with_suffix('.js').read_text().replace('__TEXT_VERSION__', version)
     for weight in (700, 800):
         js = js.replace(f'__KANIT_{weight}__', base64.b64encode((Path(FD)/f'Kanit-{weight}.ttf').read_bytes()).decode())
     licence = (Path(FD)/'OFL-Kanit.txt').read_text().replace('--', '—')
     css = '*{font-family:"Motion Kanit",sans-serif!important;font-synthesis:none!important;text-shadow:none!important}canvas{image-rendering:auto!important}'
     payload = f'<meta charset="utf-8"><!-- Bundled Kanit font licence:\n{licence}\n--><style>{css}</style><script id="{MARKER}">{js}</script>'
-    head = re.search(r'<head\b[^>]*>', html, re.I)
-    if not head: raise ValueError('Scene must have an HTML head for trusted typography')
-    result = html[:head.end()] + payload + html[head.end():]
+    result = html[:offset] + payload + html[offset:]
     if len(result) > 600000 or len(result.encode()) > 750000:
         raise ValueError('Scene plus trusted fonts exceeds renderer input limit')
     return result

@@ -70,6 +70,7 @@ class CodingTests(unittest.TestCase):
                 generate_scene(ctx,scene,2)
                 prompt=code.call_args.args[2]
                 self.assertGreater(prompt.index('FINAL DELIVERY REQUIREMENTS'),prompt.index('1000x750 monochrome'))
+                self.assertIn('<head>...</head><body>...</body>', prompt)
                 self.assertIn('drawMintRobot',prompt)
                 self.assertIn('#75CDB5',prompt)
                 self.assertEqual(captured[0]['delivery']['width']/captured[0]['delivery']['height'],9/16)

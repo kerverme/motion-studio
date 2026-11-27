@@ -14,6 +14,30 @@ function title(){text('หัวเรื่อง',545,433,92,O,I,874);text('�
 
 
 class TypographyTests(unittest.TestCase):
+    def test_runtime_precedes_scene_code_with_explicit_or_implicit_head(self):
+        drawing = '<canvas></canvas><script>const {MotionText}=window;</script>'
+        # The opening scene in the reported job went straight from html to meta.
+        cases = [
+            ("<!doctype html>\n<html lang='th'>", "<meta charset='utf-8'><style>canvas{display:block}</style>" + drawing),
+            ('\ufeff<!doctype html>\r\n<!-- example: <head> -->\r\n<HTML lang="th">\r\n', '<BODY>' + drawing),
+            ('<!doctype html>\n', drawing),
+            ('', '<title>Example &lt;head&gt;</title>' + drawing),
+            ('<html>', '</head><body>' + drawing),
+            ('<!doctype html><html>\n<!-- <head> -->\n<HeAd\n data-note="a > b">', '<title>ไทย</title></head><body>' + drawing),
+            ('', '<script>const example="<head>";</script>' + drawing),
+        ]
+        for before, after in cases:
+            with self.subTest(before=before, after=after[:35]):
+                html = typography.prepare_source(before + after, typography.VERSION)
+                self.assertTrue(html.startswith(before + '<meta charset="utf-8"><!-- Bundled Kanit'))
+                self.assertTrue(html.endswith('</script>' + after))
+                self.assertEqual(html.count(f'id="{typography.MARKER}"'), 1)
+
+    def test_non_html_source_cannot_become_a_scene_by_adding_the_runtime(self):
+        for source in ['', '<!doctype html><!-- <head> -->', 'const s = "<head>";', '```html\n<head></head>\n```']:
+            with self.subTest(source=source), self.assertRaisesRegex(ValueError, 'HTML'):
+                typography.prepare_source(source)
+
     def test_global_font_helper_import_is_bound_without_changing_real_library_imports(self):
         source='''<html><head></head><body><script type="module">
 import { MotionText } from '/core/lib.js';
@@ -57,7 +81,7 @@ window.render = () => MotionText.draw(ctx, 'หัวเรื่อง', 540, 4
 
     def test_source_repair_checkpoints_each_scene_without_model_or_audio_requests(self):
         with tempfile.TemporaryDirectory() as d:
-            folder=Path(d);source=folder/'original.html';source.write_text(LEGACY)
+            folder=Path(d);source=folder/'original.html';source.write_text(LEGACY.replace('<head></head>', ''))
             original={'seg':'one','identity':'original','source_key':str(source),'video_key':'old-video','provenance':{'model':'selected-model'}}
             stages={'TYPOGRAPHY_REPAIR':{'version':typography.VERSION,'previous':{'LEMO_RENDER':{'scenes':[original]}}},'GENERATING_AUDIO':{'narration_key':'saved'},'BUILDING_TIMELINE':{'timeline_key':'saved'}}
             job={'id':'job','stage_results':stages};saved={}

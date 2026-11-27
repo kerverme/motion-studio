@@ -26,6 +26,51 @@ class LedgerTests(unittest.TestCase):
         self.db.q('INSERT INTO creative_approvals(draft_id,revision,quote,allocations,max_usd,unknown_ack,job_id) VALUES(%s,%s,\'{}\',%s::jsonb,1,true,%s)',(draft['id'],str(uuid.uuid4()),json.dumps({'narration':1,'coding':1}),self.job['id']))
         self.ctx=SimpleNamespace(db=self.db,job=self.job)
     def tearDown(self):self.db.conn.close()
+
+    def test_resumed_render_uses_saved_source_with_implicit_head(self):
+        from lemo_worker import coding, render, typography
+        from motion_worker import pipeline
+        from motion_worker.storage import LocalStorage
+
+        scene = {'seg': 'open'}
+        allocation = {'coding': .5, 'compute': .5}
+        creative = {'model': 'fixture', 'allocations': allocation, 'typography_version': typography.VERSION,
+                    'selection': {'selected': {'id': 'dataviz'}, 'plan': {'identity': {}, 'scenes': [scene]}},
+                    'scene_nonces': {'open': str(self.job['id'])}}
+        self.job['package'] = {'creative': creative, 'script': [{'id': 'open', 'text': 'ฉากเปิด'}]}
+        self.db.q('UPDATE jobs SET package=%s::jsonb WHERE id=%s', (json.dumps(self.job['package']), self.job['id']))
+        self.db.q('UPDATE creative_approvals SET allocations=%s::jsonb WHERE job_id=%s', (json.dumps(allocation), self.job['id']))
+        self.db.save_stage(self.job, 'BUILDING_TIMELINE', {'timeline_key': 'timeline.json'})
+        source = "<!doctype html><html lang='th'><meta charset='utf-8'><canvas></canvas><script>const {MotionText}=window;</script>"
+
+        def executor(spec, location):
+            self.assertIn('new FontFace', spec['html'])
+            self.assertLess(spec['html'].index(typography.MARKER), spec['html'].index('<canvas>'))
+            path = Path(location)
+            path.mkdir(parents=True)
+            for name in ('video.mp4', 'preview-0.png', 'preview-1.png', 'preview-2.png'):
+                (path / name).write_bytes(b'fixture')
+            (path / 'metadata.json').write_text('{}')
+
+        with tempfile.TemporaryDirectory() as folder, patch.object(coding, 'style_spec', return_value='fixture'):
+            store = LocalStorage(folder + '/store')
+            store.put_bytes('timeline.json', b'{"timeline":[{"s":0}],"end":1}')
+            with patch.object(config, 'WORKDIR', folder + '/before'):
+                original = pipeline.Ctx(self.db, store, self.job)
+                with patch.object(coding, 'response', return_value=({'html': source, 'description': 'fixture'}, {}, 'saved-response')):
+                    saved = coding.generate_scene(original, scene, 1)
+            # A new worker has only durable artifacts and the original provider receipt.
+            with patch.object(config, 'WORKDIR', folder + '/after'), patch.object(coding, 'response') as provider, \
+                 patch.object(render, 'compose_video', return_value={'final_key': 'fixture.mp4'}):
+                job = self.db.one('SELECT * FROM jobs WHERE id=%s', (self.job['id'],))
+                resumed = pipeline.Ctx(self.db, store, job)
+                result = render.stage_render(resumed, render=executor)
+                self.assertEqual(result['final_key'], 'fixture.mp4')
+                self.assertEqual(resumed.r['LEMO_RENDER']['scenes'][0]['source_key'], saved['source_key'])
+                provider.assert_not_called()
+                count = self.db.one("SELECT count(*) AS n FROM creative_calls WHERE job_id=%s AND category='coding'", (job['id'],))
+                self.assertEqual(count['n'], 1)
+
     def test_busy_then_ready_reuses_audio_and_finishes_same_job(self):
         from lemo_worker import main
         self.db.q('CREATE TEMP TABLE jobs (LIKE public.jobs INCLUDING DEFAULTS)')
