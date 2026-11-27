@@ -58,11 +58,11 @@ export const CreatorSuggestion = z.object({
   caption:short(500),
 }).strict();
 export const BriefSuggestion=CreatorSuggestion.extend({product_name:short(140),reviewer_kind:z.enum(['ai','clip','portrait']),presenter_direction:short(400).min(4)});
-export function creatorScenes(d:DraftDocument,angle:z.infer<typeof Angle>) {
+export function creatorScenes(d:DraftDocument,angle:z.infer<typeof Angle>,detailMedia:string|null) {
   const r=d.reviewer!;
   return [
     {id:'shot_01',seconds:3,narration:angle.opening,visual:'Hold the product beside the face, look into the camera and speak Thai. '+(d.presenter_direction??''),camera:'Eye-level medium close-up',mode:'fal' as const,media_id:r.opening_id},
-    {id:'shot_02',seconds:d.duration-7,narration:angle.middle,visual:'Show the real product details that help a buyer decide.',camera:'Steady close-up',mode:'original' as const,media_id:r.product_media_id},
+    {id:'shot_02',seconds:d.duration-7,narration:angle.middle,visual:'Show the real product details that help a buyer decide.',camera:'Steady close-up',mode:'original' as const,media_id:detailMedia},
     {id:'shot_03',seconds:4,narration:angle.close,visual:'The same presenter holds the product and speaks the CTA to camera.',camera:'Medium close-up',mode:'fal' as const,media_id:r.opening_id},
   ].map(s=>({...s,subtitle:''}));
 }

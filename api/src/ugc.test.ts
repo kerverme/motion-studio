@@ -347,6 +347,20 @@ test('product through confirmed quote, real queue/render/export, and no duplicat
     assert.equal(intakePosts,1);assert.equal(await jobs(),initialJobs);
     assert.equal((await request('/prepare','POST',{...intake,brief:'อีกบรีฟ'},key)).status,422);
     assert.equal((await request('/drafts/'+key+'/quote','POST',{revision:prepared.revision,product_confirmed:true})).status,409);
+    const videoKey=randomUUID(), form=new FormData();
+    form.set('input',JSON.stringify(intake));
+    form.set('media',new Blob([Buffer.from('0000ftypisom00000000')],{type:'video/mp4'}),'product.mp4');
+    await ok(await app.request('/app/api/ugc/prepare',{method:'POST',headers:{'x-test':'owner','idempotency-key':videoKey},body:form}));
+    for(let i=0;i<30;i++){
+      await appUgc.pump();
+      if((await ok(await request('/drafts/'+videoKey))).document.scenes.length)break;
+      await new Promise(resolve=>setTimeout(resolve,50));
+    }
+    const footageDraft=await ok(await request('/drafts/'+videoKey));
+    assert.equal(footageDraft.document.scenes[1].media_id,videoKey);
+    assert.equal(footageDraft.document.reviewer.product_media_id,null);
+    assert.equal(footageDraft.document.scenes[0].media_id,null);
+    assert.equal(await jobs(),initialJobs);
     const before=lookups;
     const both=await Promise.all([request('/catalog/video?refresh=1'),request('/catalog/video?refresh=1')]);
     const snapshots=await Promise.all(both.map(ok));

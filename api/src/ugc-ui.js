@@ -287,6 +287,15 @@ async function renderUgc(config,drafts){
       button(modelsLoading?'กำลังอัปเดต…':'อัปเดตโมเดล',()=>modelList(true),modelsLoading));
   }
   function productMedia(){return row.media.filter(x=>!x.role||x.role==='product');}
+  function attachProduct(media,replace){
+    if(d.reviewer && media.kind==='image' && (replace||!d.reviewer.product_media_id)){
+      d.reviewer.product_media_id=media.id;
+      d.reviewer.opening_id=null;
+    }
+    for(const shot of (d.reviewer?d.scenes.slice(1,-1):d.scenes)){
+      if(!shot.media_id)shot.media_id=media.id;
+    }
+  }
   function mediaOptions(){
     return [['','เลือกสื่อ'],...productMedia().map((m,i)=>[m.id,(m.kind==='image'?'รูป':'วิดีโอ')+' '+(i+1)])];
   }
@@ -415,8 +424,7 @@ async function renderUgc(config,drafts){
         d.product=imported.product;
         if(imported.media){
           row.media.push(imported.media);
-          for(const shot of d.scenes) if(!shot.media_id&&!d.reviewer)shot.media_id=imported.media.id;
-          if(d.reviewer&&imported.media.kind==='image')Object.assign(d.reviewer,{product_media_id:imported.media.id,opening_id:null});
+          attachProduct(imported.media,true);
         }
         invalidate();await save();render();
         message.textContent=imported.warning||'นำเข้าสินค้าแล้ว ตรวจราคาและ URL ก่อนผลิต';
@@ -515,7 +523,7 @@ async function renderUgc(config,drafts){
     const r=d.reviewer;
     d.scenes=[
       {id:'shot_01',seconds:3,narration:angle.opening,visual:'Hold the product up beside the face, make eye contact and speak to the phone camera. '+(d.presenter_direction||''),camera:'Eye-level medium close-up',mode:'fal',media_id:r.opening_id},
-      {id:'shot_02',seconds:d.duration-7,narration:angle.middle,visual:'Show the real product details that help a buyer decide.',camera:'Steady close-up',mode:'original',media_id:r.product_media_id},
+      {id:'shot_02',seconds:d.duration-7,narration:angle.middle,visual:'Show the real product details that help a buyer decide.',camera:'Steady close-up',mode:'original',media_id:d.scenes[1]?.media_id||r.product_media_id||productMedia()[0]?.id||null},
       {id:'shot_03',seconds:4,narration:angle.close,visual:'The same reviewer shows the product and gives the short call to action.',camera:'Natural medium close-up',mode:'fal',media_id:r.opening_id},
     ].map(s=>({...s,subtitle:''}));
     invalidate();render();
@@ -613,11 +621,7 @@ async function renderUgc(config,drafts){
     const file=h('input',{type:'file',accept:'image/jpeg,image/png,image/webp,video/mp4'});
     const upload=button('อัปโหลดสื่อ',async()=>{
       const added=await uploadMedia(file,'product');
-      if(d.reviewer){
-        if(added.kind==='image'&&!d.reviewer.product_media_id)d.reviewer.product_media_id=added.id;
-        for(const shot of d.scenes.slice(1,-1))if(!shot.media_id)shot.media_id=added.id;
-      }
-      if(!d.reviewer)for(const shot of d.scenes)if(!shot.media_id)shot.media_id=added.id;
+      attachProduct(added,false);
       invalidate();await save();render();
     },!config.storage);
     const product=h('fieldset',{disabled:planning},h('div',{class:'ugc-grid'},

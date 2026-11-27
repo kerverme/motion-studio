@@ -437,9 +437,10 @@ Hook introduces the exact product, a problem, or a confirmed benefit. Sum scene 
           validateClaims(d,[proposal.caption,...proposal.angles.flatMap(a=>Object.values(a))]);
           if(proposal.angles.some(a=>[...a.opening].length>36||[...a.close].length>48))
             throw Error('บทพูดเปิดหรือปิดยาวเกินเวลา ลองปรับบรีฟให้สั้นลง');
+          const detail=row.planning.intake?(d.reviewer.product_media_id??(await mediaFor(row.id)).find(isProduct)?.id??null):null;
           await pool.query(`UPDATE ugc_drafts SET document=$2,planning=$3,revision=gen_random_uuid(),quote=NULL,image_quote=NULL,updated_at=now()
             WHERE id=$1 AND revision=$4 AND planning->>'nonce'=$5`,
-            [row.id,json({...d,...proposal,hooks,hook:row.planning.intake?(d.hook||hooks[0]):'',scenes:row.planning.intake?creatorScenes(d,proposal.angles[0]):[]}),json({state:'done',nonce:row.planning.nonce}),row.revision,row.planning.nonce]);
+            [row.id,json({...d,...proposal,hooks,hook:row.planning.intake?(d.hook||hooks[0]):'',scenes:row.planning.intake?creatorScenes(d,proposal.angles[0],detail):[]}),json({state:'done',nonce:row.planning.nonce}),row.revision,row.planning.nonce]);
           return;
         }
         const proposal=Suggestion.parse(JSON.parse(prose));
