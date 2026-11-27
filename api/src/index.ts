@@ -6,7 +6,7 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypt
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { registerUi } from './ui.js';
 import * as buffer from './buffer.js';
@@ -20,6 +20,7 @@ import { registerVideoArena } from './video-arena.js';
 import { registerSceneRevisions } from './video-derivative.js';
 import { registerVideoBenchmarks } from './video-benchmarks.js';
 import { registerProductTrends } from './product-trends.js';
+import { registerUgc } from './ugc.js';
 import { registerReverse } from './reverse.js';
 import { registerCommunity } from './community.js';
 import { retryCreativeJob } from './creative-retry.js';
@@ -343,6 +344,7 @@ async function retryJob(id: string): Promise<{ ok: boolean; status?: string; err
   if (j.removed_at) return {ok:false,error:'งานถูกลบแล้ว'};
   if (!['FAILED', 'CANCELLED'].includes(j.status)) return { ok: false, error: `job is ${j.status}` };
   if(j.package?.creative)return retryCreativeJob(pool,id);
+  if (j.package?.ugc) return {ok:false,error:'เปิด UGC AI เพื่อยืนยันราคาซ่อมก่อนลองใหม่'};
   if (j.kind === 'text_video') return {ok:false,error:'เปิด Text to Video แล้วตรวจราคาซ่อมเฉพาะส่วนและยืนยันใหม่ก่อนลองต่อ'};
   const resume = j.stage || 'GENERATING_AUDIO';
   await pool.query('UPDATE jobs SET status=$2, error=NULL, attempts=0, locked_by=NULL, locked_until=NULL, updated_at=now() WHERE id=$1', [j.id, resume]);
@@ -438,6 +440,12 @@ const videoArena = registerVideoArena(app,pool,ui.requireUi);
 registerVideoBenchmarks(app,pool,ui.requireUi);
 registerSceneRevisions(app,pool,ui.requireUi);
 registerProductTrends(app, pool, { guard: ui.requireUi });
+const ugc = registerUgc(app,pool,{guard:ui.requireUi,workerGuard:requireInternal,storage:s3 && env.BUCKET ? {
+  put:async(key,bytes,type)=>{await s3.send(new PutObjectCommand({Bucket:env.BUCKET,Key:key,Body:bytes,ContentType:type}));},
+  sign:(key,download)=>getSignedUrl(s3,new GetObjectCommand({Bucket:env.BUCKET,Key:key,
+    ...(download?{ResponseContentDisposition:'attachment; filename="ugc.mp4"'}:{})}),{expiresIn:3600}),
+}:null});
+ugc.start();
 const studio = registerStudio(app, pool, { guard: ui.requireUi, signAsset:async key=>s3&&env.BUCKET?getSignedUrl(s3,new GetObjectCommand({Bucket:env.BUCKET,Key:key}),{expiresIn:3600}):null, createJob, estimateCredits: (p: unknown) => estimateCredits(Package.parse(p)), researchFreshness: (p: unknown) => researchFreshness(Package.parse(p)), validate: (p: unknown) => {
   const r = Package.safeParse(p);
   return r.success ? [] : r.error.issues.slice(0, 10).map((i) => `${i.path.join('.')}: ${i.message}`);

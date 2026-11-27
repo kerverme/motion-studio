@@ -56,6 +56,9 @@ def handle(db, store, job):
     if kind == 'reverse':
         return reverse.run(ctx)
     if kind == 'text_video':
+        if ctx.pkg.get('ugc'):
+            from . import ugc
+            return ugc.run(ctx)
         return text_video.run(ctx)
     if kind == 'episode':
         return pipeline.run_episode(ctx, config.WORKER_ID)

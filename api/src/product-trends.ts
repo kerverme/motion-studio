@@ -3,7 +3,7 @@ import type { Context, Hono, Next } from 'hono';
 import type pg from 'pg';
 import { z } from 'zod';
 import { BudgetedFirecrawl, PgResearchBudget } from './firecrawl-budget.js';
-import { readModels } from './openai-models.js';
+import { readModels, type ModelSource } from './openai-models.js';
 import { openaiResponse } from './openai-response.js';
 import { extractWebEvidence, sourceKey } from './source-evidence.js';
 
@@ -54,7 +54,7 @@ export function supportedTrends(response: any, sources: Source[] | null, today: 
 }
 
 export function registerProductTrends(app: Hono, pool: pg.Pool, options: {
-  guard: (c: Context, next: Next) => Promise<any>; models?: () => Promise<string[]>;
+  guard: (c: Context, next: Next) => Promise<any>; models?: ModelSource;
 }) {
   const env = process.env;
   const path = '/app/api/product-trends';

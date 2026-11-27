@@ -236,7 +236,7 @@ function planLogic(scene:Shot,bible:Bible,edited:number,previous?:Direction){
 }
 
 function punctuate(s:string){return /[.!?…]$/.test(s.trim())?s.trim():s.trim()+'.';}
-function formatPrompt(input:DirectionInput,selected:Ranked,knowledge:Knowledge,logic:ReturnType<typeof planLogic>){
+function formatPrompt(input:DirectionInput,selected:{model:ResearchModel & {audio:boolean|null};seconds:number;history:{pattern:string|null}},knowledge:Knowledge,logic:ReturnType<typeof planLogic>){
   const d=input.scene.direction,m=selected.model,b=input.bible;
   const relevant=retrieveKnowledge(knowledge,[d.scene_type,d.camera,d.lighting,d.audio||'',d.actions.map(a=>a.action).join(' '),
     input.index?'image reference motion':'subject opening prompt',d.subjects.length?'subject consistency':'scenery',input.requires_native_audio?'audio':''].join(' '));
@@ -328,6 +328,22 @@ function inspectPrompt(input:DirectionInput,selected:Ranked,prompt:string,logic:
     if(anchors.length>=3&&!anchors.some(w=>promptWords.has(w)))issues.push('prompt ที่แก้ไม่มีรายละเอียดร่วมกับภาพหรือการกระทำที่วางไว้ กรุณาตรวจเนื้อหา');
   }
   return [...new Set(issues)];
+}
+
+export function compileProductMotion(model:ResearchModel & {audio:boolean|null}, visual:string, camera:string, edited:number, seconds:number) {
+  const direction: Direction = {scene_type:'product',duration_seconds:edited,purpose:'Show the product in use',
+    subjects:[],setting:'set',camera,lighting:'Consistent with the reference',
+    actions:[{id:'demo',actor:'environment',action:visual,after:[]}],
+    opening_state:'Product and setting as shown in the input frame',closing_state:'Hold a stable end frame'};
+  const shot: Shot = {id:'product',narration:'',visual_prompt:visual,end_frame:direction.closing_state,direction};
+  const bible: Bible = {characters:[],locations:[{id:'set',description:'Use the photographed surroundings as the starting point'}],
+    props:[],visual_style:'Natural handheld product demonstration',lighting:direction.lighting,
+    continuity_rules:['Keep the actual product colors and geometry consistent. No invented labels, text, prices, dialogue or testimonials']};
+  const input: DirectionInput = {scene:shot,bible,index:0,candidates:[],mode:'manual',budget_usd:0,resolution:'',
+    edited_seconds:edited,has_explicit_reference:true};
+  const knowledge: Knowledge={endpoint_id:model.endpoint_id,version:model.schema_hash,schema_hash:model.schema_hash,
+    documents:[],documented:false,researched_at:model.checked_at};
+  return formatPrompt(input,{model,seconds,history:{pattern:null}},knowledge,planLogic(shot,bible,edited)).text;
 }
 
 export async function directVideoScene(db:DirectorDB,input:DirectionInput){

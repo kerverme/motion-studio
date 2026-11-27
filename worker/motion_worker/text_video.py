@@ -49,7 +49,7 @@ def validate(ctx):
     inp, plan, approval = spec.get('input') or {}, spec.get('plan') or {}, spec.get('approval') or {}
     shots = plan.get('shots') or []
     version = spec.get('version')
-    if not shots or [s['id'] for s in shots] != [f'shot_{i+1:02d}' for i in range(len(shots))]:
+    if not shots or (not ctx.pkg.get('ugc') and [s['id'] for s in shots] != [f'shot_{i+1:02d}' for i in range(len(shots))]):
         raise ApprovalRequired('Invalid shot order')
     fingerprint = canonical_hash if version == 2 else digest
     if approval.get('plan_hash') != fingerprint({'input': inp, 'plan': plan}) or not approval.get('approved_at'):
@@ -61,7 +61,11 @@ def validate(ctx):
         if ctx.pkg['voice']['voice_id'] != approval.get('voice_id') or approval.get('voice_model') != 'eleven_v3':
             raise ApprovalRequired('Voice changed after approval')
     elif version == 2:
-        validate_production(spec, ctx.pkg.get('voice') or {})
+        if ctx.pkg.get('ugc'):
+            from .ugc import validate_production as validate_ugc
+            validate_ugc(ctx, spec)
+        else:
+            validate_production(spec, ctx.pkg.get('voice') or {})
     else:
         raise ApprovalRequired('Unsupported Text to Video contract')
     return spec
@@ -123,7 +127,8 @@ def check_dispatch(ctx, slot):
                        and math.ceil(offer['sfx_credits_per_second']*item['duration_seconds']) == item['credits'])
         if not matches:
             raise ApprovalRequired(f'{slot}: ยืนยันโมเดลหรือราคา ElevenLabs ปัจจุบันไม่ได้ กรุณาคิดราคาใหม่')
-    response = requests.post(config.API_INTERNAL_URL.rstrip('/')+'/internal/text-video/check-dispatch',
+    scope = 'ugc' if ctx.pkg.get('ugc') else 'text-video'
+    response = requests.post(config.API_INTERNAL_URL.rstrip('/')+'/internal/'+scope+'/check-dispatch',
                              headers={'x-internal-token': config.INTERNAL_TOKEN},
                              json={'job_id':str(ctx.job['id']),'slot':slot,'approval_id':ctx.pkg['text_video']['approval']['id']},
                              timeout=110,allow_redirects=False)
@@ -266,7 +271,7 @@ def ffmpeg(args):
 
 
 def output_size(spec):
-    if spec['version'] == 1:
+    if spec['version'] == 1 or spec.get('input',{}).get('ugc') is True:
         return 1080, 1920
     # Every segment needs identical dimensions for stream-copy concatenation.
     resolutions = {str(item['resolution']).lower() for item in spec['approval']['fal']}
@@ -369,7 +374,7 @@ def reported_cost_usd(result):
 def fal_shot(ctx, shot, index, previous_frame, approved=None):
     if approved:
         endpoint, slot, payload = approved['endpoint_id'], approved['slot'], approved['payload']
-        previous_frame = previous_frame if approved.get('previous_frame') else None
+        previous_frame = previous_frame if approved.get('previous_frame') or (ctx.pkg.get('ugc') and approved.get('media_id')) else None
         if (PREVIOUS_FRAME in json.dumps(payload)) != bool(previous_frame):
             raise ApprovalRequired('Referenced previous frame does not match the approval')
         logical = {'endpoint': endpoint, 'payload': payload, 'previous_frame': previous_frame}
@@ -415,6 +420,10 @@ def fal_shot(ctx, shot, index, previous_frame, approved=None):
             raise ApprovalRequired(f'{slot}: fal {state}')
         if state == 'COMPLETED':
             r = requests.get(queue_url(row['data']['response_url']), headers=fal_headers(), timeout=60)
+            if ctx.pkg.get('ugc') and (r.status_code in (404,408,409,425,429) or r.status_code>=500):
+                # A completed queue status can precede availability of the result.
+                # Retain its receipt and poll it on the next attempt.
+                raise RuntimeError('fal รับคำขอแล้ว ผลลัพธ์ยังไม่พร้อม ระบบจะตรวจคำขอเดิม')
             if not r.ok or result.get('error'):
                 update(ctx, row, 'failed', {**row['data'], 'http_status': r.status_code, 'error': 'Provider generation failed'})
                 raise ApprovalRequired(f"fal ช็อต {index+1} ล้มเหลว ต้องยืนยันราคาซ่อมก่อนสร้างใหม่")
@@ -529,6 +538,8 @@ def sound_effect(ctx, shot, item):
 
 
 def scene_lengths(spec):
+    if spec.get('input',{}).get('ugc') is True:
+        return [s['seconds'] for s in spec['plan']['shots']]
     return [scene_items(spec, s)[0]['edited_seconds'] if spec['version'] == 2 else 15 for s in spec['plan']['shots']]
 
 
@@ -744,7 +755,7 @@ def capability_loop(stop):
             if time.monotonic() >= next_probe:
                 metadata = probe()
                 next_probe = time.monotonic()+(3600 if metadata['voice_models'] else 300)
-            data={**metadata,'version':1,'fal':bool(os.environ.get('FAL_KEY')),'eleven':bool(config.ELEVENLABS_API_KEY),'voice_id':config.DEFAULT_VOICE_ID}
+            data={**metadata,'version':1,'ugc_version':1,'fal':bool(os.environ.get('FAL_KEY')),'eleven':bool(config.ELEVENLABS_API_KEY),'voice_id':config.DEFAULT_VOICE_ID}
             db.q("INSERT INTO integrations(provider,data) VALUES('text_video_worker',%s::jsonb) ON CONFLICT(provider) DO UPDATE SET data=EXCLUDED.data,updated_at=now()",(json.dumps(data),))
         except Exception as e:print('text-video capability pending:',type(e).__name__,flush=True)
         for _ in range(30):

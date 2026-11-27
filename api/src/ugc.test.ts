@@ -1,0 +1,236 @@
+import { strict as assert } from 'node:assert';
+import { spawn, execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { once } from 'node:events';
+import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { test } from 'node:test';
+import { serve } from '@hono/node-server';
+import { Hono } from 'hono';
+import pg from 'pg';
+import { registerUgc } from './ugc.js';
+import { videoProvider, type DraftDocument } from './ugc-contract.js';
+import type { FalVideoModel } from './video-registry.js';
+
+const endpoint='minimax/h3/image-to-video';
+test('product through confirmed quote, real queue/render/export, and no duplicate paid requests', {skip:!process.env.UGC_TEST_DATABASE_URL, timeout:240000}, async()=>{
+  const pool=new pg.Pool({connectionString:process.env.UGC_TEST_DATABASE_URL});
+  const repo=fileURLToPath(new URL('../../',import.meta.url));
+  const temp=await mkdtemp(join(tmpdir(),'ugc-media-test-'));
+  let server:ReturnType<typeof serve>|undefined;
+  try {
+    assert.equal((await pool.query('select current_database() as db')).rows[0].db,'ugc_test');
+    await pool.query('CREATE TABLE schema_migrations (name text PRIMARY KEY,applied_at timestamptz NOT NULL DEFAULT now())');
+    const migrations=join(repo,'api/migrations');
+    for (const file of (await readdir(migrations)).filter(f=>f.endsWith('.sql')).sort()) {
+      await pool.query(await readFile(join(migrations,file),'utf8'));
+      await pool.query('INSERT INTO schema_migrations(name) VALUES($1)',[file]);
+    }
+    await pool.query("INSERT INTO integrations(provider,data) VALUES('text_video_worker',$1)",[JSON.stringify({
+      ugc_version:1,fal:true,eleven:true,voice_id:'voice-fixture',voice_model:'eleven_v3',voice_usd_per_1000_characters:.1,
+      capabilities_checked_at:Math.floor(Date.now()/1000),audio_pricing_source:'https://elevenlabs.io/pricing/api',
+    })]);
+    const app=new Hono(),source='https://example.org/trend',buy='https://store.example/sku-a';
+    const database='01552600-a420-42f5-9a47-d496d99389df', page='19552600-a420-42f5-9a47-d496d99389df';
+    const product={name:'รองเท้า Orion',variant:'A',price:'990',promo:'ส่งวันนี้',selling_points:'พื้นยาง',order_url:buy};
+    const options={FAL_KEY:'mock',OPENAI_API_KEY:'mock',UGC_NOTION_TOKEN:'mock',UGC_NOTION_DATABASE_IDS:database};
+    let rate=.1,openai=0,lookups=0,reads=0;
+    const footage=join(temp,'product.png');
+    execFileSync('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=320x240','-frames:v','1','-threads','1',footage]);
+    const fixture=await readFile(footage);
+    const schema={type:'object',additionalProperties:false,required:['prompt','image_url'],properties:{
+      prompt:{type:'string'},image_url:{type:'string',format:'uri'},duration:{enum:[4,5,10,12]},generate_audio:{type:'boolean'},
+      resolution:{enum:['768P']}}};
+    const appUgc=registerUgc(app,pool,{
+      guard:async(c,next)=>{if(c.req.header('x-test')!=='owner')return c.json({error:'unauthorized'},401);await next();},
+      workerGuard:async(c,next)=>{if(c.req.header('x-internal-token')!=='test-worker')return c.json({error:'unauthorized'},401);await next();},
+      env:options,models:['gpt-6.2-sol'],
+      storage:{put:async(key,data)=>{const file=join(temp,key);await mkdir(dirname(file),{recursive:true});await writeFile(file,data);},
+        sign:async(key,download)=>'https://fixture.invalid/'+key+(download?'?attachment=1':'')},
+      notionFetch:async(input)=>{
+        const url=new URL(String(input));
+        assert.equal(url.hostname,'api.notion.com');
+        const record={id:page,parent:{database_id:database},properties:{
+          Product:{id:'title',type:'title',title:[{plain_text:product.name}]},
+          Price:{id:'price',type:'number',number:990},
+          Shop:{id:'shop',type:'url',url:buy},
+        }};
+        if(url.pathname==='/v1/databases/'+database)return Response.json({properties:{
+          Product:{id:'title',name:'Product',type:'title'}, Price:{id:'price',name:'Price',type:'number'}, Shop:{id:'shop',name:'Shop',type:'url'}}});
+        if(url.pathname.endsWith('/query'))return Response.json({results:[record]});
+        assert.equal(url.pathname,'/v1/pages/'+page);return Response.json(record);
+      },
+      response:async(body,opts)=>{
+        assert.equal(body.model,'gpt-6.2-sol');
+        if(!opts.responseId){openai++;await opts.onAccepted!('resp_ugc');return {id:'resp_ugc',status:'in_progress'};}
+        reads++;assert.equal(opts.responseId,'resp_ugc');
+        return {id:'resp_ugc',status:'completed',output:[{content:[{type:'output_text',text:JSON.stringify({
+          hooks:['หารองเท้าพื้นยางอยู่หรือเปล่า','รองเท้าคู่นี้มีอะไร','ลองดูรองเท้า Orion'],caption:'ลองดูสินค้าของร้าน',
+          scenes:[
+            {seconds:4,narration:'รองเท้าคู่นี้มีอะไร',visual:'Open on the exact shoes',camera:'close up',mode:'original'},
+            {seconds:7,narration:'คู่นี้ใช้พื้นยาง',visual:'Tilt slowly over the sole',camera:'slow tilt',mode:'fal'},
+            {seconds:9,narration:'ดูรายละเอียดได้ที่หน้าร้าน',visual:'Return to the product photo',camera:'static',mode:'original'},
+          ],
+        })}]}]};
+      },
+      video:{...videoProvider,model:async(id,category)=>{
+        lookups++;assert.equal(id,endpoint);assert.equal(category,'image-to-video');
+        return {endpoint_id:id,category,name:'H3',available:true,resolutions:['768P'],durations:[4,5,10,12],audio:true,
+          input_schema:schema,schema_hash:'test-schema',price:{unit:'seconds',unit_price:rate,currency:'USD'},
+          billing:{rates:{'768p':rate}},source_url:'https://fal.ai/models/'+id,checked_at:new Date().toISOString()} satisfies FalVideoModel;
+      },price:async(m,p)=>({usd:Math.round(Number(p.duration)*m.price!.unit_price*100)/100,unit:'seconds',quantity:Number(p.duration)})},
+    });
+    const headers={'x-test':'owner','content-type':'application/json'};
+    const request=async(path:string,method='GET',body?:unknown,key?:string)=>app.request('/app/api/ugc'+path,
+      {method,headers:{...headers,...(key?{'idempotency-key':key}:{})},...(body?{body:JSON.stringify(body)}:{})});
+    const ok=async(r:Response)=>{const body=await r.json() as any;assert.ok(r.ok,JSON.stringify(body));return body;};
+    const jobs=async()=>Number((await pool.query("SELECT count(*) FROM jobs WHERE package ? 'ugc'")).rows[0].count);
+    assert.equal((await app.request('/app/api/ugc/drafts')).status,401);
+    assert.equal((await app.request('/internal/ugc/check-dispatch',{method:'POST'})).status,401);
+    await ok(await request('/notion/config','PUT',{database_id:database,fields:{name:'title',price:'price',order_url:'shop',variant:'',promo:'',selling_points:'',media:''}}));
+    assert.equal((await ok(await request('/notion/products'))).items[0].name,product.name);
+    const creation=randomUUID();
+    let draft=await ok(await request('/drafts','POST',{name:product.name,evidence:[{kind:'demand',title:'Trend',quote:'Ranking signal',date:'2026-11-27',url:source}]},creation));
+    assert.equal((await ok(await request('/drafts','POST',{name:product.name},creation))).id,draft.id);
+    assert.equal(draft.document.product.order_url,'');
+    assert.equal(draft.document.duration,20);
+    const draftPath='/drafts/'+draft.id;
+    const imported=await ok(await request(draftPath+'/import-notion','POST',{page_id:page}));
+    assert.equal(imported.product.order_url,buy);
+    assert.equal(imported.product.price,'990');
+    const media=await ok(await app.request('/app/api/ugc'+draftPath+'/media',{method:'POST',headers,body:new Uint8Array(fixture)}));
+    const patch=async(doc:DraftDocument)=>{
+      draft=await ok(await request(draftPath,'PATCH',{revision:draft.revision,document:doc}));
+    };
+    await patch({...draft.document,product,endpoint,resolution:'768P',brief:'วางรองเท้าให้เห็นพื้นยาง'});
+    const startRevision=draft.revision, planKey=randomUUID();
+    await ok(await request(draftPath+'/suggest','POST',{revision:startRevision},planKey));
+    for (let i=0;i<70;i++){
+      await appUgc.pump();
+      draft=await ok(await request(draftPath));
+      if(draft.planning.state==='done')break;
+      assert.notEqual(draft.planning.state,'failed',draft.planning.error);
+      await new Promise(r=>setTimeout(r,100));
+    }
+    await ok(await request(draftPath+'/suggest','POST',{revision:startRevision},planKey));
+    assert.equal(openai,1);
+    assert.equal(reads,1);
+    assert.equal(draft.document.hooks.length,3);
+    assert.equal(draft.document.scenes[1].media_id,media.id);
+    const getQuote=(confirmed:unknown=true)=>request(draftPath+'/quote','POST',{revision:draft.revision,product_confirmed:confirmed});
+    const produce=(quote:any,approved:unknown=true)=>request(draftPath+'/produce','POST',{revision:quote.revision||draft.revision,quote_id:quote.id,approved});
+    assert.equal((await getQuote(false)).status,409);
+    assert.equal((await produce({id:randomUUID()})).status,409);
+    await patch({...draft.document,product:{...product,order_url:source}});
+    assert.equal((await getQuote()).status,409);
+    await patch({...draft.document,product,hook:'ส่งฟรี วันนี้'});
+    assert.equal((await getQuote()).status,409);
+    await patch({...draft.document,hook:draft.document.hooks[0]});
+    let quote=await ok(await getQuote());
+    assert.equal(quote.fal[0].billed_seconds,10);
+    assert.equal(quote.fal[0].edited_seconds,7);
+    assert.equal(quote.fal_usd,1);
+    assert.ok(quote.eleven_usd>0);
+    assert.equal(await jobs(),0);
+    assert.equal((await produce(quote,false)).status,409);
+    rate=.11;
+    assert.equal((await produce(quote)).status,409);
+    assert.equal(await jobs(),0);
+    quote=await ok(await getQuote());
+    await patch({...draft.document,caption:'แคปชันที่แก้แล้ว'});
+    assert.equal((await produce(quote)).status,409);
+    quote=await ok(await getQuote());
+    await pool.query("UPDATE ugc_drafts SET quote=jsonb_set(quote,'{expires_at}', '\"2000-01-01T00:00:00Z\"'::jsonb) WHERE id=$1",[draft.id]);
+    assert.equal((await produce(quote)).status,409);
+    assert.equal(await jobs(),0);
+    quote=await ok(await getQuote());
+    assert.equal(quote.fal_usd,1.1);
+    const [a,b]=await Promise.all([produce(quote).then(ok),produce(quote).then(ok)]);
+    assert.equal(a.job_id,b.job_id);
+    assert.equal(await jobs(),1);
+    const queued=await ok(await request('/jobs/'+a.job_id));
+    assert.equal(queued.status,'NEW');
+    assert.equal(queued.scenes.length,3);
+    const dispatch=async(job:string,id:string,slot:string)=>app.request('/internal/ugc/check-dispatch',{method:'POST',headers:{'x-internal-token':'test-worker','content-type':'application/json'},
+      body:JSON.stringify({job_id:job,approval_id:id,slot})});
+    assert.equal((await dispatch(a.job_id,randomUUID(),'fal:shot_02')).status,409);
+    // Verify changed rates are also caught after queueing, immediately before a POST.
+    await pool.query("UPDATE jobs SET status='RENDERING' WHERE id=$1",[a.job_id]);
+    rate=.12;assert.equal((await dispatch(a.job_id,quote.id,'fal:shot_02')).status,409);rate=.11;
+    await pool.query("UPDATE jobs SET status='NEW' WHERE id=$1",[a.job_id]);
+    assert.equal((await pool.query('SELECT count(*) FROM text_video_calls')).rows[0].count,'0');
+    server=serve({fetch:app.fetch,hostname:'127.0.0.1',port:0});
+    await once(server,'listening');
+    const address=server.address();assert.ok(address&&typeof address!=='string');
+    const port=address.port;
+    async function runWorker(job:string){
+      const proc=spawn(process.env.UGC_TEST_PYTHON||'python3',['worker/tests/ugc_mock_worker.py',job],{
+        cwd:repo,env:{...process.env,PYTHONPATH:'worker',DATABASE_URL:process.env.UGC_TEST_DATABASE_URL,UGC_TEST_ASSETS:temp,
+          MOTION_WORKDIR:join(temp,'render'),MOTION_INTERNAL_TOKEN:'test-worker',MOTION_API_INTERNAL_URL:'http://ugc-fixture',
+          UGC_TEST_API:'http://127.0.0.1:'+port,FAL_KEY:'mock',ELEVENLABS_API_KEY:'mock'},
+        stdio:['ignore','pipe','pipe'],
+      });
+      let out='',err='';
+      proc.stdout.on('data',chunk=>out+=chunk);proc.stderr.on('data',chunk=>err+=chunk);
+      const [code]=await once(proc,'close');
+      assert.equal(code,0,err||out);
+      return JSON.parse(out.trim().split('\n').at(-1)!);
+    }
+    const worker1=await runWorker(a.job_id);
+    assert.deepEqual(worker1.calls,['eleven','eleven','eleven','fal']);
+    assert.equal(worker1.result.duration,20);
+    const done=await ok(await request('/jobs/'+a.job_id));
+    assert.equal(done.status,'READY_TO_POST');
+    assert.ok(done.video.endsWith('/ugc/final.mp4'));
+    assert.ok(done.download.endsWith('?attachment=1'));
+    assert.equal(done.notes.order_url,buy);
+    assert.ok(done.scenes.every((s:any)=>s.state==='done'));
+    assert.ok((await readFile(join(temp,'jobs',a.job_id,'ugc','subtitles.ass'),'utf8')).includes('990 บาท'));
+    draft=await ok(await request(draftPath+'/edit','POST',{job_id:a.job_id,scene:'shot_02'}));
+    let repair=await ok(await getQuote());
+    assert.deepEqual(repair.pending_slots,['fal:shot_02']);
+    // Recut only from the originally completed job, retaining all paid clips and narration.
+    await pool.query('UPDATE ugc_drafts SET regenerate_scene=NULL,quote=NULL WHERE id=$1',[draft.id]);
+    await patch({...draft.document,product:{...product,price:'1190'},cta:'ไปที่ร้าน',scenes:draft.document.scenes.map((s:any,i:number)=>({...s,subtitle:i===1?'พื้นยางของรุ่นนี้':''}))});
+    const recut=await ok(await getQuote());
+    assert.equal(recut.total_usd,0);
+    assert.deepEqual(recut.pending_slots,[]);
+    const c=await ok(await produce(recut));
+    const worker2=await runWorker(c.job_id);
+    assert.deepEqual(worker2.calls,[]);
+    assert.ok((await readFile(join(temp,'jobs',c.job_id,'ugc','subtitles.ass'),'utf8')).includes('1190 บาท'));
+    assert.ok((await readFile(join(temp,'jobs',c.job_id,'ugc','subtitles.ass'),'utf8')).includes('พื้นยางของรุ่นนี้'));
+    assert.equal((await ok(await produce(quote))).job_id,a.job_id);
+    draft=await ok(await request(draftPath+'/edit','POST',{job_id:c.job_id,scene:'shot_02'}));
+    await patch({...draft.document,duration:30,scenes:draft.document.scenes.map((s:any,i:number)=>({...s,seconds:[4,11,15][i]}))});
+    repair=await ok(await getQuote());
+    const d=await ok(await produce(repair));
+    const worker3=await runWorker(d.job_id);
+    assert.deepEqual(worker3.calls,['fal']);
+    assert.equal(worker3.result.duration,30);
+    await pool.query("UPDATE jobs SET status='FAILED' WHERE id=$1",[d.job_id]);
+    await pool.query("UPDATE text_video_calls SET status='unknown' WHERE job_id=$1 AND slot='fal:shot_02'",[d.job_id]);
+    assert.equal((await getQuote()).status,409);
+    assert.equal((await request(draftPath+'/edit','POST',{job_id:d.job_id})).status,409);
+    await pool.query("UPDATE text_video_calls SET status='accepted' WHERE job_id=$1 AND slot='fal:shot_02'",[d.job_id]);
+    const polling=await ok(await getQuote());
+    assert.deepEqual(polling.pending_slots,[]);
+    await pool.query("UPDATE text_video_calls SET status='failed' WHERE job_id=$1 AND slot='fal:shot_02'",[d.job_id]);
+    const retry=await ok(await getQuote());
+    assert.deepEqual(retry.pending_slots,['fal:shot_02']);
+    assert.equal((await produce(polling)).status,409);
+    assert.equal(await jobs(),3);
+    await pool.query("UPDATE text_video_calls SET status='done' WHERE job_id=$1 AND slot='fal:shot_02'",[d.job_id]);
+    await pool.query("UPDATE jobs SET status='READY_TO_POST' WHERE id=$1",[d.job_id]);
+    draft=await ok(await request(draftPath+'/edit','POST',{job_id:d.job_id}));
+    assert.equal((await request(draftPath,'PATCH',{revision:draft.revision,document:{...draft.document,duration:31}})).status,422);
+    assert.ok(lookups>4);
+  } finally {
+    server?.close();
+    await pool.end();
+    if(!process.env.UGC_KEEP_FIXTURE)await rm(temp,{recursive:true,force:true});
+    else console.info('UGC fixture artifacts',temp);
+  }
+});

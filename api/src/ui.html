@@ -359,11 +359,22 @@ details summary{cursor:pointer;color:var(--ink-2);font-size:14px;margin-top:10px
 }
 .mobile-top{display:none;justify-content:space-between;align-items:center;padding:14px 16px 0}
 .mobile-top .brand{display:block;padding:0;font-size:19px}
+.ugc-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,235px),1fr));gap:14px}
+.ugc-block{margin-top:18px;padding:18px;border:1px solid var(--line,#cdd1c9);border-radius:14px}
+.ugc-block label{display:grid;gap:6px;align-content:start}
+.ugc-block input:not([type=checkbox]),.ugc-block select,.ugc-block textarea{width:100%;min-width:0}
+.ugc-media{display:flex;flex-wrap:wrap;gap:12px;margin:10px 0}
+.ugc-media img,.ugc-media video{width:112px;height:112px;object-fit:contain;border-radius:8px;background:#101421}
+.ugc-scene{display:grid;gap:10px;padding:12px 0;border-bottom:1px solid var(--line,#cdd1c9)}
+.ugc-player{max-height:66vh;max-width:100%;display:block;margin:12px 0}
+.ugc-price{display:block;overflow-x:auto;max-width:100%;white-space:nowrap}
+.ugc-price th,.ugc-price td{padding:6px 12px;text-align:left}
 </style>
 </head>
 <body>
 <div id="root"></div>
 <script src="/app/text-video.js"></script>
+<script src="/app/ugc.js"></script>
 <script>
 'use strict';
 const root = document.getElementById('root');
@@ -440,7 +451,7 @@ function login(msg){
 }
 
 /* ---------- frame ---------- */
-const VIEWS = [['create','สร้าง'],['text_video','Text to Video'],['product_trends','เทรนด์สินค้า'],['community','Community'],['ready','พร้อมใช้'],['used','เสร็จแล้ว'],['working','กำลังทำ'],['analytics','สถิติ']];
+const VIEWS = [['create','สร้าง'],['text_video','Text to Video'],['ugc','UGC AI'],['product_trends','เทรนด์สินค้า'],['community','Community'],['ready','พร้อมใช้'],['used','เสร็จแล้ว'],['working','กำลังทำ'],['analytics','สถิติ']];
 let mainEl;
 function frame(){
   const nav = h('nav',{class:'nav','aria-label':'หมวด'}, VIEWS.map(([k,l])=>h('button',{'data-view':k,'aria-current':S.view===k?'page':false,on:{click:()=>go(k)}}, h('span',{},l), h('span',{class:'n'}, k!=='analytics' && S.counts[k]!=null ? S.counts[k] : '\u00a0'))));
@@ -475,7 +486,12 @@ function renderProductTrends(config){
       put(results,result.products.map(product=>h('article',{class:'trend-result'},h('h2',{},product.name),
         h('ul',{},product.evidence.map(source=>h('li',{},
           h('strong',{},source.kind==='demand'?'ความสนใจ':'ยอดขายและอันดับ'), ' · ',source.date,
-          h('p',{},source.quote),h('a',{href:source.url,target:'_blank',rel:'noopener noreferrer'},source.title||source.url)))))));
+          h('p',{},source.quote),h('a',{href:source.url,target:'_blank',rel:'noopener noreferrer'},source.title||source.url)))),
+        h('button',{class:'btn',on:{click:async event=>{
+          const button=event.currentTarget;button.disabled=true;
+          try {await createUgc({name:product.name,evidence:product.evidence});}
+          catch(error){status.textContent=error.message;}finally{button.disabled=false;}
+        }}},'ใช้สินค้านี้ทำคลิป'))));
     }catch(error){status.textContent=error.message;}
     finally{submit.disabled=false;}
   }}},h('label',{for:'trend-query'},'ชื่อสินค้าหรือหมวด (เว้นว่างเพื่อสำรวจทุกหมวด)'),query,
@@ -494,6 +510,9 @@ async function load(){
       CHARS = ch.characters||[]; S.formats=st.formats; S.counts={...e.counts, create: dr.drafts.filter(d=>d.status==='ready').length||null}; frame(); studio(st, dr.drafts);
     } else if (S.view==='text_video'){
       const [cfg, plans] = await Promise.all([api('/app/api/text-video/config'),api('/app/api/text-video/plans')]);frame();renderTextVideo(cfg,plans.plans);
+    } else if (S.view==='ugc'){
+      const [cfg,list]=await Promise.all([api('/app/api/ugc/config'),api('/app/api/ugc/drafts')]);
+      if (seq===loadSeq && S.view==='ugc') { frame(); renderUgc(cfg,list.drafts); }
     } else if (S.view==='product_trends'){
       const config = await api('/app/api/product-trends');
       if (S.view==='product_trends') { frame(); renderProductTrends(config); }

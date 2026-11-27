@@ -60,6 +60,7 @@ function titleOf(row: any) {
 export function registerUi(app: Hono, pool: pg.Pool, deps: { API_TOKEN: string; retryJob: (id: string) => Promise<{ ok: boolean; status?: string; error?: string }> }) {
   const html = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'ui.html'), 'utf8');
   app.get('/app/text-video.js',c=>{c.header('Content-Type','application/javascript; charset=utf-8');c.header('Cache-Control','no-store');return c.body(readFileSync(join(dirname(fileURLToPath(import.meta.url)),'text-video-ui.js'),'utf8'));});
+  app.get('/app/ugc.js',c=>{c.header('Content-Type','application/javascript; charset=utf-8');c.header('Cache-Control','no-store');return c.body(readFileSync(join(dirname(fileURLToPath(import.meta.url)),'ugc-ui.js'),'utf8'));});
 
   async function requireUi(c: Context, next: Next) {
     if (!UI_PASSWORD) return c.json({ error: 'ui disabled: MOTION_UI_PASSWORD is not set' }, 503);
@@ -152,7 +153,7 @@ export function registerUi(app: Hono, pool: pg.Pool, deps: { API_TOKEN: string; 
     const tab = c.req.query('tab') === 'used' ? 'used' : 'ready';
     const r = await pool.query(`${CLIP_SQL} WHERE e.ui_status = $1 ORDER BY e.number DESC NULLS LAST LIMIT 200`, [tab]);
     const cnt = (await pool.query(`SELECT e.ui_status, count(*)::int AS n FROM episodes e WHERE EXISTS (SELECT 1 FROM publication_handoffs h WHERE h.episode_id = e.id) GROUP BY 1`)).rows;
-    const working = (await pool.query("SELECT count(*)::int AS n FROM jobs WHERE kind IN ('episode','text_video','lemo') AND status NOT IN ('READY_TO_POST','CANCELLED')")).rows[0].n;
+    const working = (await pool.query("SELECT count(*)::int AS n FROM jobs WHERE kind IN ('episode','text_video','lemo') AND NOT COALESCE(package ? 'ugc',false) AND status NOT IN ('READY_TO_POST','CANCELLED')")).rows[0].n;
     const counts = { ready: cnt.find((x) => x.ui_status === 'ready')?.n ?? 0, used: cnt.find((x) => x.ui_status === 'used')?.n ?? 0, working };
     return c.json({ episodes: r.rows.map(shape).filter((e) => e.video_url), counts });
   });
@@ -206,7 +207,7 @@ export function registerUi(app: Hono, pool: pg.Pool, deps: { API_TOKEN: string; 
         COALESCE((SELECT json_agg(x ORDER BY x.id) FROM (SELECT id, status, level, message, created_at FROM job_events WHERE job_id=j.id ORDER BY id DESC LIMIT 8) x), '[]'::json) AS events,
         (SELECT max(created_at) FROM job_events WHERE job_id=j.id) AS last_event_at
       FROM jobs j LEFT JOIN episodes e ON e.id = j.episode_id LEFT JOIN drafts d ON d.job_id = j.id
-      WHERE j.removed_at IS NULL AND j.kind IN ('episode','text_video','lemo') AND (j.status NOT IN ('READY_TO_POST','CANCELLED')
+      WHERE j.removed_at IS NULL AND j.kind IN ('episode','text_video','lemo') AND NOT COALESCE(j.package ? 'ugc',false) AND (j.status NOT IN ('READY_TO_POST','CANCELLED')
          OR (j.status='CANCELLED' AND j.updated_at > now() - interval '2 days'))
       ORDER BY j.created_at DESC LIMIT 30`);
     // drafts an LLM is writing right now (the only place an LLM runs)
