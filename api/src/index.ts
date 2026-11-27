@@ -441,9 +441,12 @@ registerVideoBenchmarks(app,pool,ui.requireUi);
 registerSceneRevisions(app,pool,ui.requireUi);
 registerProductTrends(app, pool, { guard: ui.requireUi });
 const ugcBucket=env.UGC_R2_BUCKET||env.R2_BUCKET;
-const ugcR2=ugcBucket && env.R2_ENDPOINT && env.R2_ACCESS_KEY_ID && env.R2_SECRET_ACCESS_KEY
-  ? new S3Client({region:'auto',endpoint:env.R2_ENDPOINT,forcePathStyle:true,
-    credentials:{accessKeyId:env.R2_ACCESS_KEY_ID,secretAccessKey:env.R2_SECRET_ACCESS_KEY}}) : null;
+const ugcEndpoint=env.UGC_R2_ENDPOINT||env.R2_ENDPOINT;
+const ugcAccessKey=env.UGC_R2_ACCESS_KEY_ID||env.R2_ACCESS_KEY_ID;
+const ugcSecretKey=env.UGC_R2_SECRET_ACCESS_KEY||env.R2_SECRET_ACCESS_KEY;
+const ugcR2=ugcBucket && ugcEndpoint && ugcAccessKey && ugcSecretKey
+  ? new S3Client({region:'auto',endpoint:ugcEndpoint,forcePathStyle:true,
+    credentials:{accessKeyId:ugcAccessKey,secretAccessKey:ugcSecretKey}}) : null;
 const ugc = registerUgc(app,pool,{guard:ui.requireUi,workerGuard:requireInternal,
   storage:s3 && env.BUCKET ? {sign:(key,download)=>getSignedUrl(s3,new GetObjectCommand({Bucket:env.BUCKET,Key:key,
     ...(download?{ResponseContentDisposition:'attachment; filename="ugc.mp4"'}:{})}),{expiresIn:3600})}:null,
