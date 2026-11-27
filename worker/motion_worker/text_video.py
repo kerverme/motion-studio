@@ -54,6 +54,10 @@ def validate(ctx):
     fingerprint = canonical_hash if version == 2 else digest
     if approval.get('plan_hash') != fingerprint({'input': inp, 'plan': plan}) or not approval.get('approved_at'):
         raise ApprovalRequired('ยังไม่มีการยืนยันราคาที่ตรงกับบทนี้')
+    if inp.get('opening_image') is True and ctx.pkg.get('ugc',{}).get('image'):
+        from .ugc import validate_image
+        validate_image(ctx,spec)
+        return spec
     if version == 1:
         model = MODELS.get(inp.get('video_model'))
         if not model or inp.get('resolution') not in model[2] or inp.get('duration') not in (60, 90, 120) or len(shots)*15 != inp['duration']:
@@ -201,7 +205,8 @@ def paid_post(ctx, row, url, headers, payload, timeout, binary=False):
         update(ctx, row, 'unknown', {'error': 'Connection ended before the paid response was received'})
         raise ApprovalRequired(f"{row['slot']}: การเชื่อมต่อหลุด ยังไม่ทราบผล จึงไม่ส่งคำขอที่อาจคิดเงินซ้ำ")
     if not r.ok:
-        known_rejection = 400 <= r.status_code < 500 and r.status_code != 408
+        known_rejection = (400 <= r.status_code < 500 and r.status_code != 408
+                           and not (ctx.pkg.get('ugc') and r.status_code == 409))
         # Keep actionable provider errors, without storing credentials or raw bodies.
         detail = ''
         try:
@@ -271,8 +276,14 @@ def ffmpeg(args):
 
 
 def output_size(spec):
-    if spec['version'] == 1 or spec.get('input',{}).get('ugc') is True:
+    if spec['version'] == 1:
         return 1080, 1920
+    if spec.get('input',{}).get('ugc') is True:
+        level=spec['input'].get('resolution') if spec['input'].get('presenter') else '1080p'
+        if level not in ('360p','480p','720p','1080p'):
+            raise ApprovalRequired('ความละเอียด UGC ไม่รองรับ')
+        width=int(level[:-1])
+        return width,2*round(width*16/18)
     # Every segment needs identical dimensions for stream-copy concatenation.
     resolutions = {str(item['resolution']).lower() for item in spec['approval']['fal']}
     resolution = next(iter(resolutions)) if len(resolutions) == 1 else '720p'
@@ -757,7 +768,7 @@ def capability_loop(stop):
             if time.monotonic() >= next_probe:
                 metadata = probe()
                 next_probe = time.monotonic()+(3600 if metadata['voice_models'] else 300)
-            data={**metadata,'version':1,'ugc_version':2,'ugc_r2':ugc_ready(),'fal':bool(os.environ.get('FAL_KEY')),'eleven':bool(config.ELEVENLABS_API_KEY),'voice_id':config.DEFAULT_VOICE_ID}
+            data={**metadata,'version':1,'ugc_version':3,'ugc_r2':ugc_ready(),'fal':bool(os.environ.get('FAL_KEY')),'eleven':bool(config.ELEVENLABS_API_KEY),'voice_id':config.DEFAULT_VOICE_ID}
             db.q("INSERT INTO integrations(provider,data) VALUES('text_video_worker',%s::jsonb) ON CONFLICT(provider) DO UPDATE SET data=EXCLUDED.data,updated_at=now()",(json.dumps(data),))
         except Exception as e:print('text-video capability pending:',type(e).__name__,flush=True)
         for _ in range(30):

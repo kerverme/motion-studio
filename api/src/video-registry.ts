@@ -211,15 +211,17 @@ function inputSchema(model:Obj){
   if(!schema.properties || (schema.type && schema.type!=='object'))throw new Error('Unsupported fal generation schema');
   return schema as Obj;
 }
-function compatibleOutput(model:Obj){
+function resultSchema(model:Obj){
   const doc=model.openapi;
   const id=doc?.info?.['x-fal-metadata']?.endpointId;
   const operation=(doc?.paths?.['/'+model.endpoint_id+'/requests/{request_id}']??doc?.paths?.['/'+id+'/requests/{request_id}'])?.get;
   const raw=operation?.responses?.['200']?.content?.['application/json']?.schema;
-  if(!raw)return false;
-  const schema=resolveSchema(raw,doc);
-  const file=schema.properties?.video;
-  return schema.required?.includes('video') && [file,...(file?.allOf||[])].some(v=>v?.properties?.url?.type==='string'&&v.required?.includes('url'));
+  return raw?resolveSchema(raw,doc):null;
+}
+function compatibleOutput(model:Obj){
+  const schema=resultSchema(model);
+  const file=schema?.properties?.video;
+  return schema?.required?.includes('video') && [file,...(file?.allOf||[])].some(v=>v?.properties?.url?.type==='string'&&v.required?.includes('url'));
 }
 function variants(field:Obj|undefined):Obj[]{
   if(!field)return [];
@@ -389,6 +391,43 @@ async function details(endpoint:string,request:typeof fetch,lookup?:PriceLookup)
   return {price,billing:billingRules(endpoint,paragraph),pricing_description:paragraph.slice(0,1700),
     ...(issues.length?{verification_error:issues.join(' / ')}:{})};
 }
+export const UGC_IMAGE_MODELS = ['fal-ai/nano-banana-pro/edit', 'fal-ai/nano-banana-2/edit'] as const;
+export const UGC_IMAGE_REFERENCES = ['https://studio.cloudbath.co/internal/ugc-product.png','https://studio.cloudbath.co/internal/ugc-presenter.png'] as const;
+
+export async function estimateUgcImage(endpoint:string, prompt:string, portrait:boolean, request:typeof fetch=fetch) {
+  if (!(UGC_IMAGE_MODELS as readonly string[]).includes(endpoint)) throw Error('โมเดลนี้ยังไม่รองรับภาพอ้างอิง UGC');
+  const [found, info]=await Promise.all([catalogGroup([endpoint],request).then(rows=>rows.get(endpoint)),details(endpoint,request)]);
+  const paragraph=info.pricing_description.replace(/\s+/g,' ').trim();
+  // One 1K image, no optional search, higher resolution or explicit high thinking.
+  const normal=/^Your request will cost \$(\d+(?:\.\d+)?) per image\. For \$[\d.]+, you can (?:generate \d+ standard images|run this model \d+ times)\. /.exec(paragraph);
+  const extras=normal && paragraph.slice(normal[0].length);
+  const supported=endpoint.endsWith('/nano-banana-pro/edit') ?
+    /^4K outputs will be charged at double the standard rate\. If web search is used, an additional \$[\d.]+ will be charged\. Note: Pricing may change in the future\.$/ :
+    /^2K and 4K outputs will be charged at [\d.]+ times and [\d.]+ times the standard rate, respectively\. 0\.5K \(512px\) resolution outputs will be charged at [\d.]+ times the standard rate\. If web search is used, an additional \$[\d.]+ will be charged\. If high thinking is used, an additional \$[\d.]+ will be charged\. Note: Pricing is subject to change\.$/;
+  if (!found || found.metadata?.status!=='active' || !info.price || !/^images?$/i.test(info.price.unit) ||
+      !normal || !(Number(normal[1])>0) || !extras || !supported.test(extras))
+    throw Error(info.verification_error || 'ยังยืนยันเรต 1K ต่อภาพจาก fal.ai ไม่ได้');
+  const schema=inputSchema(found);
+  const result=resultSchema(found);
+  const images=result?.properties?.images;
+  if(!result?.required?.includes('images')||images?.type!=='array'||images.items?.properties?.url?.type!=='string')
+    throw Error('ตัวอ่านผลลัพธ์ยังไม่รองรับภาพของโมเดลนี้');
+  const payload={prompt,image_urls:UGC_IMAGE_REFERENCES.slice(0,portrait?2:1),num_images:1,output_format:'jpeg',
+    resolution:'1K',aspect_ratio:'9:16',enable_web_search:false};
+  const valid=schemaValidators.compile(schema);
+  if(!Object.keys(payload).every(key=>key in schema.properties)||!valid(payload))
+    throw Error('รูปแบบเฟรมคนถือสินค้าไม่ตรงกับ schema ของ fal.ai');
+  const estimate=await readJson(API+'/pricing/estimate',request,'estimate',{method:'POST',headers:auth('estimate'),
+    body:JSON.stringify({estimate_type:'unit_price',endpoints:{[endpoint]:{unit_quantity:1}}})});
+  if(estimate.estimate_type!=='unit_price'||estimate.currency!=='USD'||!Number.isFinite(estimate.total_cost)||
+      Math.abs(estimate.total_cost-info.price.unit_price)>1e-6) throw Error('ราคาเฟรมเปิดจาก fal.ai ไม่ตรงกับราคาบัญชี');
+  return {endpoint_id:endpoint,model_name:String(found.metadata.display_name||endpoint),payload,
+    schema_hash:createHash('sha256').update(stableJson(schema)).digest('hex'),resolution:'1K',
+    billing_quantity:1,billing_unit:info.price.unit,unit_usd:Math.max(info.price.unit_price,Number(normal[1])),
+    estimated_usd:Math.max(info.price.unit_price,Number(normal[1])),account_unit_usd:info.price.unit_price,
+    pricing_source:'https://fal.ai/models/'+endpoint,pricing_checked_at:new Date().toISOString()};
+}
+
 export async function getVideoModel(endpoint:string,category:VideoCategory,request:typeof fetch=fetch,lookup?:PriceLookup,scope?:CatalogScope):Promise<FalVideoModel>{
   validateEndpointId(endpoint);
   const found=scope?await scope.exact(endpoint):(await catalogGroup([endpoint],request)).get(endpoint);

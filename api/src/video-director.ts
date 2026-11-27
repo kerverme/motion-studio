@@ -330,7 +330,7 @@ function inspectPrompt(input:DirectionInput,selected:Ranked,prompt:string,logic:
   return [...new Set(issues)];
 }
 
-export function compileProductMotion(model:ResearchModel & {audio:boolean|null}, visual:string, camera:string, edited:number, seconds:number) {
+export function compileProductMotion(model:ResearchModel & {audio:boolean|null}, visual:string, camera:string, edited:number, seconds:number, speech?:string) {
   const direction: Direction = {scene_type:'product',duration_seconds:edited,purpose:'Show the product in use',
     subjects:[],setting:'set',camera,lighting:'Consistent with the reference',
     actions:[{id:'demo',actor:'environment',action:visual,after:[]}],
@@ -338,12 +338,19 @@ export function compileProductMotion(model:ResearchModel & {audio:boolean|null},
   const shot: Shot = {id:'product',narration:'',visual_prompt:visual,end_frame:direction.closing_state,direction};
   const bible: Bible = {characters:[],locations:[{id:'set',description:'Use the photographed surroundings as the starting point'}],
     props:[],visual_style:'Natural handheld product demonstration',lighting:direction.lighting,
-    continuity_rules:['Keep the actual product colors and geometry consistent. No invented labels, text, prices, dialogue or testimonials']};
+    continuity_rules:['Keep the actual product colors and geometry consistent. No invented labels, captions, prices or testimonials']};
   const input: DirectionInput = {scene:shot,bible,index:0,candidates:[],mode:'manual',budget_usd:0,resolution:'',
     edited_seconds:edited,has_explicit_reference:true};
   const knowledge: Knowledge={endpoint_id:model.endpoint_id,version:model.schema_hash,schema_hash:model.schema_hash,
     documents:[],documented:false,researched_at:model.checked_at};
-  return formatPrompt(input,{model,seconds,history:{pattern:null}},knowledge,planLogic(shot,bible,edited)).text;
+  const motion=formatPrompt(input,{model,seconds,history:{pattern:null}},knowledge,planLogic(shot,bible,edited)).text;
+  if(!speech) return motion;
+  return motion +
+    '\nStart from the supplied approved frame with face, hands and real product visible in the same shot. Keep the same person, outfit, packaging and logo. '+
+    'Look into the phone camera. Speak casual natural Thai immediately, with natural visible mouth articulation synchronized to the words and finish within '+
+    edited+' seconds. Say exactly this one Thai line: '+JSON.stringify(speech)+
+    '. No other voices, music, added graphics, text or captions.';
+
 }
 
 export async function directVideoScene(db:DirectorDB,input:DirectionInput){
