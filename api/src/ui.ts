@@ -19,6 +19,20 @@ const SESSION_SECRET = env.MOTION_SESSION_SECRET || createHash('sha256').update(
 const SESSION_DAYS = 7;
 const MEDIA_BASE = (env.MOTION_MEDIA_BASE || env.R2_PUBLIC_BASE_URL || 'https://media.cloudbath.co').replace(/\/$/, '');
 const MEDIA_ORIGIN = (() => { try { return new URL(MEDIA_BASE).origin; } catch { return 'https://media.cloudbath.co'; } })();
+const MEDIA_ORIGINS = new Set([MEDIA_ORIGIN]);
+for (const endpoint of [env.UGC_R2_ENDPOINT || env.R2_ENDPOINT, env.BUCKET_ENDPOINT]) {
+  if (!endpoint) continue;
+  try {
+    const url = new URL(endpoint);
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') continue;
+    MEDIA_ORIGINS.add(url.origin);
+    if (endpoint === env.BUCKET_ENDPOINT && env.BUCKET && env.BUCKET_URL_STYLE !== 'path') {
+      url.hostname = `${env.BUCKET}.${url.hostname}`;
+      MEDIA_ORIGINS.add(url.origin);
+    }
+  } catch { /* Unconfigured or invalid endpoints cannot serve media. */ }
+}
+const MEDIA_SOURCES = ["'self'", ...MEDIA_ORIGINS].join(' ');
 const AI_DISCLOSURE = (env.MOTION_AI_DISCLOSURE || 'true') !== 'false'; // narration is synthetic (ElevenLabs): label it where the platform supports it
 
 function safeEq(a: string, b: string) {
@@ -75,7 +89,7 @@ export function registerUi(app: Hono, pool: pg.Pool, deps: { API_TOKEN: string; 
     c.header('cache-control', 'no-store');
     c.header('x-frame-options', 'DENY');
     c.header('referrer-policy', 'no-referrer');
-    c.header('content-security-policy', `default-src 'self'; img-src 'self' ${MEDIA_ORIGIN} data:; media-src ${MEDIA_ORIGIN}; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self' 'unsafe-inline'; frame-ancestors 'none'`);
+    c.header('content-security-policy', `default-src 'self'; img-src ${MEDIA_SOURCES} data:; media-src ${MEDIA_SOURCES}; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self' 'unsafe-inline'; frame-ancestors 'none'`);
     return c.html(html);
   });
 
