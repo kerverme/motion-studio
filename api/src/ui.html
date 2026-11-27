@@ -707,7 +707,7 @@ async function publish(ep, body, close){
 
 
 /* ---------- studio: topic -> research -> draft -> produce ---------- */
-const DSTATE = {queued:['wait','รอคิว',true], researching:['wait','กำลังค้นข้อมูล',true], writing:['wait','กำลังเขียน',true], ready:['go','รอตรวจ'], failed:['bad','ไม่สำเร็จ'], discarded:['','ทิ้งแล้ว']};
+const DSTATE = {queued:['wait','รอคิวใน Studio',true], researching:['wait','กำลังค้นข้อมูล',true], writing:['wait','กำลังเตรียมบทและฉาก',true], ready:['go','รอตรวจ'], failed:['bad','ไม่สำเร็จ'], discarded:['','ทิ้งแล้ว']};
 const TPL = {custom:'ภาพที่โค้ดวาดเฉพาะเรื่อง', chat:'แชทมือถือ', versus:'ปะทะ VS', scale:'เทียบขนาด', hook:'เปิดเรื่อง', number:'ตัวเลขนับขึ้น', compare:'เทียบแท่ง', bars:'จัดอันดับ', list:'รายการ', quiz:'ทายก่อน', reveal:'เฉลย', dots:'x ใน N', timeline:'ไทม์ไลน์', truth:'จริงหรือไม่', scenario:'ฉากสมมติ', icons:'ไอคอน', outro:'ปิดท้าย'};
 const IDEAS = ['ถ้าคนไทยทุกคนเลิกดื่มชานมไข่มุก 1 ปี จะเกิดอะไรขึ้น?','ถ้ากรุงเทพฯ ไม่มีรถติดเลย 1 วัน เราจะได้เวลาคืนกี่ชั่วโมง?','ถ้าคนไทยนอนครบ 8 ชั่วโมงทุกคน จะเกิดอะไรขึ้น?'];
 // every clip opens with "คนชื่อ X ในประเทศไทย มีกี่คน" and then follows the story (owner's default)
@@ -721,7 +721,15 @@ function draftState(d){
     if (d.job_status==='CANCELLED') return ['','ยกเลิกการผลิตแล้ว'];
     return ['wait','กำลังผลิต · '+(STAGE[d.job_status]||d.job_status),true];
   }
-  return DSTATE[d.status]||['',d.status];
+  const [style,label,busy]=DSTATE[d.status]||['',d.status];
+  return [style,d.planning?.label||label,busy];
+}
+function plannerTiming(d, now=Date.now()){
+  const p=d.planning;
+  if(!p)return '';
+  if(p.checked_at)return 'ตรวจล่าสุด '+new Date(p.checked_at).toLocaleTimeString('th-TH',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  const start=p.started_at||Date.parse(d.created_at);
+  return Number.isFinite(start)?'รอมา '+fmtDur((now-start)/1000):'';
 }
 const inProgress = d => draftState(d)[2] === true;
 
@@ -981,7 +989,7 @@ function draftList(drafts) {
     const [cls,txt]=draftState(d), {box,del}=controls.row('d'+d.id,title(d));
     const open=h('button',{class:'draft',on:{click:()=>openDraft(d.id)}},
       h('b',{},d.source_type==='community'?'[Community] ':'',title(d)),h('span',{class:'chip '+cls},inProgress(d)?h('i',{class:'pulse','aria-hidden':'true'}):'',txt),
-      h('span',{class:'sub'},fmtD(d.created_at)+(d.last?' · '+d.last:'')));
+      h('span',{class:'sub'},plannerTiming(d)||fmtD(d.created_at)+(d.last?' · '+d.last:'')));
     return h('div',{class:'draft-row'},box,open,del);
   })) : h('section',{class:'empty',id:'recent-drafts'},h('h2',{},'ยังไม่มีร่าง'),h('p',{},'พิมพ์หัวข้อด้านบน แล้วระบบจะเริ่มค้นข้อมูลให้'));
 }
@@ -1572,7 +1580,8 @@ function openDraft(id){
             await refresh();
           }catch(e){resumeError.textContent=e.message;this.disabled=false;}
         }}},'ทำร่างเดิมต่อ'):'';
-        put(body, head, h('h2',{class:'d-title'}, receipt?'ร่างหยุดระหว่างค้นข้อมูล':d.status==='failed'?'เขียนไม่สำเร็จ':draftState(d)[1]),
+        put(body, head, h('h2',{class:'d-title'}, receipt?'ร่างหยุดระหว่างค้นข้อมูล':draftState(d)[1]),
+          d.planning?h('p',{class:'sub'},plannerTiming(d)):'',
           receipt?h('p',{},'พบรหัสคำขอ OpenAI รอบที่ '+receipt.turn+' ระบบจะอ่านคำตอบเดิมและใช้ผลค้นหาที่เก็บไว้ การค้นหรือเขียนขั้นถัดไปอาจใช้เครดิตเพิ่ม เมื่อร่างพร้อมคุณจะได้ตรวจอีกครั้ง'):(d.error?h('div',{class:'err'},d.error):''),
           resumeButton,resumeError, d.problems&&d.problems.length&&d.status==='failed'?h('ul',{class:'probl'},d.problems.map(p=>h('li',{},p))):'',
           logList(d), usage(d),
@@ -1679,7 +1688,6 @@ function openDraft(id){
 const STAGE = {GENERATING_AUDIO:'สร้างเสียง', BUILDING_TIMELINE:'จัดไทม์ไลน์', RENDERING:'เรนเดอร์ภาพ', QUALITY_CHECK:'ตรวจคุณภาพ', UPLOADING_DRIVE:'อัปโหลด', NEW:'รอคิว', FAILED:'ล้มเหลว', CANCELLED:'ยกเลิก'};
 const CEIL = {NEW:.05, GENERATING_AUDIO:.25, BUILDING_TIMELINE:.30, RENDERING:.75, QUALITY_CHECK:.85, UPLOADING_DRIVE:.98};
 const WHO = {NEW:'รอ worker รับงาน', GENERATING_AUDIO:'ElevenLabs กำลังสร้างเสียงพากย์ (เสียงเท่านั้น ไม่ใช่ LLM)', BUILDING_TIMELINE:'โค้ดกำลังจัดจังหวะเสียงกับภาพ (ไม่ใช้ LLM)', RENDERING:'โค้ดกำลังวาดภาพทีละเฟรม ด้วย Pillow + FFmpeg (ไม่ใช้ LLM / ไม่ใช้ AI สร้างภาพ)', QUALITY_CHECK:'โค้ดกำลังตรวจคุณภาพภาพและเสียง (ไม่ใช้ LLM)', UPLOADING_DRIVE:'กำลังอัปโหลดขึ้น Cloudflare R2'};
-const DSTAT = {queued:'รอคิว', researching:'กำลังค้นข้อมูล (OpenAI ก่อน)', writing:'กำลังเขียนสคริปต์และฉาก'};
 const DFLOOR = {queued:.04, researching:.3, writing:.65};
 function whoWrote(m, r){
   if (!m) return 'ไม่ระบุ';
@@ -1741,14 +1749,16 @@ function patchJob(c, j){
 }
 function patchDraft(c, d){
   c.mode='draft'; c.bad=false; c.title.textContent = 'เขียนคลิป: '+d.topic;
-  c.state.className='state wait'; c.state.textContent = DSTAT[d.status]||d.status;
+  c.state.className='state wait'; c.state.textContent = draftState(d)[1];
+  c.planning=d.planning?d:null;
   c.beat = 0; c.target = DFLOOR[d.status] ?? .1; c.ceil = c.target + .3; c.last = +new Date(d.updated_at); c.stalledAfter = 240000;
   if (c.shown < c.target) c.shown = c.target*0.9;
   c.who.replaceChildren(h('div',{}, 'LLM ที่กำลังคิดอยู่: '+whoWrote(d.model, d.reasoning)), h('small',{}, 'ค้นข้อมูลด้วย OpenAI ก่อน ใช้ Firecrawl เฉพาะเมื่อจำเป็นภายในงบรวม แล้วเขียนสคริปต์ ฉาก และคำบรรยาย ก่อนส่งเข้ากฎตรวจ'));
   setFeed(c, (d.log||[]).map((l,i)=>({k:l.at+i, t:tm(l.at), m:l.msg})));
   c.created = +new Date(d.created_at); c.ended = 0; c.stageStart = 0;
   if (!c.clock){ c.clock = h('div',{class:'clock'}); c.sub.before(c.clock); }
-  c.sub.textContent = 'เริ่มเมื่อ '+fmtD(d.created_at); c.act.replaceChildren(); c.bar.classList.remove('bad');
+  c.sub.textContent = c.planning?'':'เริ่มเมื่อ '+fmtD(d.created_at); c.act.replaceChildren(); c.bar.classList.remove('bad');
+  c.bar.classList.toggle('indet',!!c.planning);
 }
 function working(w){
   LIVE.off = w.now ? Date.parse(w.now)-Date.now() : 0;
@@ -1775,6 +1785,13 @@ function tick(){
   if (S.view!=='working' || !S.liveOn) return;
   const now = srvNow();
   for (const c of LIVE.cards.values()){
+    if(c.mode==='draft' && c.planning){
+      const timing=plannerTiming(c.planning,now);
+      if(c.clock.textContent!==timing)c.clock.textContent=timing;
+      c.bar.classList.remove('stall');c.bar.removeAttribute('aria-valuenow');
+      c.pct.textContent='';
+      continue;
+    }
     const idle = now - (c.last||now), alive = !c.bad && c.beat && (now - c.beat) < 150000, quiet = !c.bad && idle > c.stalledAfter, stall = quiet && !alive;
     c.bar.classList.toggle('stall', stall);
     if (!c.bad && !RM){

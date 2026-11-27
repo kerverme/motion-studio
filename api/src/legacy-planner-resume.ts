@@ -33,7 +33,10 @@ export function needsFreshPlannerConsent(row:any): boolean {
   if (row.status !== 'failed') return false;
   if (restartErrors.has(row.error)) return !legacyPlannerReceipt(row);
   // A committed reservation with no receipt might already have reached the provider.
-  return Object.values(row.planner_checkpoint?.calls ?? {}).some((call:any) => !call?.response_id && !call?.result);
+  const wait=row.planner_checkpoint?.wait;
+  if (wait?.state==='uncertain' || wait?.state==='blocked') return true;
+  return Object.entries(row.planner_checkpoint?.calls ?? {}).some(([key,call]:[string,any]) =>
+    !call?.response_id && !call?.result && !(wait?.key===key && wait.state==='failed'));
 }
 
 type Dependencies = {

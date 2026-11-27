@@ -19,7 +19,7 @@ test('legacy Reverse approvals stay in history without occupying Studio draft sl
   const legacy=await db.query<{id:string}>(`INSERT INTO drafts(topic,status,creative)
     SELECT 'Cartoon','submitted',jsonb_build_object('reverse_project',gen_random_uuid(),'quote_id',gen_random_uuid())
     FROM generate_series(1,45) RETURNING id`);
-  const pool={query:async(sql:string,args:any[]=[])=>sql.startsWith("SELECT id FROM drafts WHERE status='queued'")?{rows:[]}:db.query(sql,args)};
+  const pool={query:async(sql:string,args:any[]=[])=>sql.startsWith("WITH candidates AS")?{rows:[]}:db.query(sql,args)};
   const app=new Hono();
   const timeout=globalThis.setTimeout;
   const timers=t.mock.method(globalThis,'setTimeout',(fn:any,ms?:number,...args:any[])=>ms===8000?undefined:timeout(fn,ms,...args));

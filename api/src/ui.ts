@@ -10,6 +10,7 @@ import * as buffer from './buffer.js';
 import * as notion from './notion.js';
 import { analytics, syncPosts, reconcile } from './metrics.js';
 import {IS_STUDIO_DRAFT} from './studio-draft-queries.js';
+import {plannerStatus} from './planner-checkpoint.js';
 
 import {removalRequest, removeStudioItems} from './studio-removal.js';
 
@@ -210,9 +211,10 @@ export function registerUi(app: Hono, pool: pg.Pool, deps: { API_TOKEN: string; 
          OR (j.status='CANCELLED' AND j.updated_at > now() - interval '2 days'))
       ORDER BY j.created_at DESC LIMIT 30`);
     // drafts an LLM is writing right now (the only place an LLM runs)
-    const dr = await pool.query(`SELECT id, topic, status, model, reasoning, log, created_at, updated_at FROM drafts
+    const dr = await pool.query(`SELECT id, topic, status, model, reasoning, log, created_at, updated_at, planner_checkpoint->'wait' AS planner_wait FROM drafts
       WHERE status IN ('queued','researching','writing') AND ${IS_STUDIO_DRAFT} ORDER BY created_at DESC LIMIT 5`);
-    return c.json({ jobs: r.rows, drafts: dr.rows.map((x: any) => ({ ...x, log: Array.isArray(x.log) ? x.log.slice(-6) : [] })), now: new Date().toISOString() });
+    return c.json({ jobs: r.rows, drafts: dr.rows.map(({planner_wait,...x}: any) =>
+      ({ ...x, planning:plannerStatus(x.status,planner_wait),log: Array.isArray(x.log) ? x.log.slice(-6) : [] })), now: new Date().toISOString() });
   });
 
   app.post('/app/api/jobs/:id/retry', requireUi, async (c) => {

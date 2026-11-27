@@ -12,7 +12,7 @@ for(const [accessible,count] of [[true,1],[false,1],[true,6]] as const)test(`sel
   const timeout=nativeTimeout(resolve,5000);
   const pool:any={query:async(sql:string,args:any[]=[])=>{
     if(sql.includes("WHERE status IN ('researching','writing')"))return {rows:[]};
-    if(sql.includes("SELECT id FROM drafts WHERE status='queued'"))return {rows:status==='queued'?[{id:row.id}]:[]};
+    if(sql.includes("WITH candidates AS"))return {rows:status==='queued'?[{id:row.id}]:[]};
     if(sql.startsWith('SELECT * FROM drafts WHERE id='))return {rows:[{...row,status}]};
     if(sql.startsWith("UPDATE drafts SET status='researching'"))status='researching';
     if(sql.startsWith('UPDATE drafts SET trend_context='))saved=JSON.parse(args[1]);

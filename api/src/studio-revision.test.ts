@@ -14,7 +14,7 @@ test('LLM partial repair keeps five checkpoints, reports exactly one missing sce
   let resolveDone!:()=>void;const done=new Promise<void>(resolve=>{resolveDone=resolve;});
   const pool={query:async(sql:string,args:any[]=[])=>{
     if(sql.includes("WHERE status IN ('researching','writing')"))return{rows:[]};
-    if(sql.includes("SELECT id FROM drafts WHERE status='queued'"))return{rows:status==='queued'?[{id:row.id}]:[]};
+    if(sql.includes("WITH candidates AS"))return{rows:status==='queued'?[{id:row.id}]:[]};
     if(sql.startsWith('SELECT * FROM drafts WHERE id='))return{rows:[{...row,status}]};
     if(sql.startsWith('SELECT id, draft FROM drafts'))return{rows:[]};
     if(sql.startsWith("UPDATE drafts SET status='researching'"))status='researching';

@@ -18,7 +18,9 @@ test('startup recovers accepted work, defers unreadable IDs fairly, and preserve
       ('reverse','queued',null),('unknown-intent','writing','{"version":1}');
     UPDATE drafts SET removed_at=now() WHERE topic='deleted';
     UPDATE drafts SET creative='{"reverse_project":"one","quote_id":"two"}' WHERE topic='reverse';
-    UPDATE drafts SET updated_at=now()-interval '1 hour' WHERE topic='legacy-old'`);
+    UPDATE drafts SET updated_at=now()-interval '1 hour' WHERE topic='legacy-old';
+    UPDATE drafts SET updated_at=now()-interval '1 minute' WHERE topic='accepted';
+    UPDATE drafts SET planner_checkpoint='{"version":1,"wait":{"next_poll_at":9999999999999}}' WHERE topic='unknown-intent'`);
   const q = {query: async (sql:string, args:unknown[]=[]) => {
     const result = await db.query(sql,args);
     return {...result,rowCount:result.affectedRows};
@@ -34,19 +36,20 @@ test('startup recovers accepted work, defers unreadable IDs fairly, and preserve
     await q.query("UPDATE drafts SET status='ready' WHERE id=$1",[id]);
   };
   await drainStudioQueue(q,generate);
-  assert.deepEqual(topics.slice(0,2).sort(),['accepted','unknown-intent']);
-  assert.equal(topics[2],'new');
+  assert.deepEqual(topics,['accepted','new']);
   const status = async (topic:string) => (await q.query('SELECT status,error FROM drafts WHERE topic=$1',[topic])).rows[0];
   assert.equal((await status('accepted')).status,'writing');
   assert.equal((await status('legacy-active')).status,'researching');
   assert.equal((await status('legacy-old')).status,'failed');
   assert.equal((await status('deleted')).status,'researching');
   assert.equal((await status('reverse')).status,'queued');
-  assert.equal((await status('unknown-intent')).error,'unconfirmed provider request');
+  assert.equal((await status('unknown-intent')).status,'writing');
+  await q.query(`UPDATE drafts SET planner_checkpoint=jsonb_set(planner_checkpoint,'{wait,next_poll_at}','0') WHERE topic='unknown-intent'`);
   canRead=true;
   await drainStudioQueue(q,generate);
-  assert.deepEqual(topics.slice(3),['accepted']);
+  assert.deepEqual(topics.slice(2),['unknown-intent','accepted']);
   assert.equal((await status('accepted')).status,'ready');
+  assert.equal((await status('unknown-intent')).error,'unconfirmed provider request');
 });
 
 test('replicas use only the session holding the lock, release it on failure, and destroy a disconnected client', async () => {

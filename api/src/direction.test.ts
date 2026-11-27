@@ -67,7 +67,7 @@ test('persisted director version protects legacy checkpoints, upgrades new work 
   }
   await db.exec(readFileSync(new URL('023_director_version.sql',dir),'utf8'));
   assert.equal((await db.query<{director_version:number}>('SELECT director_version FROM drafts WHERE id=$1',[oldId])).rows[0].director_version,0);
-  const pool={query:async(sql:string,args:any[]=[])=>sql.startsWith("SELECT id FROM drafts WHERE status='queued'")?{rows:[]}:db.query(sql,args)};
+  const pool={query:async(sql:string,args:any[]=[])=>sql.startsWith("WITH candidates AS")?{rows:[]}:db.query(sql,args)};
   const nativeTimeout=globalThis.setTimeout;globalThis.setTimeout=((fn:any,ms?:number,...args:any[])=>nativeTimeout(ms===8000?()=>{}:fn,ms===8000?0:ms,...args)) as typeof setTimeout;
   try{
     let jobs=0;const app=new Hono();registerStudio(app,pool as any,{models:FALLBACK_MODELS,guard:async(_c,next)=>next(),createJob:async()=>{jobs++;return{status:201,body:{}}},estimateCredits:()=>100,validate:()=>[],researchFreshness:()=>[]});
