@@ -52,8 +52,8 @@ export interface BudgetStore {
 /** No retries: an ambiguous transport failure may already have incurred a charge. */
 export class BudgetedFirecrawl {
   constructor(private store: BudgetStore, private options: {apiKey:string; baseUrl:string; fetch?:typeof fetch}) {}
-  async request(job: string, path: string, input: Record<string, any>, fallback: {webAttempted:boolean; reason:string}) {
-    if (!fallback.webAttempted || fallback.reason.trim().length < 12) throw new ResearchBudgetError('web_first', 'Use OpenAI Web Search first; explain which evidence is missing before Firecrawl fallback.');
+  async request(job: string, path: string, input: Record<string, any>, policy: {webAttempted:boolean; reason:string} | {mode:'product_trends'}) {
+    if ('mode' in policy ? path !== '/v2/search' : !policy.webAttempted || policy.reason.trim().length < 12) throw new ResearchBudgetError('web_first', 'Use OpenAI Web Search first; explain which evidence is missing before Firecrawl fallback.');
     const req = priceRequest(path,input);
     return this.store.exclusive(job, async () => {
       const cached = await this.store.cached(req.key);

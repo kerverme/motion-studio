@@ -8,10 +8,12 @@ export type FalVideoModel={
   endpoint_id:string; category:VideoCategory; name:string; available:boolean; endpoint_available?:boolean;
   resolutions:string[]; durations:number[]; audio:boolean|null; input_schema:Obj; schema_hash:string;
   price:{unit:string;unit_price:number;currency:string}|null; source_url:string; checked_at:string; reason?:string;
+  output_padding_seconds?:number;
   pricing_description?:string; billing?:Billing|null; verification_error?:string;
 };
 type Billing={rates:Record<string,number>;reference_image_usd?:number;source_second_usd?:number;basis?:'per_request'};
 export const PREVIOUS_FRAME='https://studio.cloudbath.co/internal/previous-frame.png';
+export const H3_MAX_IMAGE='minimax/h3-max/image-to-video';
 const API='https://api.fal.ai/v1/models';
 const schemaValidators=new Ajv2020({strict:false,allErrors:false,validateFormats:true,addUsedSchema:false});
 addFormats(schemaValidators);
@@ -209,15 +211,17 @@ function inputSchema(model:Obj){
   if(!schema.properties || (schema.type && schema.type!=='object'))throw new Error('Unsupported fal generation schema');
   return schema as Obj;
 }
-function compatibleOutput(model:Obj){
+function resultSchema(model:Obj){
   const doc=model.openapi;
   const id=doc?.info?.['x-fal-metadata']?.endpointId;
   const operation=(doc?.paths?.['/'+model.endpoint_id+'/requests/{request_id}']??doc?.paths?.['/'+id+'/requests/{request_id}'])?.get;
   const raw=operation?.responses?.['200']?.content?.['application/json']?.schema;
-  if(!raw)return false;
-  const schema=resolveSchema(raw,doc);
-  const file=schema.properties?.video;
-  return schema.required?.includes('video') && [file,...(file?.allOf||[])].some(v=>v?.properties?.url?.type==='string'&&v.required?.includes('url'));
+  return raw?resolveSchema(raw,doc):null;
+}
+function compatibleOutput(model:Obj){
+  const schema=resultSchema(model);
+  const file=schema?.properties?.video;
+  return schema?.required?.includes('video') && [file,...(file?.allOf||[])].some(v=>v?.properties?.url?.type==='string'&&v.required?.includes('url'));
 }
 function variants(field:Obj|undefined):Obj[]{
   if(!field)return [];
@@ -241,12 +245,34 @@ function imageControl(props:Obj){return ['image_url','start_image_url','first_fr
 function pricingParagraph(text:string){
   return text.match(/^## Pricing\s*\n([\s\S]*?)(?=^## |$(?![\s\S]))/m)?.[1]?.split(/\nFor more details, see /)[0].replace(/\*\*/g,'').trim()||'';
 }
+function h3MaxOutputPadding(schema:Obj) {
+  const duration=schema.properties?.duration;
+  const expansion=schema.properties?.prompt_expansion_mode;
+  const match=String(duration?.description||'').match(/output can run up to (?:about )?([\d.]+) s longer than requested/i);
+  const padding=Number(match?.[1]);
+  const disablesExpansion=expansion?.type==='string' &&
+    (expansion.enum||expansion.examples||[]).includes('disabled');
+  if(duration?.type!=='number'||duration.minimum<=0||duration.maximum>30||
+    !Number.isFinite(duration.minimum)||!Number.isFinite(duration.maximum)||!disablesExpansion||
+    !Number.isFinite(padding)||padding<=0||padding>2) return undefined;
+  return padding;
+}
+function h3MaxTariff(paragraph:string):Billing|null {
+  const promotions = /^Billing is calculated per second of video generated\. Through [A-Z][a-z]+ \d+, \d{4}, the \d+% promotional discount applies: \$[\d.]+ at 480p, \$[\d.]+ at 768p, and \$[\d.]+ at 1080p per second\. From [A-Z][a-z]+ \d+ through [A-Z][a-z]+ \d+, \d{4}, get \d+% off standard rates: \$[\d.]+ at 480p, \$[\d.]+ at 768p, and \$[\d.]+ at 1080p per second\. During the [A-Z][a-z]+ promotion, \d+ seconds of video at 768p costs \$[\d.]+\. /;
+  const current = paragraph.replace(promotions,'');
+  const tariff=current.match(/^From ([A-Z][a-z]+ \d+, \d{4}), standard rates are \$(\d+(?:\.\d+)?), \$(\d+(?:\.\d+)?), and \$(\d+(?:\.\d+)?) per second at 480p, 768p, and 1080p, respectively\. Contact your sales representative to discuss permanent discounted pricing\.$/);
+  if(current===paragraph||!tariff) return null;
+  const effective=Date.parse(tariff[1]+' 00:00:00 UTC');
+  const rates={'480p':Number(tariff[2]),'768p':Number(tariff[3]),'1080p':Number(tariff[4])};
+  return Number.isFinite(effective)&&Date.now()>=effective&&Object.values(rates).every(v=>v>0)?{rates}:null;
+}
 function billingRules(endpoint:string,paragraph:string):Billing|null{
   if(!paragraph || /tokens?|roughly|approximately|compute|minimum charge/i.test(paragraph))return null;
   // Parse only complete, documented tariffs for the verified version. Reject new clauses and unknown units.
   const cost='\\$(\\d+(?:\\.\\d+)?)';
   const rates:Record<string,number>={};
   const p=paragraph.replace(/\s+/g,' ').trim();
+  if(endpoint===H3_MAX_IMAGE)return h3MaxTariff(p);
   let reference_image_usd:number|undefined;
   const collect=(pattern:RegExp,priceIndex:number,tierIndex:number)=>{
     for(const match of p.matchAll(pattern))rates[match[tierIndex].toLowerCase()]=Number(match[priceIndex]);
@@ -365,6 +391,43 @@ async function details(endpoint:string,request:typeof fetch,lookup?:PriceLookup)
   return {price,billing:billingRules(endpoint,paragraph),pricing_description:paragraph.slice(0,1700),
     ...(issues.length?{verification_error:issues.join(' / ')}:{})};
 }
+export const UGC_IMAGE_MODELS = ['fal-ai/nano-banana-pro/edit', 'fal-ai/nano-banana-2/edit'] as const;
+export const UGC_IMAGE_REFERENCES = ['https://studio.cloudbath.co/internal/ugc-product.png','https://studio.cloudbath.co/internal/ugc-presenter.png'] as const;
+
+export async function estimateUgcImage(endpoint:string, prompt:string, portrait:boolean, request:typeof fetch=fetch) {
+  if (!(UGC_IMAGE_MODELS as readonly string[]).includes(endpoint)) throw Error('โมเดลนี้ยังไม่รองรับภาพอ้างอิง UGC');
+  const [found, info]=await Promise.all([catalogGroup([endpoint],request).then(rows=>rows.get(endpoint)),details(endpoint,request)]);
+  const paragraph=info.pricing_description.replace(/\s+/g,' ').trim();
+  // One 1K image, no optional search, higher resolution or explicit high thinking.
+  const normal=/^Your request will cost \$(\d+(?:\.\d+)?) per image\. For \$[\d.]+, you can (?:generate \d+ standard images|run this model \d+ times)\. /.exec(paragraph);
+  const extras=normal && paragraph.slice(normal[0].length);
+  const supported=endpoint.endsWith('/nano-banana-pro/edit') ?
+    /^4K outputs will be charged at double the standard rate\. If web search is used, an additional \$[\d.]+ will be charged\. Note: Pricing may change in the future\.$/ :
+    /^2K and 4K outputs will be charged at [\d.]+ times and [\d.]+ times the standard rate, respectively\. 0\.5K \(512px\) resolution outputs will be charged at [\d.]+ times the standard rate\. If web search is used, an additional \$[\d.]+ will be charged\. If high thinking is used, an additional \$[\d.]+ will be charged\. Note: Pricing is subject to change\.$/;
+  if (!found || found.metadata?.status!=='active' || !info.price || !/^images?$/i.test(info.price.unit) ||
+      !normal || !(Number(normal[1])>0) || !extras || !supported.test(extras))
+    throw Error(info.verification_error || 'ยังยืนยันเรต 1K ต่อภาพจาก fal.ai ไม่ได้');
+  const schema=inputSchema(found);
+  const result=resultSchema(found);
+  const images=result?.properties?.images;
+  if(!result?.required?.includes('images')||images?.type!=='array'||images.items?.properties?.url?.type!=='string')
+    throw Error('ตัวอ่านผลลัพธ์ยังไม่รองรับภาพของโมเดลนี้');
+  const payload={prompt,image_urls:UGC_IMAGE_REFERENCES.slice(0,portrait?2:1),num_images:1,output_format:'jpeg',
+    resolution:'1K',aspect_ratio:'9:16',enable_web_search:false};
+  const valid=schemaValidators.compile(schema);
+  if(!Object.keys(payload).every(key=>key in schema.properties)||!valid(payload))
+    throw Error('รูปแบบเฟรมคนถือสินค้าไม่ตรงกับ schema ของ fal.ai');
+  const estimate=await readJson(API+'/pricing/estimate',request,'estimate',{method:'POST',headers:auth('estimate'),
+    body:JSON.stringify({estimate_type:'unit_price',endpoints:{[endpoint]:{unit_quantity:1}}})});
+  if(estimate.estimate_type!=='unit_price'||estimate.currency!=='USD'||!Number.isFinite(estimate.total_cost)||
+      Math.abs(estimate.total_cost-info.price.unit_price)>1e-6) throw Error('ราคาเฟรมเปิดจาก fal.ai ไม่ตรงกับราคาบัญชี');
+  return {endpoint_id:endpoint,model_name:String(found.metadata.display_name||endpoint),payload,
+    schema_hash:createHash('sha256').update(stableJson(schema)).digest('hex'),resolution:'1K',
+    billing_quantity:1,billing_unit:info.price.unit,unit_usd:Math.max(info.price.unit_price,Number(normal[1])),
+    estimated_usd:Math.max(info.price.unit_price,Number(normal[1])),account_unit_usd:info.price.unit_price,
+    pricing_source:'https://fal.ai/models/'+endpoint,pricing_checked_at:new Date().toISOString()};
+}
+
 export async function getVideoModel(endpoint:string,category:VideoCategory,request:typeof fetch=fetch,lookup?:PriceLookup,scope?:CatalogScope):Promise<FalVideoModel>{
   validateEndpointId(endpoint);
   const found=scope?await scope.exact(endpoint):(await catalogGroup([endpoint],request)).get(endpoint);
@@ -377,6 +440,11 @@ export async function getVideoModel(endpoint:string,category:VideoCategory,reque
   catch{knownSchema=false;}
   const props=schema.properties||{};
   let durations=allowedDurations(props.duration||props.duration_seconds);
+  const padding=endpoint===H3_MAX_IMAGE?h3MaxOutputPadding(schema):undefined;
+  if(padding) {
+    const min=Math.ceil(props.duration.minimum),max=Math.floor(props.duration.maximum);
+    durations=Array.from({length:Math.max(0,max-min+1)},(_,i)=>i+min);
+  }
   const trimBound=sourceTrimLimit(endpoint,schema);
   if(trimBound)durations=Array.from({length:trimBound},(_,i)=>i+1);
   const resolutions:string[]=[...new Set<string>(variants(props.resolution).flatMap(f=>f.enum||[]).filter((v:unknown)=>typeof v==='string' && /^(?:\d+p|[248]k)$/i.test(v)))];
@@ -385,11 +453,11 @@ export async function getVideoModel(endpoint:string,category:VideoCategory,reque
   const billableUnit=info.billing?.basis==='per_request'?/^(?:requests?|videos?|generations?)$/i:/^seconds?$/i;
   const available=!!(active&&compatible&&info.price&&billableUnit.test(info.price.unit)&&info.billing&&durations.length&&resolutions.length&&
     resolutions.some(r=>info.billing!.rates[r.toLowerCase()]||info.billing!.rates['*'])&&
-    props.prompt&&(category!=='image-to-video'||imageControl(props))&&
+    props.prompt&&(endpoint!==H3_MAX_IMAGE||padding)&&(category!=='image-to-video'||imageControl(props))&&
     (category!=='video-to-video'&&category!=='video-editing'||videoControl(props)));
   return {endpoint_id:endpoint,name:found.metadata.display_name,category,endpoint_available:active,available,resolutions,durations,audio,
     input_schema:schema,schema_hash:createHash('sha256').update(stableJson(schema)).digest('hex'),source_url:'https://fal.ai/models/'+endpoint+'/api',
-    checked_at:new Date().toISOString(),...info,...(available?{}:{reason:info.verification_error||(!active?'fal ระบุว่า endpoint นี้ยังไม่เปิดใช้งาน':!knownSchema?'ยังตรวจรูปแบบคำขอของรุ่นนี้ไม่ได้':!compatible?'ตัวอ่านวิดีโอยังไม่รองรับรูปแบบผลลัพธ์ของรุ่นนี้':!info.price?'ยังตรวจราคาบัญชีเป็น USD ไม่ได้':
+    checked_at:new Date().toISOString(),...info,...(padding?{output_padding_seconds:padding}:{}),...(available?{}:{reason:info.verification_error||(!active?'fal ระบุว่า endpoint นี้ยังไม่เปิดใช้งาน':!knownSchema?'ยังตรวจรูปแบบคำขอของรุ่นนี้ไม่ได้':!compatible?'ตัวอ่านวิดีโอยังไม่รองรับรูปแบบผลลัพธ์ของรุ่นนี้':!info.price?'ยังตรวจราคาบัญชีเป็น USD ไม่ได้':
       !info.billing?'ยังคำนวณราคาครบตามการตั้งค่าของรุ่นนี้ไม่ได้':!durations.length?'เวลาผลิตขึ้นกับคลิปต้นทาง หรือยังไม่มีช่วงเวลาที่ตรวจสอบได้':
       'การตั้งค่าหรือหน่วยคิดเงินของรุ่นนี้ยังไม่รองรับ')})};
 }
@@ -443,6 +511,7 @@ export function buildVideoPayload(model:FalVideoModel,scene:SceneInput):Record<s
   const options=variants(props[dk]).flatMap(f=>f.enum||[]);
   const duration=options.find(v=>seconds(v)===scene.duration)??scene.duration;
   const payload:Record<string,unknown>={prompt:scene.prompt,resolution:res};
+  if(model.endpoint_id===H3_MAX_IMAGE)payload.prompt_expansion_mode='disabled';
   if(props[dk])payload[dk]=duration;
   else if(!sourceTrimLimit(model.endpoint_id,model.input_schema))throw new Error('Missing verified duration control');
   const audio=audioControl(props);
@@ -470,11 +539,16 @@ export function previewVideoPayload(model:FalVideoModel,payload:Record<string,un
   const duration=seconds(trimmed?verifiedMediaSeconds:payload.duration??payload.duration_seconds);
   const rate=model.billing.rates[String(payload.resolution).toLowerCase()]??model.billing.rates['*'];
   const allowed=new Set(['prompt','duration','duration_seconds','resolution','aspect_ratio',videoControl(model.input_schema.properties),imageControl(model.input_schema.properties),audioControl(model.input_schema.properties)]);
+  if(model.endpoint_id===H3_MAX_IMAGE){
+    if(!model.output_padding_seconds||payload.prompt_expansion_mode!=='disabled')throw Error('Unpriced H3 Max configuration');
+    allowed.add('prompt_expansion_mode');
+  }
   if(!rate||!model.durations.includes(duration)||!model.resolutions.some(r=>r===payload.resolution)||Object.keys(payload).some(k=>!allowed.has(k)))throw new Error('Unpriced fal configuration');
   const perRequest=model.billing.basis==='per_request';
-  const units=perRequest?quantity:quantity*duration;
+  const billableSeconds=model.output_padding_seconds?Math.ceil(duration+model.output_padding_seconds):duration;
+  const units=perRequest?quantity:quantity*billableSeconds;
   const inputCount=model.category==='image-to-video'?1:0;
-  const documented=quantity*(rate*(perRequest?1:duration)+inputCount*(model.billing.reference_image_usd||0)+
+  const documented=quantity*(rate*(perRequest?1:billableSeconds)+inputCount*(model.billing.reference_image_usd||0)+
     (trimmed?duration*(model.billing.source_second_usd||0):0));
   return {usd:Math.ceil(Math.max(documented,model.price.unit_price*units)*1e6-1e-8)/1e6,unit:model.price.unit,quantity:units};
 }

@@ -12,7 +12,10 @@ def sha256_file(path):
 
 
 class S3Storage:
-    def __init__(self):
+    def __init__(self, client=None, bucket=None):
+        if client is not None:
+            self.s3, self.bucket = client, bucket
+            return
         import boto3
         from botocore.config import Config
         self.bucket = config.BUCKET

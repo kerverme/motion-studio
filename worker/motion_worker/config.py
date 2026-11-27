@@ -24,6 +24,10 @@ R2_KEY = env.get('R2_ACCESS_KEY_ID', '')
 R2_SECRET = env.get('R2_SECRET_ACCESS_KEY', '')
 R2_PUBLIC_BASE_URL = env.get('R2_PUBLIC_BASE_URL', '').rstrip('/')  # permanent public base, e.g. https://pub-xxxx.r2.dev
 R2_PREFIX = env.get('R2_PREFIX', 'ready-to-post')
+UGC_R2_BUCKET = env.get('UGC_R2_BUCKET') or R2_BUCKET
+UGC_R2_ENDPOINT = env.get('UGC_R2_ENDPOINT') or R2_ENDPOINT
+UGC_R2_KEY = env.get('UGC_R2_ACCESS_KEY_ID') or R2_KEY
+UGC_R2_SECRET = env.get('UGC_R2_SECRET_ACCESS_KEY') or R2_SECRET
 
 BUCKET = env.get('BUCKET', '')
 BUCKET_ENDPOINT = env.get('BUCKET_ENDPOINT', '')

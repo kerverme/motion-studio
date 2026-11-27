@@ -1,6 +1,6 @@
 import {after,before,test} from 'node:test';
 import assert from 'node:assert/strict';
-import {createRankedFalDiscovery,FalRegistryError,registryIssue,buildVideoPayload,discoverRankedModel,estimateVideoPayload,getVideoModel,PREVIOUS_FRAME,validateVideoPayload,type VideoCategory} from './video-registry.js';
+import {createRankedFalDiscovery,FalRegistryError,registryIssue,buildVideoPayload,discoverRankedModel,estimateVideoPayload,getVideoModel,H3_MAX_IMAGE,PREVIOUS_FRAME,validateVideoPayload,type VideoCategory} from './video-registry.js';
 
 const original=process.env.FAL_KEY;
 before(()=>{process.env.FAL_KEY='offline-test';});
@@ -46,6 +46,30 @@ test('exact Arena version, resolution, official queue alias and tier-plus-image 
   assert.throws(()=>validateVideoPayload(m,{...p,generate_audio:'false'}),/Invalid fal payload/);
   assert.throws(()=>buildVideoPayload(m,{prompt:'first',duration:4,resolution:'720p',audio:false}),/first frame/);
   await assert.rejects(estimateVideoPayload(m,{...p,resolution:'1080p'},1,f.request),/Unpriced/);
+});
+test('H3 Max uses the resolution tariff and budgets padded output from the official schema',async()=>{
+  const tariff='Billing is calculated per second of video generated. Through October 31, 2025, the 35% promotional discount applies: $0.0325 at 480p, $0.052 at 768p, and $0.104 at 1080p per second. From November 1 through November 15, 2025, get 30% off standard rates: $0.035 at 480p, $0.056 at 768p, and $0.112 at 1080p per second. During the November promotion, 5 seconds of video at 768p costs $0.28. From November 16, 2025, standard rates are $0.05, $0.08, and $0.16 per second at 480p, 768p, and 1080p, respectively. Contact your sales representative to discuss permanent discounted pricing.';
+  const setup=(description:string)=>{
+    const f=fixture(H3_MAX_IMAGE,'image-to-video',description);
+    Object.assign(f.input.properties,{
+      resolution:{enum:['480P','768P','1080P']},
+      duration:{type:'number',minimum:.92,maximum:15,description:'The output can run up to about 0.7 s longer than requested.'},
+      prompt_expansion_mode:{type:'string',examples:['disabled','balanced','quality']},
+    });
+    f.input.required.push('prompt_expansion_mode');
+    return f;
+  };
+  const f=setup(tariff);
+  const model=await getVideoModel(H3_MAX_IMAGE,'image-to-video',f.request);
+  assert.equal(model.available,true);
+  assert.equal(model.output_padding_seconds,.7);
+  const payload=buildVideoPayload(model,{prompt:'Camera moves slowly toward the box',duration:10,resolution:'768P',audio:false,image_url:PREVIOUS_FRAME,aspect_ratio:'9:16'});
+  assert.equal(payload.prompt_expansion_mode,'disabled');
+  assert.equal(payload.duration,10);
+  assert.deepEqual(await estimateVideoPayload(model,payload,1,f.request),{usd:.88,unit:'seconds',quantity:11});
+  await assert.rejects(estimateVideoPayload(model,{...payload,prompt_expansion_mode:'quality'},1,f.request),/Unpriced H3 Max/);
+  const newFee=setup(tariff+' Source frames are billed separately.');
+  assert.equal((await getVideoModel(H3_MAX_IMAGE,'image-to-video',newFee.request)).available,false);
 });
 test('missing version, wrong category and partial catalog outages are distinguishable',async()=>{
   const f=fixture();assert.equal(await discoverRankedModel('Grok Imagine Video 1.5','text-to-video',f.request),null);
