@@ -17,7 +17,7 @@ import { communityBlock } from './community.js';
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { plannerCalls, readPlannerCheckpoint, PlannerRecoveryError, type PlannerCheckpoint } from './planner-checkpoint.js';
+import { plannerCalls, plannerStatus, readPlannerCheckpoint, PlannerRecoveryError, type PlannerCheckpoint } from './planner-checkpoint.js';
 import { openaiResponse, networkCode, OpenAIReadUnavailable } from './openai-response.js';
 import { Artwork, emptyArtwork, reconcileArtwork, updateArtwork, mergeArtwork, artworkComplete, ARTWORK_TOOLS, type ArtworkState } from './art-batches.js';
 import { BudgetedFirecrawl, PgResearchBudget, ResearchBudgetError } from './firecrawl-budget.js';
@@ -902,6 +902,7 @@ export function creativePackageProblems(pkg:any, board:StoryboardT, ownerNote=''
 // ---------------------------------------------------------------- the generator
 type Deps = {
   plannerSession?: PlannerSession;
+  plannerFetch?: typeof fetch;
   models?: ModelSource;
   guard: (c: Context, next: Next) => Promise<any>;
   signAsset?: (key:string)=>Promise<string|null>;
@@ -1129,11 +1130,23 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const verifyWrite = (changed: {rowCount: number | null}) => {
       if (changed.rowCount !== 1) throw new PlannerRecoveryError('ร่างถูกลบหรือหยุดแล้ว จึงหยุดก่อนส่งคำขอเพิ่ม');
     };
-    const saveCalls = async () => {
-      verifyWrite(await db.query("UPDATE drafts SET planner_checkpoint=jsonb_set(planner_checkpoint,'{calls}',$2::jsonb), updated_at=now() WHERE id=$1 AND removed_at IS NULL AND status IN ('researching','writing') AND (planner_checkpoint->>'turn')::int=$3", [id,JSON.stringify(checkpoint.calls),checkpoint.turn]));
+    const saveCalls = async (message?: string) => {
+      const patch = JSON.stringify({calls:checkpoint.calls,wait:checkpoint.wait});
+      const events = message?[{at:new Date().toISOString(),msg:message}]:[];
+      verifyWrite(await db.query(`UPDATE drafts SET planner_checkpoint=(planner_checkpoint-'wait')||$2::jsonb, log=log||$4::jsonb, updated_at=now()
+        WHERE id=$1 AND removed_at IS NULL AND status IN ('researching','writing') AND (planner_checkpoint->>'turn')::int=$3`,
+        [id,patch,checkpoint.turn,JSON.stringify(events)]));
     };
     const plannerRequest = (key: string): typeof openaiResponse => (body, options) =>
-      plannerCalls(checkpoint.calls, saveCalls).openai(key)(body, options);
+      plannerCalls(checkpoint, saveCalls).openai(key)(body, {...options,fetch:deps.plannerFetch??options.fetch});
+
+    // Poll the suspended operation directly. A still-queued nested source read
+    // must not replay the main model result, logs or earlier tools on every tick.
+    if (row.status!=='queued' && checkpoint.wait && !checkpoint.calls[checkpoint.wait.key]?.result) {
+      const key=checkpoint.wait.key;
+      if (!Object.hasOwn(checkpoint.calls,key)) throw new PlannerRecoveryError('จุดบันทึกคำขอ OpenAI ไม่ตรงกัน');
+      await openai({},undefined,plannerRequest(key));
+    }
     const seen = new Map<string, Seen>();
     const research: any[] = Array.isArray(row.research) ? [...row.research] : [];
     let parent: any = null;
@@ -1159,8 +1172,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const saveUsage = () => db.query('UPDATE drafts SET usage=$2, research=$3, updated_at=now() WHERE id=$1 AND removed_at IS NULL', [id, JSON.stringify(usage), JSON.stringify(research)]);
     const useModel = row.model && MODEL_RE.test(row.model) ? row.model : MODEL;
     const useEffort = PROVIDER === 'openai' ? (REASONING_LEVELS.includes(row.reasoning) ? row.reasoning : REASONING) : null;
-    if (previous) await log(id, `ทำต่อจากจุดบันทึก${previous.turn < 0 ? 'ก่อนวางบท' : 'รอบที่ '+(previous.turn+1)}`);
-    else await log(id, `เริ่มค้นข้อมูลด้วย OpenAI Web Search ก่อน · Firecrawl สำรองไม่เกิน ${fcBudget?.limit || 25} เครดิตต่อ Research Job (${useModel}${useEffort ? ' · reasoning ' + useEffort : ''})`);
+    if (!previous) await log(id, `เริ่มค้นข้อมูลด้วย OpenAI Web Search ก่อน · Firecrawl สำรองไม่เกิน ${fcBudget?.limit || 25} เครดิตต่อ Research Job (${useModel}${useEffort ? ' · reasoning ' + useEffort : ''})`);
 
     const storyMode = row.story_mode === 'general' ? 'general' as const : 'name_story' as const;
     const recurringCharacter = row.recurring_character === true;
@@ -1207,7 +1219,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
     const history: any[] = saved?.history ?? [{role:'user',content:userText}];
     const conv = PROVIDER === 'openai'
       ? openaiConversation(instructions, history, model, effort, active, plannerRequest('main'), message => log(id, message))
-      : anthropicConversation(instructions, history, model, active, body => plannerCalls(checkpoint.calls, saveCalls).foreground('main', () => claude(body)));
+      : anthropicConversation(instructions, history, model, active, body => plannerCalls(checkpoint, saveCalls).foreground('main', () => claude(body)));
     let sourceCompacted = false;
     const compactSource = () => {
       if (!sourceBlock || sourceCompacted) return;
@@ -1290,7 +1302,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       // Re-open saved social evidence once before any script-planning turn. A saved
       // trend record is never inserted into the fetched-URL ledger by itself.
       const urls=[...new Set<string>(row.trend_context.sources.flatMap((s:any)=>[s.url,...(s.supporting_sources||[]).map((p:any)=>p.url)]).filter((url:any)=>typeof url==='string'&&sourceKey(url)))].slice(0,6);
-      await log(id,'เปิดแหล่งเทรนด์ตรวจข้อมูลที่เปลี่ยนตามเวลาก่อนเขียนบท');
+      if (!Object.keys(checkpoint.calls).length) await log(id,'เปิดแหล่งเทรนด์ตรวจข้อมูลที่เปลี่ยนตามเวลาก่อนเขียนบท');
       const checkedUrls=new Set<string>(),summaries:string[]=[];
       for(let offset=0;offset<urls.length;offset+=4){
         const checked=await verifySources(urls.slice(offset,offset+4),researchOptions('trend-verify-'+offset));
@@ -1314,7 +1326,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       const totalIn = usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens;
       if (totalIn > MAX_INPUT_TOKENS) throw new Error('ครบงบโทเค็นของร่างนี้แล้ว เก็บบทและภาพที่วาดสำเร็จไว้ สามารถลองใหม่เพื่อทำต่อได้');
       const mustSubmit = !!storyboard && (active.lemo === true || artworkComplete(artwork, storyboard)) && (turn >= MAX_TURNS - 2 || totalIn > MAX_INPUT_TOKENS * 0.8);
-      await log(id, `รอบที่ ${turn + 1}: ${storyboard ? active.lemo ? 'ตรวจบทและสไตล์ Lemo ก่อนอนุมัติผลิต' : `วาดทีละส่วน (${artwork.cast.length} ตัวละคร · ${artwork.scenes.length}/${storyboard.shots.length} ฉาก · reasoning ${effort})` : 'ค้นข้อมูล/วางบท'} (${model})`);
+      if (!Object.hasOwn(checkpoint.calls,'main')) await log(id, `รอบที่ ${turn + 1}: ${storyboard ? active.lemo ? 'ตรวจบทและสไตล์ Lemo ก่อนอนุมัติผลิต' : `วาดทีละส่วน (${artwork.cast.length} ตัวละคร · ${artwork.scenes.length}/${storyboard.shots.length} ฉาก · reasoning ${effort})` : 'ค้นข้อมูล/วางบท'} (${model})`);
       const offeredTools = new Set(activeTools(active).map(tool => tool.name));
       const { uses, usage: u, web } = await conv.turn(mustSubmit);
       if (web) {
@@ -1654,6 +1666,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
   const summary = (r: any) => ({
     trend_context:r.trend_context||null,
     id: r.id, topic: r.topic, note: r.note, status: r.status, title: r.draft?.title_th ?? null, angle: r.draft?.angle ?? null, created_at: r.created_at,
+    planning:plannerStatus(r.status,r.planner_wait??r.planner_checkpoint?.wait),
     director_version:directorVersion(r.director_version), presentation_version:presentationVersion(r.presentation_version),
     recurring_character: r.recurring_character === true, presenter_kind:parsePresenterKind(r.presenter_kind, 'legacy'), has_character_reference:r.has_character_reference ?? (Array.isArray(r.characters) && r.characters.length > 0),
     narration_style: r.narration_style || 'standard', narration_custom: r.narration_custom || '', source_text_characters: String(r.source_text || '').length,
@@ -1766,6 +1779,7 @@ export function registerStudio(app: Hono, pool: pg.Pool, deps: Deps) {
       d.narration_custom, d.source_text, d.estimated_credits, d.job_id, d.error, d.auto_produce, d.source_type, d.community_id,
       jsonb_build_object('title_th', d.draft->'title_th', 'angle', d.draft->'angle') AS draft,
       (d.log->-1)->>'msg' AS last,
+      d.planner_checkpoint->'wait' AS planner_wait,
       (jsonb_typeof(d.characters)='array' AND d.characters <> '[]'::jsonb) AS has_character_reference,
       j.status AS job_status, j.progress AS job_progress, e.number AS episode_number FROM drafts d
       LEFT JOIN jobs j ON j.id = d.job_id LEFT JOIN episodes e ON e.id = d.episode_id

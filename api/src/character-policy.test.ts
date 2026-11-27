@@ -62,7 +62,7 @@ test('routes persist opt-in with no name/photo, preserve first reference order a
   for(const file of readdirSync(dir).filter(f=>f.endsWith('.sql')).sort())await db.exec(readFileSync(new URL(file,dir),'utf8'));
   await db.exec(readFileSync(new URL('021_recurring_character.sql',dir),'utf8'));
   let jobs=0;
-  const pool={query:async(sql:string,args:any[]=[])=>sql.startsWith("SELECT id FROM drafts WHERE status='queued'")?{rows:[]}:db.query(sql,args)};
+  const pool={query:async(sql:string,args:any[]=[])=>sql.startsWith("WITH candidates AS")?{rows:[]}:db.query(sql,args)};
   const nativeTimeout=globalThis.setTimeout;
   globalThis.setTimeout=((fn:any,ms?:number,...args:any[])=>nativeTimeout(ms===8000?()=>{}:fn,ms===8000?0:ms,...args)) as typeof setTimeout;
   try{
@@ -127,7 +127,7 @@ test('context default applies to new work while omitted retries preserve legacy 
     }
     await oldDb.exec(readFileSync(new URL('022_presenter_kind.sql',dir),'utf8'));
     const migrated:any=(await oldDb.query('SELECT * FROM drafts WHERE id=$1',[oldId])).rows[0];assert.equal(migrated.presenter_kind,'legacy');assert.deepEqual(migrated.storyboard,oldDraft.storyboard);assert.deepEqual(migrated.artwork,oldArt);
-    const pool={query:async(sql:string,args:any[]=[])=>sql.startsWith("SELECT id FROM drafts WHERE status='queued'")?{rows:[]}:oldDb.query(sql,args)};
+    const pool={query:async(sql:string,args:any[]=[])=>sql.startsWith("WITH candidates AS")?{rows:[]}:oldDb.query(sql,args)};
     const app=new Hono();registerStudio(app,pool as any,{models:FALLBACK_MODELS,guard:async(_c,next)=>next(),createJob:async()=>{throw new Error('no production allowed')},estimateCredits:()=>100,validate:()=>[],researchFreshness:()=>[]});
     const path='/app/api/studio/drafts';
     const send=(url:string,body:any,key:string,method='POST')=>app.request(url,{method,headers:{'content-type':'application/json','idempotency-key':key},body:JSON.stringify(body)});

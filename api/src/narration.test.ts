@@ -38,7 +38,7 @@ test('routes persist long source and narration, reject oversized input, and inva
   const dir=new URL('../migrations/',import.meta.url);
   for(const file of readdirSync(dir).filter(f=>f.endsWith('.sql')).sort())await db.exec(readFileSync(new URL(file,dir),'utf8'));
   await db.exec(readFileSync(new URL('019_narration.sql',dir),'utf8'));
-  const pool={query:async(sql:string,args:any[]=[])=>sql.startsWith("SELECT id FROM drafts WHERE status='queued'")?{rows:[]}:db.query(sql,args)};
+  const pool={query:async(sql:string,args:any[]=[])=>sql.startsWith("WITH candidates AS")?{rows:[]}:db.query(sql,args)};
   const nativeTimeout=globalThis.setTimeout;
   globalThis.setTimeout=((fn:any,ms?:number,...args:any[])=>nativeTimeout(ms===8000?()=>{}:fn,ms===8000?0:ms,...args)) as typeof setTimeout;
   try{
@@ -78,7 +78,7 @@ test('generation plans from the full source, compacts only after saving, and rer
   const row={id:'10000000-0000-0000-0000-000000000089',topic:'แก้วน้ำเล่าเรื่อง',story_mode:'general',source_text:source,narration_style:'child_10',narration_custom:'',model:'gpt-6.1-sol',reasoning:'medium',characters:[],style:'classic',auto_produce:false};
   const pool={query:async(sql:string,args:any[]=[])=>{
     if(sql.includes("WHERE status IN ('researching','writing')"))return{rows:[]};
-    if(sql.includes("SELECT id FROM drafts WHERE status='queued'"))return{rows:status==='queued'?[{id:row.id}]:[]};
+    if(sql.includes("WITH candidates AS"))return{rows:status==='queued'?[{id:row.id}]:[]};
     if(sql.startsWith('SELECT * FROM drafts WHERE id='))return{rows:[{...row,status}]};
     if(sql.startsWith('SELECT id, draft FROM drafts'))return{rows:[]};
     if(sql.startsWith("UPDATE drafts SET status='researching'"))status='researching';

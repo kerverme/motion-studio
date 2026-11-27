@@ -12,9 +12,11 @@ export type OpenAIResponseOptions = {
   timeoutMs?: number;
   responseId?: string; // Resume reads of an already accepted background response.
   pollOnce?: boolean; // Durable workers schedule the next read themselves.
+  retryCreate?: boolean; // Some queues allow only one short provider request per step.
 };
 
 export class OpenAIReadUnavailable extends Error {}
+export class OpenAICreateRejected extends Error {}
 
 export function networkCode(error: unknown): string {
   let e: any = error;
@@ -43,28 +45,34 @@ export async function openaiResponse(body: any, options: OpenAIResponseOptions):
 
   async function readJson(url: string, init: RequestInit, polling: boolean): Promise<any> {
     for (let attempt = 0; ; attempt++) {
-      let r: Response;
+      let r: Response | undefined;
       let j: any;
       try {
         r = await request(url, { ...init, headers, signal: AbortSignal.timeout(Math.max(1, Math.min(60_000, deadline - now()))) });
         j = await r.json();
       } catch (error) {
-        if (polling && options.pollOnce) throw new OpenAIReadUnavailable('OpenAI ตรวจสถานะไม่สำเร็จ: '+networkCode(error)+idHint());
-        if (polling && attempt < 4 && now() < deadline) {
-          await progress(`การเชื่อมต่อสะดุด (${networkCode(error)}) กำลังตรวจงาน OpenAI เดิมอีกครั้ง`);
-          await sleep(Math.min(2000 * (attempt + 1), Math.max(0, deadline - now())));
-          continue;
+        // A proxy may return HTML. Classify a known HTTP status before its body.
+        if (options.pollOnce && r && !r.ok) {
+          j = {};
+        } else {
+          if (polling && options.pollOnce) throw new OpenAIReadUnavailable('OpenAI ตรวจสถานะไม่สำเร็จ: '+networkCode(error)+idHint());
+          if (polling && attempt < 4 && now() < deadline) {
+            await progress(`การเชื่อมต่อสะดุด (${networkCode(error)}) กำลังตรวจงาน OpenAI เดิมอีกครั้ง`);
+            await sleep(Math.min(2000 * (attempt + 1), Math.max(0, deadline - now())));
+            continue;
+          }
+          if (polling && options.keepAccepted) throw new OpenAIReadUnavailable('OpenAI ตรวจสถานะไม่สำเร็จ: '+networkCode(error)+idHint());
+          throw new Error(`OpenAI ${polling ? 'ตรวจสถานะ' : 'ส่งคำขอ'}ไม่สำเร็จ: ${networkCode(error)}${idHint()}${polling ? '' : ' — ไม่ส่งซ้ำอัตโนมัติเพื่อป้องกันคิดเงินซ้ำ'}`);
         }
-        if (polling && options.keepAccepted) throw new OpenAIReadUnavailable('OpenAI ตรวจสถานะไม่สำเร็จ: '+networkCode(error)+idHint());
-        throw new Error(`OpenAI ${polling ? 'ตรวจสถานะ' : 'ส่งคำขอ'}ไม่สำเร็จ: ${networkCode(error)}${idHint()}${polling ? '' : ' — ไม่ส่งซ้ำอัตโนมัติเพื่อป้องกันคิดเงินซ้ำ'}`);
       }
+      j = j ?? {};
       const quota = j.error?.code === 'insufficient_quota' || j.error?.type === 'insufficient_quota';
-      if (polling && options.pollOnce && !quota && (r.status===408 || r.status===429 || r.status>=500)) {
+      if (polling && options.pollOnce && !quota && (r.status===408 || r.status===409 || r.status===429 || r.status>=500)) {
         throw new OpenAIReadUnavailable('OpenAI HTTP '+r.status+idHint());
       }
       // A 429 explicitly rejected the create. A 5xx or broken connection may
       // have accepted it, so only GETs may be retried in those cases.
-      if (!quota && (r.status === 429 || (polling && r.status >= 500)) && attempt < 4 && now() < deadline) {
+      if (!quota && (r.status === 429 && (polling || options.retryCreate!==false) || (polling && r.status >= 500)) && attempt < 4 && now() < deadline) {
         const retryAfter = Number(r.headers.get('retry-after')) * 1000;
         await progress(`OpenAI HTTP ${r.status} กำลังรอแล้ว${polling ? 'ตรวจงานเดิม' : 'ส่งคำขอ'}อีกครั้ง`);
         await sleep(Math.min(retryAfter > 0 ? retryAfter : 5000 * (attempt + 1), 60_000, Math.max(0, deadline - now())));
@@ -72,7 +80,11 @@ export async function openaiResponse(body: any, options: OpenAIResponseOptions):
       }
       if (polling && options.keepAccepted && !quota && (r.status === 408 || r.status === 429 || r.status >= 500))
         throw new OpenAIReadUnavailable('OpenAI HTTP '+r.status+idHint());
-      if (!r.ok) throw new Error(`OpenAI HTTP ${r.status}: ${quota ? 'insufficient_quota' : String(j.error?.code || j.error?.type || 'request_failed').replace(/[^a-zA-Z0-9_.-]/g, '').slice(0, 80)}${idHint()}`);
+      if (!r.ok) {
+        const message = `OpenAI HTTP ${r.status}: ${quota ? 'insufficient_quota' : String(j.error?.code || j.error?.type || 'request_failed').replace(/[^a-zA-Z0-9_.-]/g, '').slice(0, 80)}${idHint()}`;
+        if (!polling && r.status>=400 && r.status<500 && ![408,409].includes(r.status)) throw new OpenAICreateRejected(message);
+        throw new Error(message);
+      }
       return j;
     }
   }
@@ -87,7 +99,8 @@ export async function openaiResponse(body: any, options: OpenAIResponseOptions):
   }
   if (options.pollOnce) {
     if (typeof response.id!=='string' || !/^resp_[a-zA-Z0-9_-]+$/.test(response.id) || (responseId && response.id!==responseId)) throw new Error('OpenAI ไม่ยืนยันรหัสคำขอเดิม');
-    if (!['queued','in_progress','completed','incomplete','failed','cancelled'].includes(response.status)) throw new Error('OpenAI ส่งสถานะที่ไม่รู้จัก');
+    if (!['queued','in_progress','completed','incomplete','failed','cancelled'].includes(response.status))
+      throw new OpenAIReadUnavailable('OpenAI ส่งสถานะที่ไม่รู้จัก'+idHint());
     return response;
   }
   if (typeof response.id === 'string' && /^resp_[a-zA-Z0-9_-]+$/.test(response.id)) responseId = response.id;

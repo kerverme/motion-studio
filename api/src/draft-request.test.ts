@@ -23,7 +23,7 @@ test('Postgres prevents concurrent duplicate drafts and rewrites, and replays su
   await db.exec(readFileSync(new URL('016_draft_requests.sql',dir),'utf8'));
   const pool={query:async(sql:string,args:any[]=[])=>{
     // Exercise routes and real PostgreSQL uniqueness, without starting paid generation.
-    if(sql.startsWith("SELECT id FROM drafts WHERE status='queued'"))return {rows:[]};
+    if(sql.startsWith("WITH candidates AS"))return {rows:[]};
     return db.query(sql,args);
   }};
   function server(){const app=new Hono();registerStudio(app,pool as any,{models:FALLBACK_MODELS,guard:async(_c,next)=>next(),createJob:async()=>{throw new Error('must not produce')},estimateCredits:()=>100,validate:()=>[],researchFreshness:()=>[]});return app;}

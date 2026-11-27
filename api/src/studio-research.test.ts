@@ -18,7 +18,7 @@ test('studio enforces exact OpenAI read before fallback, caches deeper extractio
   const row={id,research_job_id:job,topic:'หลักฐานจากตารางต้นฉบับ',story_mode:'general',model:'gpt-6.1-sol',reasoning:'medium',characters:[]};
   const query=async(sql:string,args:any[]=[])=>{
     if(sql.includes("WHERE status IN ('researching','writing')"))return {rows:[]};
-    if(sql.includes("SELECT id FROM drafts WHERE status='queued'"))return {rows:status==='queued'?[{id}]:[]};
+    if(sql.includes("WITH candidates AS"))return {rows:status==='queued'?[{id}]:[]};
     if(sql.startsWith('SELECT removed_at FROM drafts'))return {rows:[{removed_at:null}]};
     if(sql.startsWith('SELECT * FROM drafts WHERE id='))return {rows:[{...row,status}]};
     if(sql.startsWith('SELECT id, draft FROM drafts'))return {rows:[]};

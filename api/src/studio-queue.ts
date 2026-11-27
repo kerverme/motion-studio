@@ -5,8 +5,8 @@ import {OpenAIReadUnavailable} from './openai-response.js';
 export type PlannerDb = Pick<pg.Pool, 'query'>;
 export type PlannerSession = (work: (db: PlannerDb) => Promise<void>) => Promise<void>;
 
-// Spans provider waits without an open transaction. Postgres releases this lock on
-// process death; all planner receipts and writes use this same physical connection.
+// Postgres releases this lock on process death. Each planner step and its receipts
+// use this connection. OpenAI's background execution occurs between steps.
 export async function withStudioPlannerSession(pool: pg.Pool, work: (db: PlannerDb) => Promise<void>) {
   const client = await pool.connect();
   let locked = false, lost = false;
@@ -32,17 +32,25 @@ export async function drainStudioQueue(db: PlannerDb, generate: (id: string, db:
       AND removed_at IS NULL AND ${IS_STUDIO_DRAFT}`);
   const deferred: string[] = [];
   for (;;) {
-    const interrupted = (await db.query(
-      `SELECT id FROM drafts WHERE status IN ('researching','writing') AND planner_checkpoint IS NOT NULL AND removed_at IS NULL
-         AND ${IS_STUDIO_DRAFT} AND id<>ALL($1::uuid[]) ORDER BY created_at,id LIMIT 1`, [deferred])).rows[0];
-    const next = interrupted || (await db.query(`SELECT id FROM drafts WHERE status='queued' AND removed_at IS NULL AND ${IS_STUDIO_DRAFT}
-      AND id<>ALL($1::uuid[]) ORDER BY created_at,id LIMIT 1`, [deferred])).rows[0];
+    const next = (await db.query(`WITH candidates AS (
+      SELECT id, created_at, CASE
+        WHEN status='queued' THEN extract(epoch FROM created_at)*1000
+        WHEN jsonb_typeof(planner_checkpoint#>'{wait,next_poll_at}')='number'
+          THEN (planner_checkpoint#>>'{wait,next_poll_at}')::numeric
+        ELSE extract(epoch FROM updated_at)*1000
+      END AS due_at
+      FROM drafts
+      WHERE (status='queued' OR (status IN ('researching','writing') AND planner_checkpoint IS NOT NULL))
+        AND removed_at IS NULL AND ${IS_STUDIO_DRAFT} AND id<>ALL($1::uuid[])
+    )
+    SELECT id FROM candidates WHERE due_at<=extract(epoch FROM clock_timestamp())*1000
+    ORDER BY due_at,created_at,id LIMIT 1`, [deferred])).rows[0];
     if (!next) return;
     try {
       await generate(next.id, db);
     } catch (e) {
       if (e instanceof OpenAIReadUnavailable) {
-        // Keep the accepted response attached; another draft may proceed on this tick.
+        // Do not spin on a draft if its next inspection becomes due during this sweep.
         deferred.push(next.id);
         continue;
       }

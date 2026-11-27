@@ -71,13 +71,13 @@ for(const tool of ['openai_search','read_page']){
   test(`${tool} uses the accepted OpenAI response after a restart and preserves the evidence timestamp`,async()=>{
     const url='https://official.example/claim';
     const callKey=tool+'-fixture';
-    let disk:PlannerCheckpoint['calls']={};
+    let disk:PlannerCheckpoint={version:1,provider:'openai',turn:0,calls:{}};
     const methods:string[]=[];
     async function run(interrupt:boolean){
-      const calls=structuredClone(disk);
-      const request=plannerCalls(calls,async()=>{
-        disk=structuredClone(calls);
-        if(interrupt&&disk[callKey].response_id)throw Error('worker stopped after durable receipt');
+      const checkpoint=structuredClone(disk);
+      const request=plannerCalls(checkpoint,async()=>{
+        disk=structuredClone(checkpoint);
+        if(interrupt&&disk.calls[callKey].response_id)throw Error('worker stopped after durable receipt');
       }).openai(callKey);
       const options={request,model:'test-model',apiKey:'mock',baseUrl:'https://mock.test',fetch:async(target:unknown,init?:RequestInit)=>{
         methods.push(String(init?.method));
