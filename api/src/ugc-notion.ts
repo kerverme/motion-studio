@@ -1,7 +1,8 @@
+import { createHash } from 'node:crypto';
 import type pg from 'pg';
 import { z } from 'zod';
 import { uuid, blank } from './ugc-contract.js';
-import { readMedia, saveMedia, type AssetStore } from './ugc-media.js';
+import { mediaType, readMedia, saveMedia, type AssetStore } from './ugc-media.js';
 
 const fields=['name','variant','price','promo','selling_points','order_url','media'] as const;
 const Mapping=z.object({database_id:uuid,fields:z.object(Object.fromEntries(fields.map(k=>[k,z.string().max(240)])) as Record<typeof fields[number],z.ZodString>).strict()}).strict();
@@ -17,7 +18,7 @@ export function notionProducts(pool:pg.Pool, store:AssetStore|null, request=fetc
     const r=await request('https://api.notion.com/v1'+path,{redirect:'error',signal:AbortSignal.timeout(12000),
       method:body?'POST':'GET',headers:{Authorization:'Bearer '+env.UGC_NOTION_TOKEN,'Notion-Version':'2022-06-28','Content-Type':'application/json'},
       body:body?JSON.stringify(body):undefined});
-    if (!r.ok) throw Error('Notion HTTP '+r.status+' ตรวจสิทธิ์ฐานสินค้าและการตั้งค่า');
+    if (!r.ok) throw Error('Notion HTTP '+r.status+' ตรวจสิทธิ์ฐานข้อมูลและการตั้งค่า');
     return r.json();
   };
   const columns=async (id:string)=>{
@@ -53,7 +54,71 @@ export function notionProducts(pool:pg.Pool, store:AssetStore|null, request=fetc
     }
     return {product, files:(field('media')?.files||[]) as any[]};
   };
-  return {enabled,allowed,columns,config,
+  const reviewerDb=normalize(env.UGC_NOTION_REVIEWER_DATABASE_ID?.trim()||'');
+  const reviewersEnabled=!!env.UGC_NOTION_TOKEN && uuid.safeParse(reviewerDb).success;
+  async function reviewerFields(){
+    if(!reviewersEnabled)throw Error('ยังไม่ได้ตั้งค่าฐานคนรีวิว Notion');
+    const db=await call('/databases/'+reviewerDb);
+    const props=Object.values(db.properties||{}) as {id:string;name:string;type:string}[];
+    const title=props.find(x=>x.type==='title');
+    const images=props.filter(x=>x.type==='files');
+    const chosen=env.UGC_NOTION_REVIEWER_IMAGE_PROPERTY;
+    const files=chosen?images.find(x=>x.id===chosen||x.name===chosen):images.length===1?images[0]:undefined;
+    if(!title||!files)throw Error('ระบุคอลัมน์ Files & media สำหรับรูปคนรีวิวใน UGC_NOTION_REVIEWER_IMAGE_PROPERTY');
+    return {title:title.id,files:files.id};
+  }
+  function portraits(page:any,fields:{title:string;files:string}){
+    const props=Object.values(page.properties||{}) as any[];
+    const name=String(props.find(p=>p.id===fields.title)?.title?.map((t:any)=>t.plain_text||'').join('')||'').trim();
+    const files=props.find(p=>p.id===fields.files)?.files??[];
+    return files.flatMap((file:any)=>{
+      const url=file[file.type]?.url;
+      if(!name||!hostedFile(url)||!file.name||!(/\.(?:jpe?g|webp|png)$/i.test(file.name)||/\.(?:jpe?g|webp|png)$/i.test(new URL(url).pathname)))return [];
+      const address=new URL(url);
+      const key=createHash('sha256').update(JSON.stringify([file.name,address.pathname,address.searchParams.get('id')])).digest('hex');
+      return [{page:page.id,name,file:key,filename:String(file.name),url}];
+    }) as {page:string;name:string;file:string;filename:string;url:string}[];
+  }
+  // Only thumbnails reuse the short-lived URL returned by the database query.
+  // Import resolves the page again and copies its bytes into private Studio storage.
+  const previews=new Map<string,{url:string;until:number}>();
+  const previewKey=(page:string,file:string)=>JSON.stringify([page,file]);
+  async function lookupPortrait(pageId:string,file:string){
+    const fields=await reviewerFields();
+    const p=await call('/pages/'+uuid.parse(pageId));
+    if(p.archived||p.in_trash||normalize(p.parent?.database_id||'')!==reviewerDb)throw Error('รูปคนรีวิวอยู่นอกฐานที่ตั้งไว้');
+    const selected=portraits(p,fields).find(x=>x.file===file);
+    if(!selected)throw Error('ไม่พบรูปคนรีวิวที่เลือกใน Notion');
+    return selected.url;
+  }
+  const reviewers={
+    enabled:reviewersEnabled,
+    list:async(query:string,cursor?:string)=>{
+      const fields=await reviewerFields();
+      const page=await call('/databases/'+reviewerDb+'/query',{page_size:25,
+        ...(query?{filter:{property:fields.title,title:{contains:query}}}:{}),...(cursor?{start_cursor:uuid.parse(cursor)}:{})});
+      const items=(page.results as any[]).filter(p=>!p.archived&&!p.in_trash).flatMap(p=>portraits(p,fields)).map(({page,name,file,filename,url})=>{
+        const key=previewKey(page,file);
+        previews.delete(key);
+        previews.set(key,{url,until:Date.now()+60_000});
+        if(previews.size>200)previews.delete(previews.keys().next().value!);
+        return {page,name,file,filename,thumbnail:'/app/api/ugc/notion/reviewers/'+page+'/image?file='+encodeURIComponent(file)};
+      });
+      return {items,next:page.has_more?page.next_cursor:null};
+    },
+    image:async(pageId:string,file:string,thumbnail=false)=>{
+      const cached=thumbnail?previews.get(previewKey(pageId,file)):undefined;
+      const download=(url:string)=>request(url,{redirect:'error',signal:AbortSignal.timeout(30000)});
+      const preview=cached&&cached.until>Date.now()?await download(cached.url):null;
+      const response=preview?.ok?preview:await download(await lookupPortrait(pageId,file));
+      if(!response.ok)throw Error('ดาวน์โหลดรูปคนรีวิวจาก Notion ไม่สำเร็จ');
+      const bytes=await readMedia(response.body,response.headers.get('content-length'));
+      const type=mediaType(bytes);
+      if(!type||!type.startsWith('image/'))throw Error('รูปคนรีวิวต้องเป็น JPEG, PNG หรือ WebP');
+      return {bytes,type};
+    },
+  };
+  return {enabled,allowed,columns,config,reviewers,
     save:async (value:unknown)=>{
       const m=await validate(value);
       await pool.query("INSERT INTO integrations(provider,data) VALUES('ugc_product_notion',$1) ON CONFLICT(provider) DO UPDATE SET data=EXCLUDED.data,updated_at=now()",[JSON.stringify(m)]);

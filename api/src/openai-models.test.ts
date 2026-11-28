@@ -41,3 +41,11 @@ test('a manual metadata refresh picks up a new model before expiry and coalesces
   const [story,trend]=await Promise.all([catalog(true),catalog(true)]);
   assert.deepEqual(story.ids,['gpt-6.2-sol','gpt-6.1-terra']);assert.deepEqual(trend,story);assert.equal(calls,2);
 });
+
+test('the idea catalog follows JSON Responses restrictions reported by the configured account',async()=>{
+  const data=[{id:'gpt-7-sol',supported_endpoints:['/v1/responses'],output_modalities:['text']},
+    {id:'gpt-7-astra',supported_endpoints:['/v1/audio']},{id:'gpt-7-terra',capabilities:{json_object:false}},
+    {id:'gpt-7-luna',output_modalities:['image']}];
+  const catalog=createOpenAIModelCatalog({env,responsesJson:true,request:async()=>Response.json({data})});
+  assert.deepEqual((await catalog(true)).ids,['gpt-7-sol']);
+});

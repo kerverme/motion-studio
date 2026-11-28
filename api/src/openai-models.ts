@@ -23,12 +23,21 @@ export function openAIModelLabel(id: string): string {
   return id.replace(/^gpt-/, 'GPT-').replace(/-([a-z])([a-z]*)$/, (_, first, rest) => ' ' + first.toUpperCase() + rest);
 }
 
-function isStoryModel(id: string): boolean {
+export function isStoryModel(id: string): boolean {
   const parts = GENERAL_GPT.exec(id);
   return !!parts && id.length <= 61 && Number(parts[1]) >= 5 && !SPECIALIZED.has(parts[2]);
 }
 
-export function createOpenAIModelCatalog(options: {request?: typeof fetch; now?: () => number; env?: NodeJS.ProcessEnv} = {}) {
+// OpenAI's account index normally returns IDs only. Compatible gateways can also
+// publish per-model endpoint/capability restrictions; respect them when present.
+function supportsResponsesJson(item:any){
+  const listed=item.supported_endpoints??item.endpoints;
+  if(Array.isArray(listed)&&!listed.some((v:unknown)=>typeof v==='string'&&/(?:^|\/)responses$/.test(v)))return false;
+  return item.capabilities?.responses!==false && item.capabilities?.json_object!==false &&
+    item.capabilities?.text?.output!==false && (!Array.isArray(item.output_modalities)||item.output_modalities.includes('text'));
+}
+
+export function createOpenAIModelCatalog(options: {request?: typeof fetch; now?: () => number; env?: NodeJS.ProcessEnv;responsesJson?:boolean} = {}) {
   const env = options.env ?? process.env;
   const now = options.now ?? Date.now;
   const fallback: ModelCatalog = {ids: FALLBACK_MODELS, source: 'fallback', checked_at: null};
@@ -45,7 +54,7 @@ export function createOpenAIModelCatalog(options: {request?: typeof fetch; now?:
       if (!response.ok) throw new Error('Model index unavailable');
       const {data} = await response.json();
       if (!Array.isArray(data) || !data.every(item => typeof item?.id === 'string')) throw new Error('Invalid model index');
-      const ids = [...new Set<string>(data.map(item => item.id).filter((id: string) => id === DEFAULT_OPENAI_MODEL || isStoryModel(id)))];
+      const ids = [...new Set<string>(data.filter(item=>!options.responsesJson||supportsResponsesJson(item)).map(item => item.id).filter((id: string) => id === DEFAULT_OPENAI_MODEL || isStoryModel(id)))];
       ids.sort((a, b) => a === DEFAULT_OPENAI_MODEL ? -1 : b === DEFAULT_OPENAI_MODEL ? 1 : b.localeCompare(a, 'en', {numeric: true}));
       catalog = {ids, source: 'openai', checked_at: new Date(now()).toISOString()};
       nextRefresh = now() + 15 * 60_000;

@@ -3,9 +3,19 @@ import { createHash, randomUUID } from 'node:crypto';
 import { isIP } from 'node:net';
 import { sourceKey } from './source-evidence.js';
 
+export function shopeeProductId(raw:unknown){
+  if(typeof raw!=='string')return null;
+  try{
+    const u=new URL(raw);
+    if(u.protocol!=='https:'||!['shopee.co.th','www.shopee.co.th'].includes(u.hostname)||u.port||u.username||u.password)return null;
+    const m=u.pathname.match(/^\/product\/(\d+)\/(\d+)\/?$/)??u.pathname.match(/-i\.(\d+)\.(\d+)\/?$/);
+    return m?m[1]+'.'+m[2]:null;
+  }catch{return null;}
+}
+
 export const RESEARCH_CREDIT_LIMIT = 25;
 export class ResearchBudgetError extends Error {
-  constructor(public code: string, message: string) { super(message); }
+  constructor(public code: string, message: string, public httpStatus?:number) { super(message); }
 }
 export type Budget = { research_job_id: string; limit: number; committed: number; remaining: number; reserved: number; reported: number; calls: number; blocked_reason: string | null };
 export type SafeRequest = { path: string; body: Record<string, unknown>; maximum: number; urls: string[]; key: string };
@@ -52,9 +62,21 @@ export interface BudgetStore {
 /** No retries: an ambiguous transport failure may already have incurred a charge. */
 export class BudgetedFirecrawl {
   constructor(private store: BudgetStore, private options: {apiKey:string; baseUrl:string; fetch?:typeof fetch}) {}
-  async request(job: string, path: string, input: Record<string, any>, policy: {webAttempted:boolean; reason:string} | {mode:'product_trends'}) {
-    if ('mode' in policy ? path !== '/v2/search' : !policy.webAttempted || policy.reason.trim().length < 12) throw new ResearchBudgetError('web_first', 'Use OpenAI Web Search first; explain which evidence is missing before Firecrawl fallback.');
+  async request(job: string, path: string, input: Record<string, any>, policy: {webAttempted:boolean; reason:string} | {mode:'product_trends'|'ugc_shopee'}) {
+    const shopee='mode' in policy && policy.mode==='ugc_shopee';
+    if (shopee) {
+      if (path==='/v2/search' && !String(input.query).startsWith('site:shopee.co.th ') ||
+        path==='/v2/scrape' && !shopeeProductId(input.url) ||
+        !['/v2/search','/v2/scrape'].includes(path)) throw new ResearchBudgetError('scope','อ่านได้เฉพาะ Shopee ประเทศไทย');
+    } else if ('mode' in policy ? path !== '/v2/search' : !policy.webAttempted || policy.reason.trim().length < 12)
+      throw new ResearchBudgetError('web_first', 'Use OpenAI Web Search first; explain which evidence is missing before Firecrawl fallback.');
     const req = priceRequest(path,input);
+    if (shopee) {
+      // New jobs rediscover listings. Replays of a job use its first search; verified pages share a 24h cache.
+      req.key += path==='/v2/search' ? ':shopee:'+job : ':shopee:page';
+      if (path==='/v2/search') Object.assign(req.body,{location:'Bangkok, Thailand'});
+      else Object.assign(req.body,{maxAge:0,location:{country:'TH',languages:['th']}});
+    }
     return this.store.exclusive(job, async () => {
       const cached = await this.store.cached(req.key);
       if (cached) return {...cached, cache_hit:true, budget:await this.store.snapshot(job)};
@@ -69,7 +91,7 @@ export class BudgetedFirecrawl {
       }
       if (!response.ok || payload?.success !== true) {
         await this.store.finish(job,id,req,payload,`Firecrawl HTTP ${response.status}; maximum retained.`);
-        const err = new ResearchBudgetError('provider_error',`Firecrawl HTTP ${response.status}; no automatic retry, reserved maximum retained.`);
+        const err = new ResearchBudgetError('provider_error',`Firecrawl HTTP ${response.status}; no automatic retry, reserved maximum retained.`,response.status);
         if ([402,429].includes(response.status)) Object.assign(err,{fcDown:true});
         throw err;
       }

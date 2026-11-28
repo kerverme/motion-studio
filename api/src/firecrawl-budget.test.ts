@@ -149,3 +149,39 @@ test('an absolute director limit is enforced atomically even for a budget with a
   await assert.rejects(director.request(job,'/v2/scrape',{url:'https://official.example/full'},fallback),/cannot fit/);
   assert.equal(calls,0);
 });
+
+test('Shopee jobs rediscover listings, reuse dated page evidence, and cannot spend over 25 or read another domain',async()=>{
+  const {pool}=await database();
+  const store=new PgResearchBudget(pool,25);
+  let searches=0,reads=0;
+  const fc=api(store,async(url,init)=>{
+    const body=JSON.parse(String(init?.body));
+    if(String(url).endsWith('/search')){
+      searches++;
+      assert.equal(body.location,'Bangkok, Thailand');
+      return Response.json({success:true,creditsUsed:2,data:{web:[]}});
+    }
+    assert.equal(body.proxy,'basic');assert.equal(body.maxAge,0);
+    assert.deepEqual(body.location,{country:'TH',languages:['th']});
+    reads++;return Response.json(page(body.url));
+  });
+  const scope={mode:'ugc_shopee'} as const;
+  const query={query:'site:shopee.co.th แก้ว'};
+  const other='20000000-0000-0000-0000-000000000002';
+  await assert.rejects(fc.request(job,'/v2/scrape',{url:'https://shopee.co.th.example.org/product/1/2'},scope));
+  await assert.rejects(fc.request(job,'/v2/search',{query:'unscoped'},scope));
+  await assert.rejects(fc.request(job,'/v2/scrape',{url:'https://shopee.co.th/product/1/2'},{mode:'product_trends'}));
+  assert.equal(reads+searches,0);
+  await store.approve(job,100); // generic owner override does not increase this flow's absolute cap
+  await fc.request(job,'/v2/search',query,scope);
+  assert.ok((await fc.request(job,'/v2/search',query,scope)).cache_hit);
+  const item={url:'https://shopee.co.th/product/1/20'};
+  const first=await fc.request(job,'/v2/scrape',item,scope);
+  for(const id of [21,22,23])await fc.request(job,'/v2/scrape',{url:'https://shopee.co.th/product/1/'+id},scope);
+  await assert.rejects(fc.request(job,'/v2/scrape',{url:'https://shopee.co.th/product/1/24'},scope),/cannot fit/);
+  assert.equal((await store.snapshot(job)).committed,24);
+  await fc.request(other,'/v2/search',query,scope);
+  const cached=await fc.request(other,'/v2/scrape',item,scope);
+  assert.equal(cached.collected_at,first.collected_at);
+  assert.equal(searches,2);assert.equal(reads,4);
+});

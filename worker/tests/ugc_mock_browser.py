@@ -28,10 +28,38 @@ def fixtures(root):
     d.ellipse((225, 273, 238, 284), fill='#312321')
     d.ellipse((296, 273, 309, 284), fill='#312321')
     d.arc((237, 320, 293, 346), 12, 155, fill='#4d2b2e', width=4)
+    opening.crop((115,110,435,430)).save(root/'reviewer-portrait.png')
     opening.paste(box.resize((214, 298)), (167, 450))
     d.rounded_rectangle((125, 576, 183, 644), radius=22, fill='#b7724d')
     d.rounded_rectangle((365, 583, 425, 650), radius=22, fill='#b7724d')
     opening.save(root/'mock-opening.jpg', quality=93)
+
+
+def assert_new_opening_required(page, base, draft, root, role):
+    url=base+'/app/api/ugc/drafts/'+draft
+    headers={'x-motion-ui':'1'}
+    row=page.request.get(url,headers=headers).json()
+    if row.get('job_id'):
+        edit=page.request.post(url+'/edit',data={'job_id':row['job_id']},headers=headers)
+        assert edit.ok,edit.text()
+        row=page.request.get(url,headers=headers).json()
+    doc=row['document']
+    before=doc['reviewer']['opening_id']
+    assert before
+    media=page.request.post(url+'/media?role='+role,data=(root/('reviewer-portrait.png' if role=='presenter' else 'ps5-product.png')).read_bytes(),
+        headers={**headers,'content-type':'application/octet-stream'})
+    assert media.ok
+    key='source_id' if role=='presenter' else 'product_media_id'
+    doc['reviewer'][key]=media.json()['id']
+    # Simulate a stale client sending the old approval and shot references alongside a replacement.
+    updated=page.request.patch(url,headers=headers,data={'revision':row['revision'],'document':doc})
+    assert updated.ok,updated.text()
+    saved=updated.json()
+    assert saved['document']['reviewer']['opening_id'] is None
+    assert saved['document']['scenes'][0]['media_id'] is None and saved['document']['scenes'][-1]['media_id'] is None
+    rejected=page.request.post(url+'/quote',headers=headers,data={'revision':saved['revision'],'product_confirmed':True})
+    assert not rejected.ok and 'ภาพเปิด' in rejected.json()['error'],rejected.text()
+    return before
 
 
 def run(base, root):
@@ -41,24 +69,159 @@ def run(base, root):
         page = chromium.new_page(viewport={'width':1360,'height':1100})
         errors = []
         page.on('pageerror',lambda error:errors.append(str(error)))
-        page.add_init_script("localStorage.setItem('ms.view','ugc')")
+        page.add_init_script("if (!localStorage.getItem('ms.view')) localStorage.setItem('ms.view','ugc')")
         page.route('https://fonts.googleapis.com/**',lambda route:route.abort())
         page.goto(base+'/app')
-        page.get_by_role('button',name='สร้างร่างสินค้า').click()
-        page.get_by_label('ชื่อสินค้า',exact=True).fill('กล่องเกม PS5 After the Tide')
+        out=Path(os.getenv('UGC_BROWSER_OUTPUT',str(root)))
+        out.mkdir(parents=True,exist_ok=True)
+        brief=page.get_by_role('textbox',name='บรีฟคลิป')
+        expect(brief).to_be_focused()
+        expect(page.get_by_label('ชื่อสินค้า',exact=True)).to_have_count(0)
+        video=page.get_by_label('โมเดลวิดีโอ',exact=True)
+        default='arena:grok-720'
+        alt='fixture/new-speaker/image-to-video'
+        expect(video).to_have_value(default)
+        baseline=page.request.get(base+'/qa/counters').json()
+        page.screenshot(path=str(out/'desktop.png'))
+        page.set_viewport_size({'width':390,'height':844})
+        page.reload()
+        expect(brief).to_be_focused()
+        expect(video).to_have_value(default)
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+        page.screenshot(path=str(out/'mobile.png'))
+        def catalog(mode):
+            assert page.request.post(base+'/qa/catalog-mode',data={'mode':mode}).ok
+        def refresh(kind):
+            with page.expect_response(lambda r:'/catalog/'+kind+'?refresh=1' in r.url) as pending:
+                page.get_by_role('button',name='อัปเดตอันดับและโมเดล' if kind=='video' else 'อัปเดตโมเดล',exact=True).click()
+            return pending.value.json()
+        catalog('changed')
+        refreshed=refresh('video')
+        expect(video).to_have_value(default)
+        assert len(refreshed['models'])==2
+        labels=video.locator('option').all_text_contents()
+        assert labels[1].startswith('#1 Missing') and 'ยังไม่มีบน fal.ai' in labels[1]
+        assert labels[2].startswith('#2 Grok') and 'xai/grok-imagine-video/v1.5/image-to-video' in labels[2]
+        expect(video).to_be_enabled()
+        assert video.locator('option').evaluate_all('opts=>opts.slice(1,3).map(o=>o.disabled)')==[True,False]
+        assert video.locator('optgroup').last.get_attribute('label')=='แนะนำบน fal.ai'
+        assert video.locator('option').last.get_attribute('value')==alt
+        for mode,source_key in [('arena-down','arena'),('featured-down','featured'),('index-down','index')]:
+            catalog(mode);partial=refresh('video')
+            assert partial['stale'] and partial['source_status'][source_key]['error']
+            assert partial['source_status'][source_key]['checked_at']==refreshed['source_status'][source_key]['checked_at']
+            assert partial['ranked'][0]['rank']==1 and partial['ranked'][1]['available']
+            expect(video).to_have_value(default)
+            catalog('changed');refreshed=refresh('video')
+        video.select_option(alt)
+        catalog('down')
+        failed=refresh('video')
+        assert failed['stale'] and failed['checked_at']==refreshed['checked_at']
+        expect(video).to_have_value(alt)
+        catalog('removed');refresh('video')
+        expect(video).to_have_value(alt)
+        catalog('normal');refresh('video')
+        expect(video).to_have_value('')
+        expect(page.get_by_text('โมเดลที่เลือกใช้ไม่ได้แล้ว',exact=False)).to_be_visible()
+        video.select_option(default)
+        page.get_by_role('tab',name='คิดไอเดีย').click()
+        q=page.get_by_label('คำค้น Shopee')
+        expect(q).to_be_focused()
+        brain=page.get_by_label('โมเดลคิดไอเดีย',exact=True)
+        expect(brain).to_have_value('gpt-6.2-sol')
+        catalog('changed');last=refresh('ideas')
+        brain.select_option('gpt-7.1-terra')
+        catalog('down')
+        stale=refresh('ideas')
+        assert stale['stale'] and stale['checked_at']==last['checked_at']
+        expect(brain).to_have_value('gpt-7.1-terra')
+        catalog('normal');refresh('ideas')
+        expect(brain).to_have_value('')
+        catalog('changed');refresh('ideas')
+        brain.select_option('gpt-7.1-terra')
+        q.fill('แก้วเก็บความเย็น งบไม่เกิน 500 บาท')
+        search=page.get_by_role('button',name='หาไอเดียจาก Shopee')
+        search.click()
+        cards=page.locator('.ugc-idea-card')
+        expect(cards).to_have_count(4,timeout=20000)
+        expect(page.get_by_text('เพดาน 25 เครดิต',exact=False)).to_be_visible()
+        counters=page.request.get(base+'/qa/counters').json()
+        assert counters['fcSearches']==1 and counters['fcReads']==4 and counters['ideaModel']=='gpt-7.1-terra'
+        assert counters['jobs']==baseline['jobs']
+        original_link=cards.first.get_by_role('link').inner_text()
+        page.screenshot(path=str(out/'ideas-mobile.png'))
+        catalog('research-down');search.click()
+        expect(page.get_by_text('ผลล่าสุดที่มี',exact=False)).to_be_visible(timeout=12000)
+        assert cards.first.get_by_role('link').inner_text()==original_link
+        assert page.request.get(base+'/qa/counters').json()['fcSearches']==2
+        cards.first.get_by_role('button',name='ใช้ไอเดียนี้').click()
+        expect(brief).to_be_focused()
+        assert 'แก้วเก็บความเย็น' in brief.input_value()
+        page.get_by_role('button',name='เตรียมคลิป').click()
+        expect(page.get_by_text('เพิ่มรูปสินค้าจริง',exact=True)).to_be_visible(timeout=12000)
+        saved=page.url
+        page.reload()
+        expect(page.get_by_role('heading',name='สรุปร่าง')).to_be_visible()
+        page.get_by_text('รายละเอียดสินค้า',exact=True).click()
+        expect(page.get_by_label('ชื่อสินค้า',exact=True)).to_have_value('แก้วเก็บความเย็น')
+        expect(page.get_by_label('URL สั่งซื้อ',exact=True)).to_have_value('')
+        page.get_by_text('หลักฐานเทรนด์สินค้า',exact=True).click()
+        expect(page.get_by_role('link',name='แก้วเก็บความเย็น',exact=True)).to_have_attribute('href','https://shopee.co.th/product/22/70')
+        page.get_by_role('button',name='กลับหน้าสร้างคลิป').click()
+        page.get_by_text('ร่างเก่า',exact=True).click()
+        page.get_by_label('ร่าง UGC',exact=True).select_option(saved.split('/')[-1])
+        expect(page.get_by_role('heading',name='สรุปร่าง')).to_be_visible()
+        page.set_viewport_size({'width':1360,'height':1100})
+        page.get_by_role('button',name='กลับหน้าสร้างคลิป').click()
+        expect(brief).to_be_focused()
+        page.get_by_role('tab',name='คิดไอเดีย').click()
+        expect(cards).to_have_count(4)
+        cards.first.get_by_role('button',name='ใช้ไอเดียนี้').click()
+        expect(brief).to_be_focused()
+        assert 'แก้วเก็บความเย็น' in brief.input_value()
+        page.get_by_role('button',name='นำออก',exact=True).click()
+        page.get_by_text('ร่างเก่า',exact=True).click()
+        page.get_by_label('ร่าง UGC',exact=True).select_option(saved.split('/')[-1])
+        expect(page.get_by_role('heading',name='สรุปร่าง')).to_be_visible()
+        page.get_by_role('button',name='กลับหน้าสร้างคลิป').click()
+        catalog('normal')
+        brief.fill('ให้ผู้หญิงถือกล่องเกม PS5 After the Tide พูดกับกล้องเป็นภาษาไทย')
+        page.get_by_label('แนบรูปหรือคลิปสินค้า').set_input_files(root/'ps5-product.png')
+        page.get_by_role('button',name='เตรียมคลิป').click()
+        expect(page.get_by_label('บทพูดเปิด',exact=True)).to_be_visible(timeout=12000)
+        assert page.request.get(base+'/qa/counters').json()['jobs']==baseline['jobs']
+        page.get_by_text('รายละเอียดสินค้า',exact=True).click()
         page.get_by_label('URL สั่งซื้อ',exact=True).fill('https://shop.example/ps5')
         page.get_by_label('ราคา (บาท)',exact=True).fill('1690')
-        page.get_by_label('รูปสินค้า หรือวิดีโอ MP4 (32 MB)').set_input_files(root/'ps5-product.png')
-        page.get_by_role('button',name='อัปโหลดสื่อ',exact=True).click()
         expect(page.get_by_alt_text('รูปสินค้า 1',exact=True)).to_be_visible()
-        expect(page.get_by_text('เลือกคนรีวิวและยืนยันภาพเปิดก่อนคิดราคาวิดีโอ')).to_be_visible()
-        assert page.get_by_role('button',name='ยืนยันราคาและเริ่มผลิต').count()==0
-        assert page.get_by_label('คนรีวิว',exact=True).locator('option').all_text_contents()==[
-            'เลือกคนรีวิว','คลิปคนจริงถือสินค้า','อัปโหลดรูปคนรีวิว','สร้างพิธีกร AI']
-        page.get_by_label('คนรีวิว',exact=True).select_option('ai')
-        page.get_by_role('button',name='ให้ AI เสนอ 3 Hook และวางฉาก').click()
-        expect(page.get_by_role('button',name='เลือกมุม 3',exact=True)).to_be_visible(timeout=12000)
-        page.get_by_role('button',name='เลือกมุม 1',exact=True).click()
+        page.get_by_text('คนรีวิวและภาพเปิด',exact=True).click()
+        expect(page.get_by_label('คนรีวิว',exact=True)).to_have_value('ai')
+        picture=page.get_by_label('อัปโหลดรูปคนรีวิว',exact=True)
+        picture.set_input_files(root/'reviewer-portrait.png')
+        portrait=page.get_by_alt_text('รูปคนรีวิวที่เลือก')
+        expect(portrait).to_be_visible()
+        uploaded=portrait.get_attribute('src')
+        page.get_by_role('button',name='ลบรูปคนรีวิว').click()
+        expect(portrait).to_have_count(0)
+        selected_draft=page.get_by_label('ร่าง UGC',exact=True).input_value()
+        stored=page.request.get(base+'/app/api/ugc/drafts/'+selected_draft,headers={'x-motion-ui':'1'}).json()
+        assert all(m['id']!=uploaded.split('/')[-1] for m in stored['media'])
+        page.get_by_text('เลือกรูปจาก Notion',exact=True).click()
+        page.get_by_label('ค้นหาคนรีวิว',exact=True).fill('มิน')
+        page.get_by_role('button',name='ค้นหาคนรีวิว',exact=True).click()
+        person=page.get_by_role('button',name='มิน คนรีวิว')
+        expect(person).to_be_visible()
+        expect(person.locator('img')).to_have_js_property('naturalWidth',320)
+        person.locator('xpath=../../..').screenshot(path=str(out/'notion-reviewers.png'))
+        person.click()
+        expect(portrait).to_be_visible()
+        notion_portrait=portrait.get_attribute('src')
+        assert notion_portrait!=uploaded and '/qa/r2/ugc-r2/' in notion_portrait
+        page.reload()
+        page.get_by_text('คนรีวิวและภาพเปิด',exact=True).click()
+        expect(portrait).to_have_attribute('src',notion_portrait)
+        page.get_by_text('บทและฉาก',exact=True).click()
+        expect(page.get_by_role('button',name='เลือกมุม 3',exact=True)).to_be_visible()
         expect(page.get_by_text('ฉาก 1 · คนถือสินค้าเปิดคลิป')).to_be_visible()
         page.get_by_role('button',name='ตรวจราคาภาพเปิด',exact=True).click()
         expect(page.get_by_role('button',name='ยืนยันราคาและเตรียมภาพเปิด')).to_be_visible()
@@ -81,6 +244,8 @@ def run(base, root):
         assert image.ok,image.text()
         image_job=image.json()
         assert image_job['calls']==['fal-image']
+        refs=image_job['wire'][0]['payload']['image_urls']
+        assert len(refs)==2 and refs[1].split('/')[-1]==notion_portrait.split('/')[-1] and refs[0]!=refs[1]
         expect(page.get_by_alt_text('ภาพเปิดคนถือสินค้า',exact=True)).to_be_visible(timeout=12000)
         page.get_by_role('button',name='ยืนยันภาพเปิดนี้',exact=True).click()
         expect(page.get_by_text('ยืนยันภาพเปิดแล้ว',exact=True)).to_be_visible()
@@ -125,15 +290,18 @@ def run(base, root):
         assert repaired.json()['calls']==['fal-presenter']
         expect(page.get_by_role('link',name='ดาวน์โหลด MP4')).to_be_visible(timeout=12000)
 
+        assert_new_opening_required(page,base,draft,root,'presenter')
+
         # The clip path takes the selected timestamp from the original video itself.
         clip=root/'presenter-upload.mp4'
         subprocess.run(['ffmpeg','-v','error','-y','-loop','1','-i',str(root/'mock-opening.jpg'),
             '-vf','scale=180:320','-t','3','-threads','2','-c:v','libx264','-pix_fmt','yuv420p','-movflags','+faststart',str(clip)],check=True)
-        page.get_by_role('button',name='สร้างร่างสินค้า').click()
-        page.get_by_label('ชื่อสินค้า',exact=True).fill('กล่องเกม PS5 จากคลิปคนจริง')
-        page.get_by_label('รูปสินค้า หรือวิดีโอ MP4 (32 MB)').set_input_files(root/'ps5-product.png')
-        page.get_by_role('button',name='อัปโหลดสื่อ',exact=True).click()
-        expect(page.get_by_alt_text('รูปสินค้า 1',exact=True)).to_be_visible()
+        page.get_by_role('button',name='กลับหน้าสร้างคลิป').click()
+        brief.fill('คนถือกล่องเกม PS5 จากคลิปคนจริง')
+        page.get_by_label('แนบรูปหรือคลิปสินค้า').set_input_files(root/'ps5-product.png')
+        page.get_by_role('button',name='เตรียมคลิป').click()
+        expect(page.get_by_label('บทพูดเปิด',exact=True)).to_be_visible(timeout=12000)
+        page.get_by_text('คนรีวิวและภาพเปิด',exact=True).click()
         page.get_by_label('คนรีวิว',exact=True).select_option('clip')
         page.get_by_label('คลิป MP4 ที่เห็นหน้า มือ และสินค้า').set_input_files(clip)
         page.get_by_role('button',name='อัปโหลดสื่อคนรีวิว').click()
@@ -150,13 +318,28 @@ def run(base, root):
         page.get_by_role('button',name='ยืนยันภาพเปิดนี้',exact=True).click()
         expect(page.get_by_text('ยืนยันภาพเปิดแล้ว',exact=True)).to_be_visible()
 
+        assert_new_opening_required(page,base,draft,root,'product')
+        def no_reviewer_db(route):
+            response=route.fetch()
+            config=response.json()
+            config['notion']['reviewers_enabled']=False
+            route.fulfill(response=response,json=config)
+        page.route('**/api/ugc/config',no_reviewer_db)
+        page.reload()
+        page.get_by_text('คนรีวิวและภาพเปิด',exact=True).click()
+        expect(page.get_by_text('ยังไม่ได้ตั้งค่าฐานคนรีวิว Notion',exact=True)).to_be_visible()
+        expect(page.get_by_role('button',name='เลือกรูปจาก Notion')).to_be_disabled()
+        expect(page.get_by_label('อัปโหลดรูปคนรีวิว',exact=True)).to_be_enabled()
+        page.unroute('**/api/ugc/config')
         page.get_by_text('Text to Video',exact=True).click()
         expect(page.get_by_role('heading',name='Text to Video',exact=True)).to_be_visible()
         expect(page.get_by_label('ความยาวคลิป Text to Video')).to_have_value('60')
         expect(page.get_by_role('button',name='ให้สมองวางบทและแบ่งช็อต')).to_be_enabled()
+        from product_trends_browser import check_product_trends
+        check_product_trends(page,base,out)
         assert not errors,errors
         chromium.close()
-        print('Chromium UGC passed: product-only gating, three hooks, refreshed image price, approved opening on both fal payloads, MP4, CTA, targeted repair, source clip frame and existing Text to Video UI.')
+        print('Chromium verified desktop/mobile UGC, ranked and recommended models, per-source outages, Notion and uploaded portraits, approved fal payloads, MP4 export, Text to Video and deduplicated trend jobs.')
 
 
 if __name__=='__main__':

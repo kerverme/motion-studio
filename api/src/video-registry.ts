@@ -126,7 +126,7 @@ function knownAlias(name:string,cat:VideoCategory):string|null|undefined{
   if(name==='kling o3 pro')return 'fal-ai/kling-video/o3/pro/'+(edit?'video-to-video/edit':cat==='video-to-video'?'video-to-video/reference':cat);
   return undefined;
 }
-class MissingEndpoint extends Error {}
+export class MissingEndpoint extends Error {}
 type PriceLookup=(endpoint:string)=>Promise<Obj|null>;
 type CatalogScope={exact:(endpoint:string)=>Promise<Obj|null>;search:(label:string)=>Promise<Obj>};
 function searchCatalog(label:string,request:typeof fetch,category?:VideoCategory){
@@ -329,6 +329,12 @@ export function createRankedFalDiscovery(rows:readonly {name:string;category:Vid
     const id=knownAlias(canonicalName(name),row.category);
     if(id)ids.add(id);
   }
+  const {scope,lookup}=batchLookup(ids,request);
+  return (name:string,category:VideoCategory)=>discoverRankedModel(name,category,request,lookup,scope);
+}
+
+// Share metadata fetches only within one catalog update. Quotes and dispatch re-read the provider.
+function batchLookup(ids:Set<string>,request:typeof fetch){
   const scheduled=[...ids];
   let batch:Promise<Map<string,Obj>>|undefined;
   const singles=new Map<string,Promise<Obj|null>>();
@@ -368,7 +374,29 @@ export function createRankedFalDiscovery(rows:readonly {name:string;category:Vid
       return rows;
     }
   };
-  return (name:string,category:VideoCategory)=>discoverRankedModel(name,category,request,lookup,scope);
+  return {scope,lookup};
+}
+export async function discoverUgcEndpoints(seed:string[],request:typeof fetch=fetch){
+  const ids=new Set(seed), seen=new Set<string>();
+  const url=new URL(API);
+  url.searchParams.set('category','image-to-video');
+  url.searchParams.set('q','native audio');
+  url.searchParams.set('limit','100');
+  for(;;){
+    const page=await readJson(url,request,'catalog');
+    if(!Array.isArray(page.models))throw new FalRegistryError('catalog','invalid');
+    for(const m of page.models){
+      if(typeof m?.endpoint_id!=='string'||!safeEndpoint.test(m.endpoint_id)||m.metadata?.status!=='active'||
+        classified(m.endpoint_id,m.metadata)!=='image-to-video')continue;
+      // New routes must advertise speech, before verifying the schema, first frame, audio and billing.
+      if(/speech|dialogue|dialog|voice|speaking|spoken|lip[- ]?sync|talking/i.test(m.metadata.description??''))ids.add(m.endpoint_id);
+    }
+    if(!page.has_more)break;
+    if(typeof page.next_cursor!=='string'||!page.next_cursor||seen.has(page.next_cursor))throw new FalRegistryError('catalog','invalid');
+    seen.add(page.next_cursor);url.searchParams.set('cursor',page.next_cursor);
+  }
+  const {scope,lookup}=batchLookup(ids,request);
+  return {ids:[...ids],load:(id:string)=>getVideoModel(id,'image-to-video',request,lookup,scope)};
 }
 async function details(endpoint:string,request:typeof fetch,lookup?:PriceLookup){
   // Fetch independent evidence, so a pricing outage cannot erase a verified model and its schema.
@@ -559,4 +587,36 @@ export async function estimateVideoPayload(model:FalVideoModel,payload:Record<st
   if(estimate.estimate_type!=='unit_price'||estimate.currency!=='USD'||!Number.isFinite(estimate.total_cost)||estimate.total_cost<0||
     Math.abs(estimate.total_cost-model.price!.unit_price*preview.quantity)>0.010001)throw new Error('fal quote changed or estimate is inconsistent');
   return {...preview,usd:Math.ceil(Math.max(preview.usd,estimate.total_cost)*1e6-1e-8)/1e6};
+}
+
+// Compact metadata for exact UGC identities. Generate requests still use the expanded schema.
+export type UgcFalIdentity={id:string;name:string;category:string;developer?:string;active:boolean};
+export async function ugcFalIndex(request:typeof fetch=fetch){
+  const index:UgcFalIdentity[]=[];
+  for(const category of ['image-to-video','text-to-video','video-to-video']){
+    const url=new URL(API);
+    url.searchParams.set('category',category);
+    url.searchParams.set('limit','100');
+    const seen=new Set<string>();
+    for(;;){
+      const page=await readJson(url,request,'catalog');
+      if(!Array.isArray(page?.models))throw new FalRegistryError('catalog','invalid');
+      for(const m of page.models){
+        if(!safeEndpoint.test(m.endpoint_id)||!m.metadata?.display_name)continue;
+        index.push({id:m.endpoint_id,name:m.metadata.display_name,category:m.metadata.category,
+          developer:typeof m.metadata.developer==='string'?m.metadata.developer:undefined,active:m.metadata.status==='active'});
+      }
+      if(!page.has_more)break;
+      if(!page.next_cursor||seen.has(page.next_cursor))throw new FalRegistryError('catalog','invalid');
+      seen.add(page.next_cursor);url.searchParams.set('cursor',page.next_cursor);
+    }
+  }
+  return index;
+}
+export function ugcFalSchemas(ids:string[],request:typeof fetch=fetch){
+  const {scope,lookup}=batchLookup(new Set(ids),request);
+  return (id:string)=>getVideoModel(id,'image-to-video',request,lookup,scope);
+}
+export function ugcKnownAlias(label:string){
+  return knownAlias(canonicalName(label),'image-to-video');
 }
