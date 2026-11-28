@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { bodyLimit } from 'hono/body-limit';
-import { ugcCatalog } from './ugc-catalog.js';
+import { publicCatalog, ugcCatalog } from './ugc-catalog.js';
 import { registerUgcIdeas } from './ugc-ideas.js';
 import type { Context,Hono,Next } from 'hono';
 import type pg from 'pg';
@@ -8,17 +8,19 @@ import { z, ZodError } from 'zod';
 import { DEFAULT_OPENAI_MODEL, createOpenAIModelCatalog, readModels, type ModelSource } from './openai-models.js';
 import { openaiResponse, OpenAIReadUnavailable } from './openai-response.js';
 import { digest } from './text-video-contract.js';
-import { discoverUgcEndpoints, estimateUgcImage, registryIssue, UGC_IMAGE_MODELS } from './video-registry.js';
+import { estimateUgcImage, registryIssue, UGC_IMAGE_MODELS } from './video-registry.js';
 import {
-  Document, Evidence, Suggestion, CreatorSuggestion, BriefSuggestion, creatorScenes, approvedOpening, blank, creatorVideoDefault, creatorVideoModels, falEndpoints, isProduct, reviewerBasis, reviewerSources, speakerShot, makeQuote, quoteBinding, reuseKey, uuid, validateDocument, validateClaims,
+  Document, Evidence, Suggestion, CreatorSuggestion, BriefSuggestion, creatorScenes, approvedOpening, blank, creatorVideoDefault, creatorVideoModels, falEndpoints, isProduct, reviewerBasis, reviewerProductContext, ugcOpeningField, reviewerSources, speakerShot, makeQuote, quoteBinding, reuseKey, uuid, validateDocument, validateClaims,
   videoItem,videoProvider,type DraftDocument,type Media,type VoiceOffer,
 } from './ugc-contract.js';
 import { MAX_MEDIA, readMedia, saveMedia,type AssetStore } from './ugc-media.js';
 import { notionProducts } from './ugc-notion.js';
 
+import type { RankSources } from './ugc-ranked.js';
+
 type Guard=(c:Context,next:Next)=>Promise<any>;
 type Options={guard:Guard;workerGuard:Guard;storage:Pick<AssetStore,'sign'>|null;references:AssetStore|null;models?:ModelSource;
-  video?:typeof videoProvider;videoDiscovery?:typeof discoverUgcEndpoints;image?:typeof estimateUgcImage;response?:typeof openaiResponse;env?:NodeJS.ProcessEnv;notionFetch?:typeof fetch;firecrawlFetch?:typeof fetch};
+  video?:typeof videoProvider;rankSources?:RankSources;image?:typeof estimateUgcImage;response?:typeof openaiResponse;env?:NodeJS.ProcessEnv;notionFetch?:typeof fetch;firecrawlFetch?:typeof fetch};
 
 const P='/app/api/ugc';
 const finished=['READY_TO_POST','FAILED','CANCELLED'];
@@ -36,19 +38,21 @@ export function registerUgc(app:Hono,pool:pg.Pool,options:Options) {
   const get=async(id:string,conn:pg.Pool|pg.PoolClient=pool,lock=false)=>
     (await conn.query('SELECT * FROM ugc_drafts WHERE id=$1'+(lock?' FOR UPDATE':''),[uuid.parse(id)])).rows[0];
   const mediaFor=async(id:string):Promise<Media[]>=>
-    (await pool.query('SELECT id,kind,content_type,storage_key,role,details FROM ugc_media WHERE draft_id=$1 ORDER BY created_at,id',[id])).rows;
+    (await pool.query('SELECT id,kind,content_type,storage_key,role,details FROM ugc_media WHERE draft_id=$1 AND detached_at IS NULL ORDER BY created_at,id',[id])).rows;
   const callsFor=async(id:string|null):Promise<any[]>=>!id?[]:
     (await pool.query('SELECT DISTINCT ON (slot) * FROM text_video_calls WHERE job_id=$1 ORDER BY slot,created_at DESC',[id])).rows;
   const worker=async():Promise<any>=>{
     const row=(await pool.query("SELECT data,updated_at FROM integrations WHERE provider='text_video_worker'")).rows[0];
     return row && Date.now()-Date.parse(row.updated_at)<120000 && [2,3].includes(row.data.ugc_version) && row.data.ugc_r2 ? row.data : null;
   };
-  const model=async (endpoint:string,presenter=false)=>{
-    const included=presenter?creatorVideoModels.includes(endpoint):isFal(endpoint);
+  const model=async (endpoint:string,presenter=false,approved=false)=>{
+    const included=presenter?approved:isFal(endpoint);
     if(!included&&(!presenter||!(await catalogs('video')).models.some(m=>m.id===endpoint)))
       throw Error('โมเดลวิดีโอที่เลือกใช้ไม่ได้แล้ว กรุณาอัปเดตและเลือกใหม่');
-    try {return await provider.model(endpoint,'image-to-video');}
-    catch(e){throw Error(registryIssue(e));}
+    const route=await provider.model(endpoint,'image-to-video').catch(e=>{throw Error(registryIssue(e));});
+    if(route.endpoint_id!==endpoint||presenter&&(!route.available||!route.audio||!ugcOpeningField(route)))
+      throw Error('endpoint นี้ยังยืนยันภาพเปิดและเสียงสำหรับ UGC ไม่ได้ กรุณาเลือกโมเดลใหม่');
+    return route;
   };
   const transactional=async<T>(fn:(conn:pg.PoolClient)=>Promise<T>)=>{
     const conn=await pool.connect();
@@ -89,6 +93,7 @@ export function registerUgc(app:Hono,pool:pg.Pool,options:Options) {
       (!x.native_audio||x.narration===shot.narration)&&x.edited_seconds===shot.seconds&&x.visual===shot.visual&&x.camera===shot.camera);
     const newFal=d.scenes.filter(s=>s.mode==='fal' && !(cached(s)&&canReuse(cached(s))&&s.id!==regenerate));
     if (newFal.length&&(!env.FAL_KEY||!w.fal)) throw Error('ยังไม่ได้ตั้ง FAL_KEY บน API และ motion-worker');
+    if(d.reviewer&&newFal.length)await verifySelection(d);
     const route=newFal.length?await model(d.endpoint,!!d.reviewer):null;
     const fal=await Promise.all(d.scenes.filter(s=>s.mode==='fal').map(async s=>{
       const item=cached(s);
@@ -123,14 +128,14 @@ export function registerUgc(app:Hono,pool:pg.Pool,options:Options) {
     const [brains,w,mapping]=await Promise.all([readModels(options.models),worker(),notion.config()]);
     return c.json({brains:brains.ids,default_brain:DEFAULT_OPENAI_MODEL,openai:!!env.OPENAI_API_KEY,
       image_models:UGC_IMAGE_MODELS,creator_video_models:creatorVideoModels,
-      fal:!!env.FAL_KEY,storage:!!references,worker:!!w,notion:{enabled:notion.enabled,databases:notion.allowed,mapping}});
+      fal:!!env.FAL_KEY,storage:!!references,worker:!!w,notion:{reviewers_enabled:notion.reviewers.enabled,enabled:notion.enabled,databases:notion.allowed,mapping}});
   });
-  const catalogs=ugcCatalog(pool,provider,options.models??createOpenAIModelCatalog({env,responsesJson:true}),options.videoDiscovery);
+  const catalogs=ugcCatalog(pool,provider,options.models??createOpenAIModelCatalog({env,responsesJson:true}),options.rankSources);
   app.get(P+'/catalog/:kind',g,async c=>{
     c.header('Cache-Control','no-store');
     const kind=c.req.param('kind');
     if(kind!=='video'&&kind!=='ideas')return c.json({error:'ไม่พบรายการโมเดล'},404);
-    return c.json({...await catalogs(kind,c.req.query('refresh')==='1'),default_id:kind==='ideas'?DEFAULT_OPENAI_MODEL:creatorVideoDefault});
+    return c.json({...publicCatalog(await catalogs(kind,c.req.query('refresh')==='1')),default_id:kind==='ideas'?DEFAULT_OPENAI_MODEL:creatorVideoDefault});
   });
   const ideas=registerUgcIdeas(app,pool,{guard:g,env,respond,models:()=>catalogs('ideas'),fetch:options.firecrawlFetch});
   let catalog: {expires:number;promise:Promise<any[]>}|undefined;
@@ -153,7 +158,17 @@ export function registerUgc(app:Hono,pool:pg.Pool,options:Options) {
     }
     return c.json({models:await catalog.promise});
   });
-  const Intake=z.object({brief:z.string().trim().min(2).max(1600),endpoint:z.string().max(230),
+  async function verifySelection(d:Pick<DraftDocument,'arena_key'|'resolution'|'endpoint'>){
+    const data=await catalogs('video');
+    const entry=data.models.find(m=>m.id===d.endpoint);
+    if(!entry?.resolutions?.includes(d.resolution))throw Error('รุ่นหรือความละเอียดนี้ใช้ไม่ได้แล้ว กรุณาเลือกใหม่');
+    const ranked=data.ranked??[];
+    const fits=(r:typeof ranked[number])=>r.available&&r.endpoint===d.endpoint&&(!r.resolution||r.resolution===d.resolution.toLowerCase());
+    const original=d.arena_key?ranked.find(r=>r.key===d.arena_key):undefined;
+    const selectable=original?fits(original):data.featured?.includes(d.endpoint)||ranked.some(fits);
+    if(!selectable)throw Error('รุ่นหรือ variant ของ Arena เปลี่ยนแล้ว กรุณาเลือกใหม่');
+  }
+  const Intake=z.object({arena_key:z.string().max(240).optional(),resolution:z.string().max(24).optional(),brief:z.string().trim().min(2).max(1600),endpoint:z.string().max(230),
     idea:z.object({search:uuid,id:z.string().max(80)}).optional()}).strict();
   app.post(P+'/prepare',g,bodyLimit({maxSize:MAX_MEDIA+64*1024,onError:c=>c.json({error:'ไฟล์ต้องไม่เกิน 32 MB'},413)}),async c=>{
     try{
@@ -175,7 +190,10 @@ export function registerUgc(app:Hono,pool:pg.Pool,options:Options) {
       if(input.endpoint){
         const selected=(await catalogs('video')).models.find(m=>m.id===input.endpoint);
         if(!selected)throw Error('โมเดลวิดีโอไม่อยู่ในรายการล่าสุด กรุณาเลือกใหม่');
-        d.resolution=selected.resolutions!.find(r=>r.toLowerCase()==='720p')??selected.resolutions![0];
+        d.resolution=input.resolution?(selected.resolutions!.find(r=>r.toLowerCase()===input.resolution!.toLowerCase())??input.resolution):
+          selected.resolutions!.find(r=>r.toLowerCase()==='720p')??selected.resolutions![0];
+        if(input.arena_key)d.arena_key=input.arena_key;
+        await verifySelection({...d,endpoint:input.endpoint});
       }
       d.endpoint=input.endpoint;d.brief=input.brief;d.reviewer!.kind='ai';
       const evidence:z.infer<typeof Evidence>[]=[];
@@ -223,6 +241,7 @@ export function registerUgc(app:Hono,pool:pg.Pool,options:Options) {
       const basis=row.document.reviewer?reviewerBasis(row.document):null;
       return c.json({...shape(row),media:await Promise.all(media.map(async ({storage_key,...m})=>({...m,
         matches_reviewer:m.role==='opening'&&m.details?.basis===basis,
+        matches_frame:m.role==='frame'&&(!row.document.reviewer?.require_product_frame||m.details?.product_context===reviewerProductContext(row.document)),
         url:await (storage_key.startsWith('ugc-r2/')?references:store)?.sign(storage_key)}))),
         history:history.rows,image_job:image});
     } catch(e){return c.json({error:documentError(e)},404);}
@@ -230,16 +249,38 @@ export function registerUgc(app:Hono,pool:pg.Pool,options:Options) {
   app.patch(P+'/drafts/:id',g,async c=>{
     try {
       const id=uuid.parse(c.req.param('id'));
-      const raw=z.object({revision:uuid,document:Document}).strict().parse(await c.req.json());
+      const raw=z.object({revision:uuid,document:Document,remove_portrait:uuid.optional()}).strict().parse(await c.req.json());
       const row=requireDraft(await get(id));
       if (row.job_id||['queued','submitting','accepted'].includes(row.planning?.state)) throw Error('รอให้งานปัจจุบันจบก่อนแก้บท');
       if (row.document.reviewer&&!raw.document.reviewer)throw Error('ร่างนี้ต้องใช้ขั้นตอนเลือกคนรีวิว');
       if (row.revision!==raw.revision) throw Error('ฉบับร่างเปลี่ยนแล้ว เปิดฉบับล่าสุด');
-      if (digest(row.document)===digest(raw.document)) return c.json(shape(row));
-      const r=await pool.query(`UPDATE ugc_drafts SET document=$2,revision=gen_random_uuid(),quote=NULL,image_quote=NULL,planning=NULL,updated_at=now()
-        WHERE id=$1 AND revision=$3 AND job_id IS NULL AND (planning IS NULL OR planning->>'state' IN ('done','failed')) RETURNING *`,
-        [id,json(raw.document),raw.revision]);
-      return r.rows[0]?c.json(shape(r.rows[0])):c.json({error:'ร่างเปลี่ยนแล้ว เปิดฉบับล่าสุด'},409);
+      const old=row.document, next=raw.document, reviewer=next.reviewer;
+      if(old.reviewer&&reviewer){
+        const changed=reviewer.kind!==old.reviewer.kind||reviewer.product_media_id!==old.reviewer.product_media_id||
+          reviewer.source_id!==old.reviewer.source_id||next.product.name!==old.product.name||next.product.variant!==old.product.variant||
+          next.presenter_direction!==old.presenter_direction||reviewer.image_endpoint!==old.reviewer.image_endpoint;
+        if(changed){
+          reviewer.opening_id=null;reviewer.frame_id=null;
+          next.scenes.forEach((scene,i)=>{if(speakerShot(next,i))scene.media_id=null;});
+        }
+        if(reviewer.kind==='clip'&&(changed||old.reviewer.require_product_frame))reviewer.require_product_frame=true;
+        else delete reviewer.require_product_frame;
+      }
+      if(raw.remove_portrait&&(old.reviewer?.source_id!==raw.remove_portrait||reviewer?.source_id))
+        throw Error('เปิดรูปคนรีวิวที่เลือกอยู่ก่อนลบ');
+      if (digest(row.document)===digest(next))return c.json(shape(row));
+      const updated=await transactional(async tx=>{
+        const changed=await tx.query(`UPDATE ugc_drafts SET document=$2,revision=gen_random_uuid(),quote=NULL,image_quote=NULL,planning=NULL,updated_at=now()
+          WHERE id=$1 AND revision=$3 AND job_id IS NULL AND (planning IS NULL OR planning->>'state' IN ('done','failed')) RETURNING *`,
+          [id,json(next),raw.revision]);
+        if(changed.rowCount&&raw.remove_portrait){
+          const removed=await tx.query("UPDATE ugc_media SET detached_at=now() WHERE id=$1 AND draft_id=$2 AND role='presenter' AND kind='image' AND detached_at IS NULL",
+            [raw.remove_portrait,id]);
+          if(!removed.rowCount)throw Error('ไม่พบรูปคนรีวิวในร่างนี้');
+        }
+        return changed.rows[0];
+      });
+      return updated?c.json(shape(updated)):c.json({error:'ร่างเปลี่ยนแล้ว เปิดฉบับล่าสุด'},409);
     } catch(e){return c.json({error:documentError(e)},422);}
   });
 
@@ -251,6 +292,25 @@ export function registerUgc(app:Hono,pool:pg.Pool,options:Options) {
       const role=z.enum(['product','presenter']).parse(c.req.query('role')||'product');
       return c.json(await saveMedia(pool,references,row.id,await readMedia(c.req.raw.body,c.req.header('content-length')),role),201);
     } catch(e){return c.json({error:documentError(e)},422);}
+  });
+  app.get(P+'/notion/reviewers',g,async c=>{
+    try{return c.json(await notion.reviewers.list((c.req.query('q')||'').trim().slice(0,140),c.req.query('cursor')));}
+    catch(e){return c.json({error:documentError(e)},422);}
+  });
+  app.get(P+'/notion/reviewers/:page/image',g,async c=>{
+    try{
+      const {bytes,type}=await notion.reviewers.image(c.req.param('page'),c.req.query('file')||'',true);
+      return new Response(new Uint8Array(bytes),{headers:{'Content-Type':type,'Cache-Control':'private, max-age=60','X-Content-Type-Options':'nosniff'}});
+    }catch(e){return c.json({error:documentError(e)},422);}
+  });
+  app.post(P+'/drafts/:id/import-reviewer',g,async c=>{
+    try{
+      const row=requireDraft(await get(c.req.param('id')));
+      const input=z.object({page:uuid,file:z.string().min(1).max(512)}).strict().parse(await c.req.json());
+      if(!references||row.job_id)throw Error('เปิดร่างที่แก้ไขได้และตรวจการเชื่อมต่อ R2');
+      const {bytes}=await notion.reviewers.image(input.page,input.file);
+      return c.json(await saveMedia(pool,references,row.id,bytes,'presenter'),201);
+    }catch(e){return c.json({error:documentError(e)},422);}
   });
   app.get(P+'/notion/columns/:id',g,async c=>{
     try{return c.json({columns:await notion.columns(uuid.parse(c.req.param('id')))});}
@@ -310,11 +370,11 @@ export function registerUgc(app:Hono,pool:pg.Pool,options:Options) {
           const current=await activeOpeningJob(tx,row.image_job_id);
           if(current){
             const frame=current.package?.ugc?.frame;
-            if(frame?.source?.id===source!.id&&frame.seconds===b.seconds)return row.image_job_id;
+            if(frame?.source?.id===source!.id&&frame.product_context===reviewerProductContext(d)&&frame.seconds===b.seconds)return row.image_job_id;
             throw Error('รอให้การเตรียมเฟรมครั้งก่อนเสร็จก่อน');
           }
         }
-        const pkg={title_th:d.product.name,ugc:{draft_id:id,frame:{media_id:randomUUID(),source,seconds:b.seconds}}};
+        const pkg={title_th:d.product.name,ugc:{draft_id:id,frame:{media_id:randomUUID(),source,product_context:reviewerProductContext(d),seconds:b.seconds}}};
         const job=(await tx.query("INSERT INTO jobs(kind,status,package,budget_credits) VALUES('text_video','NEW',$1,0) RETURNING id",[json(pkg)])).rows[0].id;
         await tx.query('UPDATE ugc_drafts SET image_job_id=$2,updated_at=now() WHERE id=$1',[id,job]);
         return job;
@@ -616,7 +676,7 @@ Hook introduces the exact product, a problem, or a confirmed benefit. Sum scene 
       } else if (b.slot.startsWith('fal:')) {
         const approved=a.fal.find((x:any)=>x.slot===b.slot);
         if (!approved||!w.fal) throw Error('ไม่พบค่าใช้จ่าย fal ที่ยืนยัน');
-        const m=await model(approved.endpoint_id,!!a.input?.presenter);
+        const m=await model(approved.endpoint_id,!!a.input?.presenter,true);
         const current=await provider.price(m,approved.payload);
         const tariff=m.billing?.rates[String(approved.resolution).toLowerCase()]??m.billing?.rates['*'];
         const componentsChanged=approved.reference_image_usd!==undefined &&

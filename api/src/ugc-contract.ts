@@ -31,7 +31,7 @@ const reviewerDefaults = {
 };
 const Reviewer = z.object({
   kind:z.enum(['','clip','portrait','ai']), product_media_id:uuid.nullable(), source_id:uuid.nullable(),
-  frame_id:uuid.nullable(), opening_id:uuid.nullable(), image_endpoint:z.enum(UGC_IMAGE_MODELS),
+  require_product_frame:z.boolean().optional(), frame_id:uuid.nullable(), opening_id:uuid.nullable(), image_endpoint:z.enum(UGC_IMAGE_MODELS),
 }).strict();
 export const creatorVideoDefault = 'xai/grok-imagine-video/v1.5/image-to-video';
 export const creatorVideoModels = [creatorVideoDefault,'alibaba/wan-3.0/image-to-video','google/gemini-omni-flash/v1.1/image-to-video'];
@@ -39,7 +39,7 @@ export const creatorVideoModels = [creatorVideoDefault,'alibaba/wan-3.0/image-to
 export const Document = z.object({
   product: Product, presenter_direction:short(400).optional(), brief: short(1600), model: short(100).min(1),
   angles:z.array(Angle).max(3).optional(),
-  reasoning: z.enum(['low','medium','high']), endpoint: short(230), resolution: short(24),
+  reasoning: z.enum(['low','medium','high']), endpoint: short(230), arena_key:short(240).optional(), resolution: short(24),
   duration: z.number().int().min(8).max(30), hooks: z.array(Hook).max(3), hook: z.union([z.literal(''), Hook]),
   reviewer:Reviewer.optional(), caption: short(500), cta: CTA, scenes: z.array(Scene).max(10), show_price: z.boolean(), show_promo: z.boolean(),
 }).strict();
@@ -69,9 +69,12 @@ export function creatorScenes(d:DraftDocument,angle:z.infer<typeof Angle>,detail
 export const falEndpoints = [H3_MAX_IMAGE,'minimax/h3/image-to-video',...creatorVideoModels];
 export const videoProvider = { model:getVideoModel, build:buildVideoPayload, price:estimateVideoPayload };
 export type Media = {id:string;kind:'image'|'video';storage_key:string;content_type:string;
-  role?:'product'|'presenter'|'frame'|'opening';details?:{source_id?:string;seconds?:number;basis?:string}};
+  role?:'product'|'presenter'|'frame'|'opening';details?:{source_id?:string;product_context?:string;seconds?:number;basis?:string}};
 export function isProduct(m:Media) {return !m.role || m.role==='product';}
 export function speakerShot(d:DraftDocument, i:number) {return !!d.reviewer&&(i===0||i===d.scenes.length-1);}
+export function reviewerProductContext(d:DraftDocument) {
+  return digest({product:d.reviewer!.product_media_id,name:d.product.name,variant:d.product.variant});
+}
 export function reviewerBasis(d:DraftDocument) {
   const r=d.reviewer!;
   return digest({kind:r.kind,product:r.product_media_id,source:r.source_id,frame:r.frame_id,product_name:d.product.name,
@@ -85,7 +88,7 @@ export function reviewerSources(d:DraftDocument, media:Media[]) {
   const source=media.find(m=>m.id===r.source_id&&m.role==='presenter');
   if (r.kind==='portrait' && source?.kind!=='image') throw Error('อัปโหลดรูปคนรีวิวก่อน');
   if (r.kind==='clip' && source?.kind!=='video') throw Error('อัปโหลดคลิปคนถือสินค้าก่อน');
-  const frame=media.find(m=>m.id===r.frame_id&&m.role==='frame'&&m.details?.source_id===source?.id);
+  const frame=media.find(m=>m.id===r.frame_id&&m.role==='frame'&&m.details?.source_id===source?.id&&(!r.require_product_frame||m.details?.product_context===reviewerProductContext(d)));
   return {product,source,frame};
 }
 export function approvedOpening(d:DraftDocument, media:Media[]) {
@@ -152,16 +155,29 @@ export function reuseKey(item: Record<string, any>) {
   return digest({endpoint:item.endpoint_id,payload:item.payload,media:item.media_id,edited:item.edited_seconds});
 }
 
+export function ugcOpeningField(m:Pick<FalVideoModel,'category'|'endpoint_id'|'input_schema'>){
+  const props=m.input_schema?.properties||{};
+  // Mirror the Studio compiler's field precedence. A subject/reference image is not an opening frame.
+  const key=['image_url','start_image_url','first_frame_url','start_frame_url'].find(k=>k in props);
+  if(m.category!=='image-to-video'||!key)return null;
+  if(key!=='image_url')return key;
+  const description=String(props[key]?.description||'');
+  if(/(?:first|start(?:ing)?|opening) (?:image|frame)/i.test(description))return key;
+  if(/subject reference|identity reference|reference (?:portrait|character)|last frame|end frame/i.test(description))return null;
+  return /(?:^|\/)image-to-video(?:\/|$)/.test(m.endpoint_id)&&!/(?:reference-to-video|lip-sync|avatar)/.test(m.endpoint_id)?key:null;
+}
 export async function videoItem(model: FalVideoModel, shot: Shot, resolution: string, providers=videoProvider, speaker=false) {
   const seconds = chooseGenerationSeconds(model.durations,shot.seconds);
   if (!model.available || !seconds || seconds>30) throw Error(model.reason || 'รุ่นนี้ยังไม่รองรับความยาวที่เลือก');
   const prompt=compileProductMotion(model,shot.visual,shot.camera,shot.seconds,seconds,speaker?shot.narration:undefined);
   if(speaker&&model.audio!==true)throw Error('โมเดลนี้ยังไม่ยืนยันว่ารองรับเสียงพูดพร้อมภาพ');
   const payload=providers.build(model,{prompt,duration:seconds,resolution,audio:speaker,image_url:PREVIOUS_FRAME,aspect_ratio:'9:16'});
+  const frameField=ugcOpeningField(model);
+  if(speaker&&(!frameField||payload[frameField]!==PREVIOUS_FRAME))throw Error('ยังยืนยันไม่ได้ว่า endpoint ใช้ภาพที่อนุมัติเป็นเฟรมเปิด');
   const rate=await providers.price(model,payload);
   if (!(rate.usd>0 && Number.isFinite(rate.usd) && rate.quantity>0)) throw Error('ตรวจราคาฉากของ fal.ai ไม่สำเร็จ');
   return {
-    slot:'fal:'+shot.id, scene_id:shot.id, endpoint_id:model.endpoint_id, model_name:model.name, resolution,
+    ...(frameField?{first_frame_field:frameField}:{}),slot:'fal:'+shot.id, scene_id:shot.id, endpoint_id:model.endpoint_id, model_name:model.name, resolution,
     schema_hash:model.schema_hash, payload, media_id:shot.media_id, generation_seconds:seconds,
     edited_seconds:shot.seconds, billed_seconds:/^seconds?$/i.test(rate.unit)?rate.quantity:null,
     billing_quantity:rate.quantity, billing_unit:rate.unit, unit_usd:model.billing?.rates[resolution.toLowerCase()]??model.billing?.rates['*']??rate.usd/rate.quantity,

@@ -23,12 +23,17 @@ export async function readMedia(stream:ReadableStream<Uint8Array>|null, length:s
   return Buffer.concat(chunks,size);
 }
 
-export async function saveMedia(pool:pg.Pool|pg.PoolClient, store:AssetStore, draft:string, bytes:Buffer, role:'product'|'presenter'='product', id:string=randomUUID()) {
-  const type=bytes.length>=16 && (bytes.subarray(0,3).equals(Buffer.from([255,216,255]))?'image/jpeg'
+export function mediaType(bytes:Buffer){
+  if(bytes.length<16)return null;
+  return (bytes.subarray(0,3).equals(Buffer.from([255,216,255]))?'image/jpeg'
     :bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]))?'image/png'
     :bytes.toString('ascii',0,4)==='RIFF' && bytes.toString('ascii',8,12)==='WEBP'?'image/webp'
     :bytes.toString('ascii',4,8)==='ftyp'?'video/mp4':null);
-  if (!type) throw Error('รองรับไฟล์ JPEG, PNG, WebP หรือ MP4');
+}
+
+export async function saveMedia(pool:pg.Pool|pg.PoolClient, store:AssetStore, draft:string, bytes:Buffer, role:'product'|'presenter'='product', id:string=randomUUID()) {
+  const type=mediaType(bytes);
+  if(!type)throw Error('รองรับไฟล์ JPEG, PNG, WebP หรือ MP4');
   const key='ugc-r2/v1/originals/'+draft+'/'+id;
   await store.put(key,bytes,type);
   const kind=type.startsWith('video')?'video':'image';

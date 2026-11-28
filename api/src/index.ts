@@ -439,7 +439,7 @@ const textVideo = registerTextVideo(app,pool,{guard:ui.requireUi,workerGuard:req
 const videoArena = registerVideoArena(app,pool,ui.requireUi);
 registerVideoBenchmarks(app,pool,ui.requireUi);
 registerSceneRevisions(app,pool,ui.requireUi);
-registerProductTrends(app, pool, { guard: ui.requireUi });
+registerProductTrends(app, pool, { guard: ui.requireUi }).start();
 const ugcBucket=env.UGC_R2_BUCKET||env.R2_BUCKET;
 const ugcEndpoint=env.UGC_R2_ENDPOINT||env.R2_ENDPOINT;
 const ugcAccessKey=env.UGC_R2_ACCESS_KEY_ID||env.R2_ACCESS_KEY_ID;

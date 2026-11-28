@@ -389,6 +389,8 @@ details summary{cursor:pointer;color:var(--ink-2);font-size:14px;margin-top:10px
 .ugc-idea-card{border-bottom:1px solid var(--line);padding:18px 0}.ugc-idea-card h3{margin-top:0}
 .ugc-block summary,.ugc-old summary{cursor:pointer;font-weight:600}.ugc-block summary+*{margin-top:12px}
 @media(max-width:520px){.ugc-submit .btn{width:100%}.ugc-model .btn{padding-inline:10px}.ugc-home{min-width:0}}
+.ugc-portraits{display:flex;flex-wrap:wrap;gap:.5rem}.ugc-portraits button{display:flex;align-items:center;gap:.5rem}.ugc-portraits img{object-fit:cover;border-radius:.3rem}.trend-spinner{display:inline-block;width:1em;height:1em;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;margin-inline-end:.45em;vertical-align:-.12em;animation:trend-spin .8s linear infinite}
+@keyframes trend-spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.ugc-portraits{display:flex;flex-wrap:wrap;gap:.5rem}.ugc-portraits button{display:flex;align-items:center;gap:.5rem}.ugc-portraits img{object-fit:cover;border-radius:.3rem}.trend-spinner{animation:none}}
 </style>
 </head>
 <body>
@@ -493,14 +495,24 @@ function renderProductTrends(config){
   const status = h('p',{role:'status'},config.enabled ? '' : 'ยังไม่ได้ตั้งค่า OpenAI สำหรับค้นหาและอ่านหลักฐาน');
   const results = h('div',{});
   const submit = h('button',{class:'btn primary',type:'submit',disabled:!config.enabled},'ค้นหาเทรนด์');
-  const form = h('form',{class:'trend-form',on:{submit:async event=>{
-    event.preventDefault();
-    if (submit.disabled) return;
-    submit.disabled=true;
-    status.textContent='กำลังค้นหาและตรวจหลักฐานย้อนหลัง 30 วัน…';
-    put(results);
-    try{
-      const result=await api('/app/api/product-trends',{method:'POST',body:JSON.stringify({query:query.value,model:model.value})});
+  const slot='ms.productTrends.search';
+  let pending=null, saved={}, timer, started=false;
+  try{saved=JSON.parse(localStorage.getItem(slot)||'{}');}catch{}
+  const persist=value=>{try{localStorage.setItem(slot,JSON.stringify(value));}catch{}};
+  const values=job=>{
+    query.value=job.query||'';
+    if(job.model&&!Array.from(model.options).some(o=>o.value===job.model))model.append(h('option',{value:job.model,disabled:true},job.model));
+    if(job.model)model.value=job.model;
+  };
+  const lock=busy=>{
+    query.disabled=model.disabled=busy;
+    submit.disabled=busy||!config.enabled;
+    submit.setAttribute('aria-busy',String(busy));
+    put(submit,...(busy?[h('span',{class:'trend-spinner','aria-hidden':'true'}),'กำลังค้นหาเทรนด์…']:['ค้นหาเทรนด์']));
+  };
+  const here=()=>S.view==='product_trends'&&form.isConnected;
+  const later=()=>{clearTimeout(timer);timer=setTimeout(()=>{if(here())void recover();},1800);};
+  function show(result){
       status.textContent=[result.fallbackReason,result.provider,result.model,
         result.products.length ? 'พบ '+result.products.length+' สินค้า' : 'ยังไม่พบสินค้าที่มีหลักฐานครบ'].filter(Boolean).join(' · ');
       put(results,result.products.map(product=>h('article',{class:'trend-result'},h('h2',{},product.name),
@@ -512,13 +524,74 @@ function renderProductTrends(config){
           try {await createUgc({name:product.name,evidence:product.evidence});}
           catch(error){status.textContent=error.message;}finally{button.disabled=false;}
         }}},'ใช้สินค้านี้ทำคลิป'))));
-    }catch(error){status.textContent=error.message;}
-    finally{submit.disabled=false;}
+
+  }
+  function display(job){
+    values(job);
+    if(['done','failed','cancelled'].includes(job.status)){
+      pending=null;
+      persist({query:job.query,model:job.model,last:job.id});
+      if(job.status==='done')show(job.result);
+      else status.textContent=job.error||(job.status==='cancelled'?'ยกเลิกงานค้นหาแล้ว':'ค้นหาไม่สำเร็จ');
+      lock(false);return;
+    }
+    pending={query:job.query,model:job.model,request_id:pending?.request_id||job.id,id:job.id};
+    persist(pending);lock(true);
+    status.textContent=({queued:'รอคิวค้นหา',researching:'กำลังค้นข้อมูล',analyzing:'AI กำลังอ่านหลักฐาน',web_search:'กำลังค้นเว็บและตรวจหลักฐาน'})[job.status]||'กำลังตรวจสถานะงานเดิม';
+    later();
+  }
+  function rejected(error){
+    persist({query:query.value,model:model.value});pending=null;lock(false);status.textContent=error.message;
+  }
+  async function recover(){
+    if(!pending)return;
+    const path='/app/api/product-trends';
+    try{
+      let job;
+      try{job=await api(path+'/jobs/'+(pending.id||pending.request_id));}
+      catch(e){
+        if(e.status!==404)throw e;
+        const current=await api(path);
+        job=current.active;
+        if(!job){
+          try{job=await api(path,{method:'POST',body:JSON.stringify({query:pending.query,model:pending.model,request_id:pending.request_id})});}
+          catch(error){if(error.status===400&&here()){rejected(error);return;}throw error;}
+        }
+      }
+      if(here())display(job);
+    }catch(e){
+      if(!here())return;
+      status.textContent='เช็กสถานะสะดุด กำลังตรวจงานเดิมอีกครั้ง';later();
+    }
+  }
+  const form=h('form',{class:'trend-form',on:{submit:async event=>{
+    event.preventDefault();
+    if(pending||submit.disabled)return;
+    started=true;pending={query:query.value,model:model.value,request_id:crypto.randomUUID()};
+    persist(pending);lock(true);put(results);
+    status.textContent='กำลังส่งคำค้น';
+    try{
+      const job=await api('/app/api/product-trends',{method:'POST',body:JSON.stringify(pending)});
+      if(here())display(job);
+    }catch(e){
+      if(!here())return;
+      if(e.status===400){rejected(e);return;}
+      status.textContent='กำลังตรวจว่าระบบรับคำขอเดิมแล้วหรือยัง';later();
+    }
   }}},h('label',{for:'trend-query'},'ชื่อสินค้าหรือหมวด (เว้นว่างเพื่อสำรวจทุกหมวด)'),query,
      h('label',{for:'trend-model'},'โมเดลค้นหาและอ่านหลักฐาน'),model,submit);
   put(mainEl,h('h1',{},'เทรนด์สินค้า'),
     h('p',{},'ค้นหาสินค้าในไทยจากสัญญาณความสนใจและยอดขายย้อนหลัง 30 วัน'),
     form,status,results);
+  if(config.active)display(config.active);
+  else if(saved.request_id){pending=saved;values(saved);lock(true);status.textContent='กำลังตรวจงานเดิม';void recover();}
+  else if(saved.last){
+    values(saved);
+    // A previously completed search can be viewed while a new query is being typed.
+    api('/app/api/product-trends/jobs/'+saved.last).then(job=>{
+      if(here()&&!started&&!pending){if(job.result)show(job.result);else status.textContent=job.error||'';}
+    }).catch(()=>{});
+  }else if(saved.model)values(saved);
 }
 
 async function load(){
@@ -536,7 +609,7 @@ async function load(){
       if (seq===loadSeq && S.view==='ugc') { frame(); renderUgc(cfg,list.drafts); }
     } else if (S.view==='product_trends'){
       const config = await api('/app/api/product-trends');
-      if (S.view==='product_trends') { frame(); renderProductTrends(config); }
+      if (seq===loadSeq && S.view==='product_trends') { frame(); renderProductTrends(config); }
     } else if (S.view==='community'){
       const [cm, e] = await Promise.all([api('/app/api/community'), api('/app/api/episodes?tab=ready')]);
       S.counts={...S.counts, ...e.counts, community: cm.winners.filter(w=>w.status==='claude_draft_ready').length||null}; frame(); community(cm);

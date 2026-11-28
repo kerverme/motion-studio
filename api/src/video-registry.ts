@@ -588,3 +588,35 @@ export async function estimateVideoPayload(model:FalVideoModel,payload:Record<st
     Math.abs(estimate.total_cost-model.price!.unit_price*preview.quantity)>0.010001)throw new Error('fal quote changed or estimate is inconsistent');
   return {...preview,usd:Math.ceil(Math.max(preview.usd,estimate.total_cost)*1e6-1e-8)/1e6};
 }
+
+// Compact metadata for exact UGC identities. Generate requests still use the expanded schema.
+export type UgcFalIdentity={id:string;name:string;category:string;developer?:string;active:boolean};
+export async function ugcFalIndex(request:typeof fetch=fetch){
+  const index:UgcFalIdentity[]=[];
+  for(const category of ['image-to-video','text-to-video','video-to-video']){
+    const url=new URL(API);
+    url.searchParams.set('category',category);
+    url.searchParams.set('limit','100');
+    const seen=new Set<string>();
+    for(;;){
+      const page=await readJson(url,request,'catalog');
+      if(!Array.isArray(page?.models))throw new FalRegistryError('catalog','invalid');
+      for(const m of page.models){
+        if(!safeEndpoint.test(m.endpoint_id)||!m.metadata?.display_name)continue;
+        index.push({id:m.endpoint_id,name:m.metadata.display_name,category:m.metadata.category,
+          developer:typeof m.metadata.developer==='string'?m.metadata.developer:undefined,active:m.metadata.status==='active'});
+      }
+      if(!page.has_more)break;
+      if(!page.next_cursor||seen.has(page.next_cursor))throw new FalRegistryError('catalog','invalid');
+      seen.add(page.next_cursor);url.searchParams.set('cursor',page.next_cursor);
+    }
+  }
+  return index;
+}
+export function ugcFalSchemas(ids:string[],request:typeof fetch=fetch){
+  const {scope,lookup}=batchLookup(new Set(ids),request);
+  return (id:string)=>getVideoModel(id,'image-to-video',request,lookup,scope);
+}
+export function ugcKnownAlias(label:string){
+  return knownAlias(canonicalName(label),'image-to-video');
+}

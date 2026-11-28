@@ -10,6 +10,7 @@ import { test } from 'node:test';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import pg from 'pg';
+import { registerProductTrends } from './product-trends.js';
 import { registerUgc } from './ugc.js';
 import { videoProvider, type DraftDocument } from './ugc-contract.js';
 import { createOpenAIModelCatalog } from './openai-models.js';
@@ -21,6 +22,7 @@ test('product through confirmed quote, real queue/render/export, and no duplicat
   const repo=fileURLToPath(new URL('../../',import.meta.url));
   const temp=await mkdtemp(join(tmpdir(),'ugc-media-test-'));
   let server:ReturnType<typeof serve>|undefined;
+  let trendTimer:NodeJS.Timeout|undefined;
   try {
     assert.equal((await pool.query('select current_database() as db')).rows[0].db,'ugc_test');
     await pool.query('CREATE TABLE schema_migrations (name text PRIMARY KEY,applied_at timestamptz NOT NULL DEFAULT now())');
@@ -35,8 +37,9 @@ test('product through confirmed quote, real queue/render/export, and no duplicat
     })]);
     const app=new Hono(),source='https://example.org/trend',buy='https://store.example/sku-a';
     const database='01552600-a420-42f5-9a47-d496d99389df', page='19552600-a420-42f5-9a47-d496d99389df';
+    const reviewerDb=randomUUID(), reviewerPage=randomUUID();
     const product={name:'รองเท้า Orion',variant:'A',price:'990',promo:'ส่งวันนี้',selling_points:'พื้นยาง',order_url:buy};
-    const options={FIRECRAWL_API_KEY:'mock',FAL_KEY:'mock',OPENAI_API_KEY:'mock',UGC_NOTION_TOKEN:'mock',UGC_NOTION_DATABASE_IDS:database};
+    const options={FIRECRAWL_API_KEY:'mock',FAL_KEY:'mock',OPENAI_API_KEY:'mock',UGC_NOTION_TOKEN:'mock',UGC_NOTION_DATABASE_IDS:database,UGC_NOTION_REVIEWER_DATABASE_ID:reviewerDb};
     let rate=.1,openai=0,lookups=0,reads=0,imageRate=.15,browserBase='';
     const creatorEndpoint='xai/grok-imagine-video/v1.5/image-to-video';
     const altEndpoint='fixture/new-speaker/image-to-video';
@@ -56,7 +59,7 @@ test('product through confirmed quote, real queue/render/export, and no duplicat
     async function readVideo(id:string,category:FalVideoModel['category']):Promise<FalVideoModel>{
         lookups++;assert.equal(category,'image-to-video');
         if(catalogMode==='down')throw Error('provider unavailable');
-        if(id===creatorEndpoint&&catalogMode==='removed'||id===altEndpoint&&!['changed','removed'].includes(catalogMode)||
+        if(id===creatorEndpoint&&catalogMode==='removed'||id===altEndpoint&&catalogMode==='normal'||
           ['alibaba/wan-3.0/image-to-video','google/gemini-omni-flash/v1.1/image-to-video'].includes(id))throw new MissingEndpoint();
         if(id===creatorEndpoint||id===altEndpoint){
           return {endpoint_id:id,category,name:id===creatorEndpoint?'Grok Imagine 1.5':'Wan 3.0',available:true,resolutions:['720p'],durations:[3,4,5,10,12],audio:true,
@@ -69,8 +72,34 @@ test('product through confirmed quote, real queue/render/export, and no duplicat
           input_schema:schema,schema_hash:'test-schema',price:{unit:'seconds',unit_price:rate,currency:'USD'},
           billing:{rates:{'768p':rate}},source_url:'https://fal.ai/models/'+id,checked_at:new Date().toISOString()} satisfies FalVideoModel;
       }
+    let trendPosts=0,trendFirecrawl=0,trendOutcome='queued';
+    const day=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Bangkok',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+    const trendHits=[{url:'https://publisher.example/interest',title:'Interest rising',description:'Search interest rose by 20%'},
+      {url:'https://shop.example.org/ranking',title:'Sales rank',description:'Reached number 2 in sales'}];
+    const trendOptions={guard:async(_c:any,next:()=>Promise<void>)=>next(),models:['gpt-6.2-sol','gpt-6.1-terra'],env:options,
+      fetch:async(input:any,init?:RequestInit)=>{
+        const url=String(input);
+        if(url.includes('firecrawl')){
+          trendFirecrawl++;
+          return Response.json({success:true,creditsUsed:2,data:{web:trendHits}});
+        }
+        assert.match(url,/api.openai.com/);
+        const id=init?.method==='POST'?'resp_product_'+(++trendPosts):url.split('/').at(-1);
+        return Response.json({id,status:init?.method==='POST'?'queued':trendOutcome,output:[{type:'message',content:[{type:'output_text',text:JSON.stringify([{
+          name:'กล่องเกม PS5',evidence:trendHits.map((hit,i)=>({url:hit.url,date:day,kind:i?'commerce':'demand',quote:hit.description}))}])}]}]});
+      }};
+    const trends=registerProductTrends(app,pool,trendOptions);
+    const replica=new Hono();
+    const other=registerProductTrends(replica,pool,trendOptions);
+    trendTimer=setInterval(()=>{void Promise.all([trends.pump(),other.pump()]);},250);
+    app.post('/qa/trend-duplicate',async c=>{
+      const body=await c.req.json();
+      return replica.request('/app/api/product-trends',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+    });
+    app.post('/qa/trend-outcome',async c=>{trendOutcome=(await c.req.json()).status;return c.json({ok:true});});
+    app.get('/qa/trend-counts',async c=>c.json({posts:trendPosts,firecrawl:trendFirecrawl,jobs:(await pool.query('SELECT COUNT(*)::int n FROM product_trend_jobs')).rows[0].n}));
     const appUgc=registerUgc(app,pool,{
-      guard:async(c,next)=>{if(c.req.header('x-test')!=='owner'&&!(browserBase&&c.req.header('x-motion-ui')==='1'))return c.json({error:'unauthorized'},401);await next();},
+      guard:async(c,next)=>{if(c.req.header('x-test')!=='owner'&&!(browserBase&&(c.req.header('x-motion-ui')==='1'||c.req.method==='GET'&&c.req.path.endsWith('/image'))))return c.json({error:'unauthorized'},401);await next();},
       workerGuard:async(c,next)=>{if(c.req.header('x-internal-token')!=='test-worker')return c.json({error:'unauthorized'},401);await next();},
       env:options,models:brains,firecrawlFetch:async(url,init)=>{
         const body=JSON.parse(String(init?.body));
@@ -87,9 +116,20 @@ test('product through confirmed quote, real queue/render/export, and no duplicat
       storage:{sign:async(key,download)=>(browserBase?browserBase+'/qa/assets/':'https://fixture.invalid/')+key+(download?'?attachment=1':'')},
       references:{put:async(key,data)=>{const file=join(temp,'r2',key);await mkdir(dirname(file),{recursive:true});await writeFile(file,data);},
         sign:async(key)=>(browserBase?browserBase+'/qa/r2/':'https://r2-fixture.invalid/')+key},
-      notionFetch:async(input)=>{
+      notionFetch:async(input,init)=>{
         const url=new URL(String(input));
+        if(url.hostname==='file.notion.so')return new Response(new Uint8Array(await readFile(join(temp,'reviewer-portrait.png'))));
         assert.equal(url.hostname,'api.notion.com');
+        const person={id:reviewerPage,parent:{database_id:reviewerDb},properties:{
+          Name:{id:'title',type:'title',title:[{plain_text:'มิน คนรีวิว'}]},
+          Portrait:{id:'pic',type:'files',files:[{name:'portrait.jpg',type:'file',file:{url:'https://file.notion.so/portrait.jpg?expires=fixture'}}]},
+        }};
+        if(url.pathname==='/v1/databases/'+reviewerDb)return Response.json({properties:{Name:{id:'title',name:'Name',type:'title'},Portrait:{id:'pic',name:'Portrait',type:'files'}}});
+        if(url.pathname==='/v1/databases/'+reviewerDb+'/query'){
+          const term=JSON.parse(String(init?.body)).filter?.title?.contains;
+          return Response.json({results:!term||'มิน คนรีวิว'.includes(term)?[person]:[],has_more:false});
+        }
+        if(url.pathname==='/v1/pages/'+reviewerPage)return Response.json(person);
         const record={id:page,parent:{database_id:database},properties:{
           Product:{id:'title',type:'title',title:[{plain_text:product.name}]},
           Price:{id:'price',type:'number',number:990},
@@ -136,7 +176,21 @@ test('product through confirmed quote, real queue/render/export, and no duplicat
           ],
         })}]}]};
       },
-      videoDiscovery:async seed=>({ids:[...new Set([...seed,...(['changed','removed'].includes(catalogMode)?[altEndpoint]:[])])],load:id=>readVideo(id,'image-to-video')}),
+      rankSources:{
+        arena:async()=>{
+          if(catalogMode==='arena-down')throw Error('offline');
+          return [{rank:1,key:'absent',name:'Missing 1.0',developer:'Fixture'},
+            {rank:2,key:'grok-720',name:'Grok Imagine Video 1.5 (720p)',developer:'SpaceXAI'}];
+        },
+        featured:async()=>{if(catalogMode==='featured-down')throw Error('offline');return [creatorEndpoint,...(catalogMode==='normal'?[]:[altEndpoint])];},
+        index:async()=>{
+          if(catalogMode==='index-down')throw Error('offline');
+          return [creatorEndpoint,altEndpoint].filter(id=>!(id===creatorEndpoint&&catalogMode==='removed')).map(id=>({
+            id,name:id,category:'image-to-video',active:true,
+          }));
+        },
+        schemas:()=>id=>readVideo(id,'image-to-video'),
+      },
       video:{...videoProvider,model:readVideo,price:async(m,p)=>({usd:Math.round((Number(p.duration)*m.billing!.rates[String(p.resolution).toLowerCase()]+(m.billing!.reference_image_usd||0))*100)/100,unit:'seconds',quantity:Number(p.duration)})},
     });
     app.get('/app',async c=>c.html(await readFile(join(repo,'api/src/ui.html'),'utf8')));
@@ -364,7 +418,7 @@ test('product through confirmed quote, real queue/render/export, and no duplicat
     const before=lookups;
     const both=await Promise.all([request('/catalog/video?refresh=1'),request('/catalog/video?refresh=1')]);
     const snapshots=await Promise.all(both.map(ok));
-    assert.deepEqual(snapshots[0],snapshots[1]);assert.equal(lookups-before,3);
+    assert.deepEqual(snapshots[0],snapshots[1]);assert.equal(lookups-before,1);
     assert.deepEqual(snapshots[0].models[0].rates[0],{resolution:'720p',unit:'seconds',unit_usd:.14,image_usd:.01});
     if(process.env.UGC_TEST_BROWSER==='1'){
       browserBase='http://127.0.0.1:'+port;
@@ -377,7 +431,7 @@ test('product through confirmed quote, real queue/render/export, and no duplicat
       console.info(out.trim());
     }
   } finally {
-    server?.close();
+    clearInterval(trendTimer);server?.close();
     await pool.end();
     if(!process.env.UGC_KEEP_FIXTURE)await rm(temp,{recursive:true,force:true});
     else console.info('UGC fixture artifacts',temp);

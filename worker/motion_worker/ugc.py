@@ -78,7 +78,13 @@ def validate_production(ctx, spec):
             continue
         item = paid.get('fal:'+s['id'])
         endpoint = item.get('endpoint_id','') if item else ''
-        if not (item and '/image-to-video' in endpoint and re.fullmatch(r'[\w.-]+(?:/[\w.-]+)+',endpoint,re.ASCII)
+        frame_key = item.get('first_frame_field') if item else None
+        if frame_key is None:
+            frame_ok = '/image-to-video' in endpoint  # Earlier approvals used this route convention.
+        else:
+            frame_ok = (frame_key in ('image_url', 'start_image_url', 'first_frame_url', 'start_frame_url')
+                        and item['payload'].get(frame_key) == video.PREVIOUS_FRAME)
+        if not (item and frame_ok and re.fullmatch(r'[\w.-]+(?:/[\w.-]+)+',endpoint,re.ASCII)
                 and not set(endpoint.split('/')) & {'.','..'}
                 and item['media_id']==s['media_id'] and item['edited_seconds']==s['seconds']
                 and s['seconds']<=item['generation_seconds']<=30
@@ -217,7 +223,7 @@ def extract_opening(ctx):
     store=r2.ugc_references()
     ctx.db.status(ctx.job,'RENDERING','RENDERING',.2,'กำลังตัดเฟรมจากคลิปคนรีวิว')
     _,ref,_=prepare_media(ctx,source,False,store,seconds)
-    return finish_opening(ctx,save_opening(ctx,ref,'frame',{'source_id':source['id'],'seconds':seconds},frame,store))
+    return finish_opening(ctx,save_opening(ctx,ref,'frame',{'source_id':source['id'],'seconds':seconds,'product_context':frame.get('product_context')},frame,store))
 
 
 def generate_opening(ctx):

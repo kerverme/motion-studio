@@ -22,6 +22,30 @@ function ugcRateText(rate){
   return ugcUSD(rate.unit_usd)+' / '+(/^seconds?$/i.test(rate.unit)?'วินาที':'ครั้ง')+
     (rate.image_usd?' + '+ugcUSD(rate.image_usd)+' / รูปอ้างอิง':'');
 }
+function rankedOptions(data,fits=()=>true){
+  const models=data.models||[], groups=[], entries=[];
+  function option(model,rank){
+    const endpoint=rank?.endpoint||model?.id;
+    const preset=rank?.resolution;
+    const reason=rank?.reason||(!model||!fits(model)?'ไม่รองรับการตั้งค่าของร่างนี้':'');
+    const key=rank?'arena:'+rank.key:endpoint;
+    const disabled=!!reason||rank?.available===false;
+    const label=rank?'#'+rank.rank+' '+rank.name+' · '+rank.developer: model.name;
+    const item=h('option',{value:key,disabled},label+(endpoint?' · '+endpoint:'')+(reason?' · '+reason:''));
+    entries.push({key,endpoint,rank:rank?.key,preset,disabled,model});
+    return item;
+  }
+  if(data.ranked?.length)groups.push(h('optgroup',{label:'อันดับ Arena · Image-to-Video'},data.ranked.map(r=>option(models.find(m=>m.id===r.endpoint),r))));
+  const extra=(data.featured||[]).map(id=>models.find(m=>m.id===id)).filter(Boolean);
+  if(extra.length)groups.push(h('optgroup',{label:'แนะนำบน fal.ai'},extra.map(m=>option(m))));
+  return {groups,entries};
+}
+function catalogNotice(data){
+  return [data.error,data.checked_at?'อัปเดตสำเร็จล่าสุด '+ugcDate(data.checked_at):'',
+    ...(data.stale?Object.entries(data.source_status||{}).filter(([,s])=>s.error).map(([key,s])=>
+      ({arena:'Arena',featured:'fal.ai New and Noteworthy',index:'fal.ai catalog'})[key]+' · '+(s.checked_at?'ข้อมูลล่าสุด '+ugcDate(s.checked_at):'ยังไม่มีข้อมูลที่ตรวจสอบแล้ว')):[])
+  ].filter(Boolean).join(' · ');
+}
 function renderUgcHome(){
   const session=++ugcSession;
   const active=()=>session===ugcSession&&S.view==='ugc'&&root.isConnected;
@@ -54,16 +78,27 @@ function renderUgcHome(){
   function selector(kind,label){
     const key='ms.ugc.model.'+kind, status=h('small',{role:'status',class:'sub'}),rate=h('small',{class:'sub'});
     const select=h('select',{'aria-label':label});
-    let items=[],missing=false,loading=false,initialized=false;
-    const chosen=()=>items.find(m=>m.id===select.value);
+    let items=[],entries=[],missing=false,loading=false,initialized=false;
+    const selection=()=>entries.find(x=>x.key===select.value&&!x.disabled);
+    const chosen=()=>selection()?.model;
     const showRate=()=>{
-      const m=chosen(),r=m?.rates?.find(x=>x.resolution.toLowerCase()==='720p')??m?.rates?.[0];
+      const m=chosen(),r=m?.rates?.find(x=>x.resolution.toLowerCase()===(selection()?.preset||'720p'))??m?.rates?.[0];
       put(rate,r?h('a',{href:m.source_url,target:'_blank',rel:'noopener'},r.resolution+' · '+ugcRateText(r)):null);
     };
-    select.onchange=()=>{if(select.value){missing=false;localStorage.setItem(key,select.value);status.textContent=lastStatus;}showRate();};
+    function remember(){
+      const entry=selection();
+      if(!entry)return;
+      localStorage.setItem(key,entry.key);
+      if(kind==='video'){
+        localStorage.setItem(key+'.endpoint',entry.endpoint);
+        localStorage.setItem(key+'.resolution',entry.preset||entry.model.resolutions.find(x=>x.toLowerCase()==='720p')||entry.model.resolutions[0]);
+      }
+    }
+    select.onchange=()=>{if(select.value){missing=false;remember();status.textContent=lastStatus;}showRate();};
     let lastStatus='';
     let pending;
-    const refresh=action('อัปเดตโมเดล',()=>update(true));
+    const refreshLabel=kind==='video'?'อัปเดตอันดับและโมเดล':'อัปเดตโมเดล';
+    const refresh=action(refreshLabel,()=>update(true));
     function update(force=false){
       if(!pending)pending=read(force).finally(()=>{pending=null;});
       return pending;
@@ -71,25 +106,32 @@ function renderUgcHome(){
     async function read(force){
       if(loading)return;
       loading=true;select.disabled=true;refresh.disabled=true;
-      status.textContent='กำลังอัปเดตโมเดล…';
+      refresh.textContent='กำลังอัปเดต…';status.textContent='กำลังอัปเดต…';
       try{
         const data=await api(ugcPath+'/catalog/'+kind+(force?'?refresh=1':''));
         if(!active())return;
-        const wanted=localStorage.getItem(key)||select.value;
+        const wanted=localStorage.getItem(key)||select.value||'';
         items=data.models;
-        missing=!!wanted&&!items.some(m=>m.id===wanted);
-        put(select,ugcOption('','เลือกโมเดล'),items.map(m=>ugcOption(m.id,m.name)));
-        select.value=missing?'':wanted||(items.some(m=>m.id===data.default_id)?data.default_id:items[0]?.id||'');
-        if(select.value)localStorage.setItem(key,select.value);
+        const ranked=kind==='video'?rankedOptions(data):null;
+        entries=ranked?.entries||items.map(m=>({key:m.id,endpoint:m.id,model:m}));
+        const available=entries.filter(x=>!x.disabled);
+        const priorId=kind==='video'&&wanted?(localStorage.getItem(key+'.endpoint')||(!wanted.startsWith('arena:')?wanted:'')):'';
+        const priorSize=priorId?localStorage.getItem(key+'.resolution')?.toLowerCase():'';
+        const same=m=>(!priorId||m.endpoint===priorId)&&(!priorSize||(!m.preset||m.preset===priorSize)&&m.model.resolutions.some(r=>r.toLowerCase()===priorSize));
+        const exact=available.find(x=>x.key===wanted&&same(x));
+        const keep=exact||(priorId&&available.find(x=>x.endpoint===priorId&&same(x)));
+        missing=!!wanted&&!keep;
+        put(select,ugcOption('','เลือกโมเดล'),ranked?ranked.groups:items.map(m=>ugcOption(m.id,m.name)));
+        select.value=keep?.key||(missing?'':available.find(x=>x.endpoint===data.default_id)?.key||available[0]?.key||'');
+        if(select.value)remember();
         initialized=true;
-        lastStatus=(data.stale?'ยังไม่ได้อัปเดต · '+data.error:items.length?'':'ไม่มีโมเดลที่รองรับในขณะนี้')+
-          (data.checked_at?' · อัปเดตสำเร็จล่าสุด '+ugcDate(data.checked_at):'');
+        lastStatus=catalogNotice(data)||(!items.length?'ไม่มีโมเดลที่รองรับในขณะนี้':'');
         showRate();
       }catch(e){lastStatus='ยังไม่ได้อัปเดต · '+e.message+(lastStatus?' · '+lastStatus:'');}
-      finally{loading=false;refresh.disabled=false;select.disabled=false;
+      finally{loading=false;refresh.textContent=refreshLabel;refresh.disabled=false;select.disabled=false;
         status.textContent=(missing?'โมเดลที่เลือกใช้ไม่ได้แล้ว กรุณาเลือกใหม่ · ':'')+lastStatus.replace(/^ · /,'');}
     }
-    return {node:h('div',{class:'ugc-model'},h('label',{},label,select),refresh,rate,status),select,update,
+    return {node:h('div',{class:'ugc-model'},h('label',{},label,select),refresh,rate,status),select,update,selection,
       get ready(){return pending;},get initialized(){return initialized;},get missing(){return missing;},get loading(){return loading;}};
   }
   const video=selector('video','โมเดลวิดีโอ'),brain=selector('ideas','โมเดลคิดไอเดีย');
@@ -100,7 +142,8 @@ function renderUgcHome(){
     if(video.missing||video.select.options.length>1&&!video.select.value)throw Error('โมเดลเดิมใช้ไม่ได้แล้ว กรุณาเลือกโมเดลวิดีโอใหม่');
     const attached=file.files[0];
     if(attached?.size>32*1024*1024)throw Error('ไฟล์ต้องไม่เกิน 32 MB');
-    const input={brief:text,endpoint:video.select.value,...(idea?{idea:{search:idea.search,id:idea.id}}:{})};
+    const selected=video.selection();
+    const input={brief:text,endpoint:selected?.endpoint||'',...(selected?.rank?{arena_key:selected.rank}:{}),...(selected?.preset?{resolution:selected.preset}:{}),...(idea?{idea:{search:idea.search,id:idea.id}}:{})};
     const signature=JSON.stringify([input,attached?[attached.name,attached.size,attached.lastModified]:null]);
     const slot='ms.ugc.prepare';
     let pending=JSON.parse(sessionStorage.getItem(slot)||'null');
@@ -221,7 +264,7 @@ async function renderUgc(config,drafts){
   let quote=upgrade?null:row.quote;
   let imageQuote=upgrade?null:row.image_quote;
   let confirmed=false;
-  let models=[];
+  let models=[],modelCatalog={};
   let modelsLoading=false,modelsLoaded=false,modelNotice='';
   const opened=new Set();
   const modelPanel=h('div',{class:'ugc-grid'});
@@ -232,16 +275,23 @@ async function renderUgc(config,drafts){
     const target=key.includes('.')?d[key.split('.')[0]]:d;
     target[key.split('.').at(-1)]=value;
     if(key==='presenter_direction'&&d.scenes[0])d.scenes[0].visual='Hold the product and speak Thai to camera. '+value;
-    if(d.reviewer&&['product.name','product.variant','presenter_direction'].includes(key)&&d.reviewer.kind!=='clip')d.reviewer.opening_id=null;
+    if(d.reviewer&&['product.name','product.variant','presenter_direction'].includes(key)){
+      d.reviewer.opening_id=null;d.reviewer.frame_id=null;
+      if(d.scenes.length){d.scenes[0].media_id=null;d.scenes.at(-1).media_id=null;}
+    }
     invalidate();
   }
   function invalidate(){dirty=true;quote=null;imageQuote=null;confirmed=false;priceView();}
-  async function save(){
+  async function save(removePortrait){
     if (!dirty) return;
     const submitted=JSON.stringify(d);
-    row={...row,...await api(path,{method:'PATCH',body:JSON.stringify({revision:row.revision,document:JSON.parse(submitted)})})};
+    row={...row,...await api(path,{method:'PATCH',body:JSON.stringify({revision:row.revision,document:JSON.parse(submitted),...(removePortrait?{remove_portrait:removePortrait}:{})})})};
     imageQuote=row.image_quote;
     dirty=JSON.stringify(d)!==submitted;
+    if(!dirty&&d.reviewer){
+      Object.assign(d.reviewer,row.document.reviewer);
+      d.scenes.forEach((shot,i)=>{shot.media_id=row.document.scenes[i].media_id;});
+    }
     if(dirty)throw Error('ร่างถูกแก้ระหว่างบันทึก กรุณาบันทึกอีกครั้ง');
   }
   function field(label,key,value,attrs={},tag='input'){
@@ -256,8 +306,8 @@ async function renderUgc(config,drafts){
     modelsLoading=true;renderModels();
     try {
       const data=await api(ugcPath+(d.reviewer?'/catalog/video'+(force?'?refresh=1':''):'/models'));
-      models=data.models;modelsLoaded=true;
-      modelNotice=[data.stale?'ยังไม่ได้อัปเดต · '+data.error:'',data.checked_at?'อัปเดตสำเร็จล่าสุด '+ugcDate(data.checked_at):''].filter(Boolean).join(' · ');
+      models=data.models;modelCatalog=data;modelsLoaded=true;
+      modelNotice=catalogNotice(data);
     }
     catch(error){if(active())message.textContent=error.message;}
     finally {modelsLoading=false;if(active()){renderModels();priceView();}}
@@ -267,24 +317,35 @@ async function renderUgc(config,drafts){
     const options=models.filter(x=>(!d.reviewer||d.scenes.filter(s=>s.mode==='fal').every(s=>x.durations?.some(n=>n>=s.seconds)))&&
       (x.available&&(!d.reviewer||x.native_audio)||x.id===d.endpoint)).map(x=>[x.id,x.name]);
     if(!chosen&&d.endpoint&&!d.reviewer)options.unshift([d.endpoint,d.endpoint]);
+    const fits=m=>d.scenes.filter(s=>s.mode==='fal').every(s=>m.durations?.some(n=>n>=s.seconds));
+    const picker=rankedOptions(modelCatalog,fits);
+    const compatible=picker.entries.filter(x=>!x.disabled&&x.endpoint===d.endpoint&&(!x.preset||x.preset===d.resolution.toLowerCase()));
+    const prior=modelCatalog.ranked?.some(r=>r.key===d.arena_key);
+    const selected=prior?compatible.find(e=>e.rank===d.arena_key):compatible[0];
     const resolutions=(chosen?.available?chosen.resolutions:[d.resolution].filter(Boolean))
-      .filter(x=>!d.reviewer||['360p','480p','720p','1080p'].includes(x.toLowerCase())).map(x=>[x,x]);
+      .filter(x=>!d.reviewer||(!selected?.preset||x.toLowerCase()===selected.preset)&&['360p','480p','720p','1080p'].includes(x.toLowerCase())).map(x=>[x,x]);
     const rate=chosen?.rates?.find(x=>x.resolution===d.resolution);
+    const select=d.reviewer?h('select',{'aria-label':'โมเดลวิดีโอ'},ugcOption('','เลือกโมเดล'),picker.groups):
+      ugcSelect([['','เลือกโมเดล'],...options],d.endpoint,()=>{},'โมเดลวิดีโอ');
+    if(d.reviewer)select.value=selected?.key||'';
+    select.onchange=()=>{
+      const entry=picker.entries.find(e=>e.key===select.value&&!e.disabled);
+      if(d.reviewer&&entry?.rank)d.arena_key=entry.rank;else delete d.arena_key;
+      set('endpoint',d.reviewer?entry?.endpoint||'':select.value);
+      const model=models.find(x=>x.id===d.endpoint);
+      set('resolution',model?.resolutions.find(x=>x.toLowerCase()===(entry?.preset||'720p'))||model?.resolutions[0]||'');
+      renderModels();
+    };
     put(modelPanel,
-      h('label',{},'โมเดลวิดีโอ fal.ai',ugcSelect([['','เลือกโมเดล'],...options],d.endpoint,v=>{
-        set('endpoint',v);
-        const model=models.find(x=>x.id===v);
-        set('resolution',model?.resolutions.find(x=>x.toLowerCase()==='720p')||model?.resolutions.find(x=>x===d.resolution)||model?.resolutions[0]||'');
-        renderModels();
-      },'โมเดลวิดีโอ')),
+      h('label',{},'โมเดลวิดีโอ fal.ai',select),
       h('label',{},'ความละเอียดภาพจาก fal',ugcSelect([['','เลือกความละเอียด'],...resolutions],d.resolution,v=>{
         set('resolution',v);renderModels();
       },'ความละเอียดภาพจาก fal')),
       rate?h('div',{},h('p',{},ugcRateText(rate)),
         h('a',{class:'sub',href:chosen.source_url,target:'_blank',rel:'noopener'},'ตรวจเรต '+ugcDate(chosen.checked_at))):
         h('p',{class:'sub'},chosen?.reason||(modelsLoading?'กำลังตรวจรุ่นและราคา…':'เลือกโมเดลและความละเอียดเพื่อดูเรต')),
-      h('p',{role:'status',class:'sub'},modelNotice),
-      button(modelsLoading?'กำลังอัปเดต…':'อัปเดตโมเดล',()=>modelList(true),modelsLoading));
+      h('p',{role:'status',class:'sub'},[d.reviewer&&modelsLoaded&&d.endpoint&&!selected?'โมเดลที่เลือกใช้ไม่ได้แล้ว กรุณาเลือกใหม่':'',modelNotice].filter(Boolean).join(' · ')),
+      button(modelsLoading?'กำลังอัปเดต…':d.reviewer?'อัปเดตอันดับและโมเดล':'อัปเดตโมเดล',()=>modelList(true),modelsLoading));
   }
   function productMedia(){return row.media.filter(x=>!x.role||x.role==='product');}
   function attachProduct(media,replace){
@@ -313,6 +374,13 @@ async function renderUgc(config,drafts){
     if(d.reviewer&&!d.reviewer.opening_id&&!row.job_id){
       put(priceBox,h('p',{},'เลือกคนรีวิวและยืนยันภาพเปิดก่อนคิดราคาวิดีโอ'));
       return;
+    }
+    if(d.reviewer&&modelsLoaded&&!row.job_id){
+      const ranked=modelCatalog.ranked||[], prior=ranked.find(r=>r.key===d.arena_key);
+      const matches=r=>r.available&&r.endpoint===d.endpoint&&(!r.resolution||r.resolution===d.resolution.toLowerCase());
+      if(!(prior?matches(prior):modelCatalog.featured?.includes(d.endpoint)||ranked.some(matches))){
+        put(priceBox,h('p',{},'กรุณาเลือกโมเดลวิดีโอที่ยังใช้ได้'));return;
+      }
     }
     if(d.reviewer && !row.job_id && modelsLoaded && !models.some(m=>m.id===d.endpoint&&m.resolutions?.includes(d.resolution)&&d.scenes.filter(s=>s.mode==='fal').every(s=>m.durations?.some(n=>n>=s.seconds)))){
       put(priceBox,h('p',{role:'status'},'กรุณาเลือกโมเดลวิดีโอและความละเอียดที่ยังใช้ได้ก่อนตรวจราคา'),
@@ -440,20 +508,69 @@ async function renderUgc(config,drafts){
     row.media.push(added);
     return added;
   }
+  // Keep a user's selected clip if a draft status update redraws this panel before Upload.
+  const reviewerClipFile=h('input',{type:'file',accept:'video/mp4'});
   function reviewerPanel(planning){
     const r=d.reviewer;
     if(!r)return null;
-    const change=(key,value)=>{r[key]=value;r.opening_id=null;if(key==='kind'||key==='source_id')r.frame_id=null;invalidate();render();};
+    async function persistInputs(key,value,removePortrait){
+      r[key]=value;r.opening_id=null;r.frame_id=null;
+      if(d.scenes.length){d.scenes[0].media_id=null;d.scenes.at(-1).media_id=null;}
+      invalidate();await save(removePortrait);reload(await api(path));
+    }
+    const change=(key,value)=>persistInputs(key,value).catch(e=>{message.textContent=e.message;});
     const product=productMedia().filter(m=>m.kind==='image');
     const sourceMedia=row.media.filter(m=>m.role==='presenter'&&m.kind===(r.kind==='clip'?'video':'image'));
     const source=sourceMedia.find(m=>m.id===r.source_id);
-    const reviewed=r.kind==='clip'?row.media.filter(m=>m.role==='frame'&&m.details.source_id===r.source_id):
+    const reviewed=r.kind==='clip'?row.media.filter(m=>m.role==='frame'&&m.matches_frame!==false&&m.details.source_id===r.source_id):
       row.media.filter(m=>m.role==='opening'&&m.matches_reviewer);
     const approved=reviewed.find(m=>m.id===r.opening_id);
     const job=row.image_job, waiting=job&&!['READY_TO_POST','FAILED','CANCELLED'].includes(job.status);
     const reel=r.kind==='clip'&&source?h('video',{class:'ugc-player',controls:true,playsinline:true,preload:'metadata',src:source.url,
       'aria-label':'คลิปคนรีวิวสำหรับเลือกเฟรม'}):null;
-    const file=h('input',{type:'file',accept:r.kind==='clip'?'video/mp4':'image/jpeg,image/png,image/webp'});
+    const file=reviewerClipFile;
+    const portraitInput=h('input',{type:'file',id:'ugc-portrait',class:'ugc-file',disabled:!config.storage,accept:'image/jpeg,image/png,image/webp','aria-label':'อัปโหลดรูปคนรีวิว'});
+    const usePortrait=async media=>{
+      r.kind='portrait';
+      await persistInputs('source_id',media.id);
+    };
+    portraitInput.onchange=async()=>{
+      if(!portraitInput.files.length)return;
+      portraitInput.disabled=true;
+      try{
+        const media=await uploadMedia(portraitInput,'presenter');
+        if(media.kind!=='image')throw Error('โปรดเลือกรูปคนรีวิว');
+        await usePortrait(media);
+      }catch(e){message.textContent=e.message;portraitInput.disabled=false;}
+    };
+    function notionReviewers(){
+      if(!config.notion.reviewers_enabled)return h('div',{},h('button',{class:'btn',type:'button',disabled:true},'เลือกรูปจาก Notion'),h('p',{class:'sub'},'ยังไม่ได้ตั้งค่าฐานคนรีวิว Notion'));
+      const list=h('div',{class:'ugc-portraits'}),notice=h('small',{role:'status'}),more=h('div',{});
+      const query=h('input',{'aria-label':'ค้นหาคนรีวิว',placeholder:'ชื่อคนรีวิว',maxlength:140});
+      let seq=0;
+      async function search(q,cursor){
+        const attempt=++seq;notice.textContent='กำลังโหลดรูปคนรีวิว…';put(more);if(!cursor)put(list);
+        try{
+          const page=await api(ugcPath+'/notion/reviewers?q='+encodeURIComponent(q)+(cursor?'&cursor='+encodeURIComponent(cursor):''));
+          if(seq!==attempt)return;
+          for(const item of page.items){
+            const pick=button(item.name,async()=>{
+              const media=await api(path+'/import-reviewer',ugcJSON('POST',{page:item.page,file:item.file}));
+              row.media.push(media);await usePortrait(media);
+            });
+            pick.title=item.filename||item.name;
+            pick.prepend(h('img',{src:item.thumbnail,alt:'',loading:'lazy',width:56,height:64}));
+            list.append(pick);
+          }
+          notice.textContent=list.children.length?'':'ไม่พบรูปที่ใช้ได้ในฐานคนรีวิว';
+          if(page.next)put(more,button('ดูคนรีวิวเพิ่ม',()=>search(q,page.next)));
+        }catch(e){if(seq===attempt)notice.textContent=e.message;}
+      }
+      const panel=h('details',{},h('summary',{},'เลือกรูปจาก Notion'),query,button('ค้นหาคนรีวิว',()=>search(query.value.trim())),notice,list,more);
+      panel.ontoggle=()=>{if(panel.open&&!seq)void search('');};
+      query.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();void search(query.value.trim());}};
+      return panel;
+    }
     const quotePanel=h('div',{});
     function displayQuote(){
       const q=imageQuote;
@@ -479,20 +596,22 @@ async function renderUgc(config,drafts){
       reload(await api(path));
     }
     return fold('คนรีวิวและภาพเปิด',h('fieldset',{disabled:planning},
-      h('label',{},'คนรีวิว',ugcSelect([['','เลือกคนรีวิว'],['clip','คลิปคนจริงถือสินค้า'],['portrait','อัปโหลดรูปคนรีวิว'],['ai','สร้างพิธีกร AI']],r.kind,
-        value=>{r.source_id=null;change('kind',value);},'คนรีวิว')),
+      h('label',{},'คนรีวิว',ugcSelect([['','เลือกคนรีวิว'],['clip','คลิปคนจริงถือสินค้า'],['portrait','รูปคนรีวิว'],['ai','สร้างพิธีกร AI']],r.kind,
+        value=>{if(value===r.kind)return;r.source_id=null;change('kind',value);},'คนรีวิว')),
+      h('div',{class:'ugc-attach'},h('label',{for:'ugc-portrait',class:'btn'},'อัปโหลดรูปคนรีวิว'),portraitInput),notionReviewers(),
+      r.kind==='portrait'&&source?h('div',{class:'ugc-media'},
+        h('img',{src:source.url,alt:'รูปคนรีวิวที่เลือก'}),button('ลบรูปคนรีวิว',()=>persistInputs('source_id',null,source.id))):null,
       product.length>1?h('label',{},'รูปสินค้าสำหรับเฟรมเปิด',ugcSelect([['','เลือกรูป'],...product.map((m,i)=>[m.id,'รูปสินค้า '+(i+1)])],
         r.product_media_id,value=>change('product_media_id',value||null),'รูปสินค้าสำหรับเฟรมเปิด')):null,
       !r.kind?h('p',{},'เลือกว่าใครจะถือหรือสาธิตสินค้าใน 3 วินาทีแรก'):null,
-      r.kind==='clip'||r.kind==='portrait'?h('div',{},
+      r.kind==='clip'?h('div',{},
         h('label',{},r.kind==='clip'?'คลิป MP4 ที่เห็นหน้า มือ และสินค้า':'รูปคนรีวิวที่อนุญาตให้ใช้',file),
         button('อัปโหลดสื่อคนรีวิว',async()=>{
           const added=await uploadMedia(file,'presenter');
-          change('source_id',added.id);
+          await persistInputs('source_id',added.id);file.value='';
         },!config.storage),
         sourceMedia.length>1?h('label',{},'สื่อของคนรีวิว',ugcSelect(sourceMedia.map((m,i)=>[m.id,'สื่อคนรีวิว '+(i+1)]),
-          r.source_id, v=>change('source_id',v),'สื่อของคนรีวิว')):null,
-        r.kind==='portrait'&&source?h('div',{class:'ugc-media'},h('img',{src:source.url,alt:'รูปคนรีวิว'})):null):null,
+          r.source_id, v=>change('source_id',v),'สื่อของคนรีวิว')):null):null,
       reel,
       reel?button('เลือกเฟรมจากตำแหน่งที่เล่นอยู่',async()=>{
         if(!Number.isFinite(reel.duration)||reel.currentTime>=reel.duration)throw Error('เลื่อนคลิปไปยังเฟรมที่เห็นคนกับสินค้าชัด');
